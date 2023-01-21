@@ -1,5 +1,5 @@
 const std = @import("std");
-const lex = @import("lex.zig");
+const parse = @import("parse.zig");
 
 const max_file_size = std.math.maxInt(u32);
 
@@ -7,7 +7,7 @@ pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var file = try std.fs.cwd().openFile("lang.fm", .{});
+    var file = try std.fs.cwd().openFile("fact.fm", .{});
     defer file.close();
 
     const stat = try file.stat();
@@ -23,16 +23,7 @@ pub fn main() anyerror!void {
         std.process.exit(1);
     }
 
-    var lexer = lex.Lexer.init(source);
-    while (true) {
-        const token = lexer.next();
-        if (token.tag == .eof) {
-            break;
-        }
-
-        std.debug.print("({} {}..{}) ", .{token.tag, token.loc.start, token.loc.end});
-        if (token.tag == .semi) {
-            std.debug.print("\n", .{});
-        }
-    }
+    const ast = try parse.parse(allocator, source);
+    std.log.debug("{any} {any}", .{ast.nodes.items(.tag), ast.nodes.items(.main_token)});
+    std.log.debug("{any}", .{ast.nodes.items(.data)});
 }

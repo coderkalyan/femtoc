@@ -91,6 +91,7 @@ pub const Token = struct {
 
         // keywords
         k_use,
+        k_as,
         k_fn,
         k_assoc,
         k_return,
@@ -114,6 +115,7 @@ pub const Token = struct {
 
     pub const keywords = std.ComptimeStringMap(Tag, .{
         .{ "use", .k_use },
+        .{ "as", .k_as },
         .{ "fn", .k_fn },
         .{ "assoc", .k_assoc },
         .{ "return", .k_return },
