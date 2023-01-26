@@ -150,10 +150,14 @@ const Parser = struct {
 
     fn precedence(tag: Token.Tag) i32 {
         return switch (tag) {
-            .plus => 10,
-            .minus => 20,
-            .asterisk => 30,
-            .slash => 40,
+            .equal_equal => 10,
+            .pipe_pipe => 20,
+            .ampersand_ampersand => 30,
+            .caret_caret => 40,
+            .plus => 110,
+            .minus => 120,
+            .asterisk => 130,
+            .slash => 140,
             else => -1,
         };
     }
@@ -197,10 +201,7 @@ const Parser = struct {
     fn expectIdentExpr(p: *Parser) !Node.Index {
         const ident_token = try p.expectToken(.ident);
         if (p.token_tags[p.index] == .l_paren) {
-            std.log.debug("call", .{});
-            std.log.debug("reading param list", .{});
             const params = try p.expectParamList();
-            std.log.debug("read param list", .{});
             return p.addNode(.{
                 .tag = .call_expr,
                 .main_token = ident_token,
@@ -223,7 +224,6 @@ const Parser = struct {
         const params_start = p.nodes.len;
         while (true) {
             if (p.eatToken(.r_paren)) |_| break;
-            // std.log.debug("next token: {any}", .{p.token_tags[p.index - 1..p.index + 2]});
             _ = try p.expectExpr();
             switch (p.token_tags[p.index]) {
                 .comma => _ = p.eatToken(.comma),
@@ -382,7 +382,6 @@ const Parser = struct {
 
         const block_start = p.nodes.len;
         while (true) {
-            // std.log.debug("next token: {any}", .{p.token_tags[p.index - 2..p.index + 1]});
             if (p.eatToken(.r_brace)) |_| break;
 
             switch (p.token_tags[p.index]) {
@@ -392,13 +391,6 @@ const Parser = struct {
                     if (try p.parseStmt() == null_node) p.index += 1;
                 },
             }
-            // std.log.debug("next token: {any}", .{p.token_tags[p.index - 1..p.index + 2]});
-            // const param = try p.expectParamDecl();
-            // if (param != null_node) try p.scratch.append(p.gpa, param);
-            // switch (p.token_tags[p.index]) {
-            //     .comma, .r_paren => p.index += 1,
-            //     else => return Error.ParseError,
-            // }
         }
         const block_end = p.nodes.len;
 
@@ -417,11 +409,28 @@ const Parser = struct {
         const node = switch (tag) {
             .k_let => p.parseDecl(),
             .k_return => p.parseRetStmt(),
+            .k_if => p.expectIfStmt(),
             else => null_node,
         };
 
         _ = p.eatToken(.semi);
         return node;
+    }
+
+    fn expectIfStmt(p: *Parser) !Node.Index {
+        const if_token = try p.expectToken(.k_if);
+        const condition_node = try p.expectExpr();
+        // std.log.debug("next token: {any}", .{p.token_tags[p.index - 2..p.index + 1]});
+        const block_node = try p.expectBlock();
+
+        return p.addNode(.{
+            .tag = .if_stmt,
+            .main_token = if_token,
+            .data = .{
+                .l = condition_node,
+                .r = block_node,
+            }
+        });
     }
 
     fn parseRetStmt(p: *Parser) !Node.Index {

@@ -41,6 +41,7 @@ pub const Node = struct {
         ident_expr,
         call_expr,
         bin_expr,
+        if_stmt,
     };
 
     pub const Range = struct {

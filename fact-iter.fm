@@ -1,0 +1,8 @@
+let fact = fn (n: i32) i32 {
+    let mut ans: i32 = 1;
+    for let mut i = 1; i <= n; i += 1 {
+        ans *= i;
+    }
+
+    return ans;
+}
