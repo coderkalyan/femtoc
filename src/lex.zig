@@ -161,9 +161,13 @@ pub const Lexer = struct {
         // literals
         str_lit,
         char_lit,
-        base,
-        int_lit,
-        float_lit,
+        int_base,
+        binary,
+        octal,
+        decimal,
+        hex,
+        float_base,
+        float_exp,
 
         // partial operators
         period,
@@ -256,10 +260,10 @@ pub const Lexer = struct {
                     },
                     // number literal
                     '0' => {
-                        state = .base;
+                        state = .int_base;
                     },
                     '1'...'9' => {
-                        state = .int_lit;
+                        state = .decimal;
                     },
 
                     // punctuation
@@ -390,13 +394,12 @@ pub const Lexer = struct {
                     },
                     else => {},
                 },
-                .base => switch (c) {
-                    'b', 'o', 'x', '0'...'9' => {
-                        state = .int_lit;
-                    },
-                    '.' => {
-                        state = .float_lit;
-                    },
+                .int_base => switch (c) {
+                    'b' => state = .binary,
+                    'o' => state = .octal,
+                    'x' => state = .hex,
+                    '0'...'9' => state = .decimal,
+                    '.' => state = .float_base,
                     'a', 'c'...'n', 'p'...'w', 'y'...'z', 'A'...'Z' => {
                         self.index += 1;
                         const invalid_length = self.eatInvalidLiteral();
@@ -409,12 +412,9 @@ pub const Lexer = struct {
                         break;
                     },
                 },
-                .int_lit => switch (c) {
-                    '0'...'9', 'a'...'f', 'A'...'F', '_', 'u', 'i' => {},
-                    '.' => {
-                        state = .float_lit;
-                    },
-                    'g'...'h', 'j'...'t', 'v'...'z', 'G'...'Z' => {
+                .binary => switch (c) {
+                    '0'...'1', '_' => {},
+                    '2'...'9', 'a'...'z', 'A'...'Z' => {
                         self.index += 1;
                         const invalid_length = self.eatInvalidLiteral();
                         result.tag = .invalid;
@@ -426,9 +426,73 @@ pub const Lexer = struct {
                         break;
                     },
                 },
-                .float_lit => switch (c) {
-                    '0'...'9', 'e', '_', 'f', '+', '-' => {},
+                .octal => switch (c) {
+                    '0'...'7', '_' => {},
+                    '8'...'9', 'a'...'z', 'A'...'Z' => {
+                        self.index += 1;
+                        const invalid_length = self.eatInvalidLiteral();
+                        result.tag = .invalid;
+                        self.index += invalid_length;
+                        break;
+                    },
+                    else => {
+                        result.tag = .int_lit;
+                        break;
+                    },
+                },
+                .decimal => switch (c) {
+                    '0'...'9', '_' => {},
+                    '.', 'e' => state = .float_base,
+                    'a'...'d', 'f'...'z', 'A'...'Z' => {
+                        self.index += 1;
+                        const invalid_length = self.eatInvalidLiteral();
+                        result.tag = .invalid;
+                        self.index += invalid_length;
+                        break;
+                    },
+                    else => {
+                        result.tag = .int_lit;
+                        break;
+                    },
+                },
+                .hex => switch (c) {
+                    '0'...'9', 'a'...'f', 'A'...'F', '_' => {},
                     'g'...'z', 'G'...'Z' => {
+                        self.index += 1;
+                        const invalid_length = self.eatInvalidLiteral();
+                        result.tag = .invalid;
+                        self.index += invalid_length;
+                        break;
+                    },
+                    else => {
+                        result.tag = .int_lit;
+                        break;
+                    },
+                },
+                .float_base => switch (c) {
+                    '0'...'9', '_' => {},
+                    'e' => {
+                        state = .float_exp;
+                        switch (self.buffer[self.index + 1]) {
+                            '+', '-' => self.index += 1,
+                            else => {},
+                        }
+                    },
+                    'a'...'d', 'f'...'z', 'A'...'Z' => {
+                        self.index += 1;
+                        const invalid_length = self.eatInvalidLiteral();
+                        result.tag = .invalid;
+                        self.index += invalid_length;
+                        break;
+                    },
+                    else => {
+                        result.tag = .float_lit;
+                        break;
+                    },
+                },
+                .float_exp => switch (c) {
+                    '0'...'9', '_' => {},
+                    'a'...'z', 'A'...'Z' => {
                         self.index += 1;
                         const invalid_length = self.eatInvalidLiteral();
                         result.tag = .invalid;
@@ -442,7 +506,7 @@ pub const Lexer = struct {
                 },
                 .period => switch (c) {
                     '0'...'9' => {
-                        state = .float_lit;
+                        state = .float_base;
                     },
                     else => {
                         result.tag = .period;
@@ -714,64 +778,48 @@ fn testLex(source: [:0]const u8, expected_token_tags: []const Token.Tag) !void {
 }
 
 test "literal" {
-    // the lexer has very weak numerical literal checks, so invalid literals will get through
-    // we simply check that all valid ones do get through
-
     // decimal
     try testLex("0", &.{.int_lit});
     try testLex("123", &.{.int_lit});
     try testLex("123(", &.{.int_lit, .l_paren});
     try testLex("123;", &.{.int_lit, .semi});
-    try testLex("123hjk", &.{.invalid});
-    try testLex("123u", &.{.int_lit});
-    try testLex("123u8", &.{.int_lit});
-    try testLex("123u32", &.{.int_lit});
-    try testLex("123i", &.{.int_lit});
-    try testLex("123i8", &.{.int_lit});
-    try testLex("123i32", &.{.int_lit});
+    try testLex("123abc", &.{.invalid});
+    try testLex("123", &.{.int_lit});
     try testLex("123_456", &.{.int_lit});
-    try testLex("123_456_789i64", &.{.int_lit});
+    try testLex("123_456_789", &.{.int_lit});
 
     // binary
     try testLex("0b0", &.{.int_lit});
     try testLex("0b1", &.{.int_lit});
     try testLex("0b0101011", &.{.int_lit});
-    try testLex("0b0101011i", &.{.int_lit});
-    try testLex("0b0101011i8", &.{.int_lit});
-    try testLex("0b0101011i32", &.{.int_lit});
-    try testLex("0b0101011u", &.{.int_lit});
-    try testLex("0b0101011u8", &.{.int_lit});
-    try testLex("0b0101011u32", &.{.int_lit});
 
     // octal
     try testLex("0o0", &.{.int_lit});
     try testLex("0o1", &.{.int_lit});
     try testLex("0o0123456", &.{.int_lit});
-    try testLex("0o0123456i", &.{.int_lit});
-    try testLex("0o0123456i8", &.{.int_lit});
-    try testLex("0o0123456i32", &.{.int_lit});
-    try testLex("0o0123456u", &.{.int_lit});
-    try testLex("0o0123456u8", &.{.int_lit});
-    try testLex("0o0123456u32", &.{.int_lit});
+    try testLex("0o17", &.{.int_lit});
+    try testLex("0o178", &.{.invalid});
+    try testLex("0o17abc", &.{.invalid});
+    try testLex("0o12345_67", &.{.int_lit});
 
     // hex
     try testLex("0x0", &.{.int_lit});
     try testLex("0x1", &.{.int_lit});
     try testLex("0x018ADFF", &.{.int_lit});
-    try testLex("0x018ADFFi", &.{.int_lit});
-    try testLex("0x018ADFFi8", &.{.int_lit});
-    try testLex("0x018ADFFi32", &.{.int_lit});
-    try testLex("0x018ADFFu", &.{.int_lit});
-    try testLex("0x018ADFFu8", &.{.int_lit});
-    try testLex("0x018ADFFu32", &.{.int_lit});
+    try testLex("0x0123456", &.{.int_lit});
+    try testLex("0x789", &.{.int_lit});
+    try testLex("0xabcdef", &.{.int_lit});
+    try testLex("0xABCDEF", &.{.int_lit});
+    try testLex("0x123G", &.{.invalid});
+    try testLex("0x12_3456_789_a_b_CDEF", &.{.int_lit});
 
     // float
     try testLex(".", &.{.period});
-    try testLex("0.5f", &.{.float_lit});
-    try testLex("1.5f", &.{.float_lit});
-    try testLex(".5f", &.{.float_lit});
-    try testLex(".51231232f", &.{.float_lit});
-    try testLex(".51231232e05f", &.{.float_lit});
-    try testLex(".51231232e+15f", &.{.float_lit});
-    try testLex(".51231232e-15f", &.{.float_lit});
+    try testLex(".5", &.{.float_lit});
+    try testLex("0.5", &.{.float_lit});
+    try testLex("1.5", &.{.float_lit});
+    try testLex(".51231232", &.{.float_lit});
+    try testLex(".51231232e05", &.{.float_lit});
+    try testLex(".51231232e+15", &.{.float_lit});
+    try testLex(".51231232e-15", &.{.float_lit});
 }
