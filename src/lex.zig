@@ -1,12 +1,13 @@
 const std = @import("std");
 
+// each token contains a type (tag), start, and end index in the source string
 pub const Token = struct {
     tag: Tag,
     loc: Loc,
 
     pub const Loc = struct {
-        start: usize,
-        end: usize,
+        start: u32,
+        end: u32,
     };
 
     pub const Tag = enum {
@@ -27,7 +28,6 @@ pub const Token = struct {
         equal,
         period,
         comma,
-        at,
         underscore,
         /// grouping
         l_paren,
@@ -36,8 +36,6 @@ pub const Token = struct {
         r_bracket,
         l_brace,
         r_brace,
-        s_quote,
-        d_quote,
         /// arithmetic
         plus,
         minus,
@@ -105,6 +103,7 @@ pub const Token = struct {
         k_enum,
         k_variant,
         k_defer,
+        k_for,
 
         // annotations
         a_unknown,
@@ -129,6 +128,7 @@ pub const Token = struct {
         .{ "enum", .k_enum },
         .{ "variant", .k_variant },
         .{ "defer", .k_defer },
+        .{ "for", .k_for },
     });
 
     pub const annotations = std.ComptimeStringMap(Tag, .{
@@ -147,9 +147,10 @@ pub const Token = struct {
 };
 
 pub const Lexer = struct {
-    buffer: [:0]const u8,
-    index: usize,
-    pending_invalid_token: ?Token,
+    // source code being analyzed
+    source: [:0]const u8,
+    // current lexer index in source
+    index: u32,
 
     const State = enum {
         start,
@@ -157,10 +158,10 @@ pub const Lexer = struct {
         // named things
         ident,
         annot,
+        underscore,
 
         // literals
         str_lit,
-        char_lit,
         int_base,
         binary,
         octal,
@@ -193,20 +194,17 @@ pub const Lexer = struct {
         line_comment,
     };
 
-    pub fn init(buffer: [:0]const u8) Lexer {
+    pub fn init(source: [:0]const u8) Lexer {
+        // we only parse <= ~4GiB files (u32_max characters)
+        std.debug.assert(source.len <= std.math.maxInt(u32)); // TODO: nice error
+
         return Lexer {
-            .buffer = buffer,
+            .source = source,
             .index = 0,
-            .pending_invalid_token = null,
         };
     }
 
     pub fn next(self: *Lexer) Token {
-        if (self.pending_invalid_token) |token| {
-            self.pending_invalid_token = null;
-            return token;
-        }
-
         var state: State = .start;
         var result = Token {
             .tag = .eof,
@@ -216,13 +214,14 @@ pub const Lexer = struct {
             },
         };
 
+        // finite state machine that parses one character at a time
         while (true) : (self.index += 1) {
-            const c = self.buffer[self.index];
+            const c = self.source[self.index];
             switch (state) {
                 .start => switch (c) {
                     // eof
                     0 => {
-                        if (self.index != self.buffer.len) {
+                        if (self.index != self.source.len) {
                             result.tag = .invalid;
                             result.loc.start = self.index;
                             self.index += 1;
@@ -238,8 +237,12 @@ pub const Lexer = struct {
                     },
 
                     // identifier
-                    'a'...'z', 'A'...'Z', '_' => {
+                    'a'...'z', 'A'...'Z' => {
                         state = .ident;
+                        result.tag = .ident;
+                    },
+                    '_' => {
+                        state = .underscore;
                         result.tag = .ident;
                     },
 
@@ -255,8 +258,28 @@ pub const Lexer = struct {
                     },
                     // char literal
                     '\'' => {
-                        state = .char_lit;
-                        result.tag = .char_lit;
+                        self.index += 1;
+                        if (self.source[self.index] == '\'') {
+                            self.index += 1;
+                            result.tag = .invalid;
+                            break;
+                        }
+                        if (self.source[self.index] != 0) self.index += 1;
+                        if (self.source[self.index] != '\'') {
+                            result.tag = .invalid;
+                            while (true) : (self.index += 1) {
+                                switch (self.source[self.index]) {
+                                    '\'', 0 => break,
+                                    else => {},
+                                }
+                            }
+                        } else {
+                            result.tag = .char_lit;
+                        }
+
+                        // eat closing quote
+                        if (self.source[self.index] == '\'') self.index += 1;
+                        break;
                     },
                     // number literal
                     '0' => {
@@ -364,7 +387,7 @@ pub const Lexer = struct {
                     'a'...'z', 'A'...'Z', '_', '0'...'9' => {},
                     else => {
                         // done with identifier, check if keyword
-                        if (Token.getKeyword(self.buffer[result.loc.start..self.index])) |tag| {
+                        if (Token.getKeyword(self.source[result.loc.start..self.index])) |tag| {
                             result.tag = tag;
                         }
                         break;
@@ -373,22 +396,13 @@ pub const Lexer = struct {
                 .annot => switch (c) {
                     'a'...'z', 'A'...'Z', '_', '0'...'9' => {},
                     else => {
-                        // done with identifier, check if keyword
-                        if (Token.getAnnotation(self.buffer[result.loc.start..self.index])) |tag| {
-                            result.tag = tag;
-                        }
+                        // done with annotation, check if keyword
+                        result.tag = Token.getAnnotation(self.source[result.loc.start + 1..self.index]) orelse .a_unknown;
                         break;
                     },
                 },
                 .str_lit => switch (c) {
                     '"' => {
-                        self.index += 1;
-                        break;
-                    },
-                    else => {},
-                },
-                .char_lit => switch (c) {
-                    '\'' => {
                         self.index += 1;
                         break;
                     },
@@ -473,7 +487,7 @@ pub const Lexer = struct {
                     '0'...'9', '_' => {},
                     'e' => {
                         state = .float_exp;
-                        switch (self.buffer[self.index + 1]) {
+                        switch (self.source[self.index + 1]) {
                             '+', '-' => self.index += 1,
                             else => {},
                         }
@@ -501,6 +515,16 @@ pub const Lexer = struct {
                     },
                     else => {
                         result.tag = .float_lit;
+                        break;
+                    },
+                },
+                .underscore => switch (c) {
+                    'a'...'z', 'A'...'Z' => {
+                        result.tag = .ident;
+                        state = .ident;
+                    },
+                    else => {
+                        result.tag = .underscore;
                         break;
                     },
                 },
@@ -740,10 +764,6 @@ pub const Lexer = struct {
         }
 
         if (result.tag == .eof) {
-            if (self.pending_invalid_token) |token| {
-                self.pending_invalid_token = null;
-                return token;
-            }
             result.loc.start = self.index;
         }
 
@@ -754,8 +774,8 @@ pub const Lexer = struct {
     fn eatInvalidLiteral(self: *Lexer) u32 {
         var length: u32 = 0;
 
-        while (self.index + length < self.buffer.len) : (length += 1) {
-            switch (self.buffer[self.index + length]) {
+        while (self.index + length < self.source.len) : (length += 1) {
+            switch (self.source[self.index + length]) {
                 'a'...'z', 'A'...'Z' => {},
                 else => { return length; },
             }
@@ -773,11 +793,33 @@ fn testLex(source: [:0]const u8, expected_token_tags: []const Token.Tag) !void {
     }
     const eof = lexer.next();
     try std.testing.expectEqual(Token.Tag.eof, eof.tag);
-    try std.testing.expectEqual(source.len, eof.loc.start);
-    try std.testing.expectEqual(source.len, eof.loc.end);
+    try std.testing.expectEqual(@intCast(u32, source.len), eof.loc.start);
+    try std.testing.expectEqual(@intCast(u32, source.len), eof.loc.end);
 }
 
-test "literal" {
+test "identifier" {
+    try testLex("x", &.{.ident});
+    try testLex("abc", &.{.ident});
+    try testLex("a123", &.{.ident});
+    try testLex("123a", &.{.invalid});
+    try testLex("1abc", &.{.invalid});
+}
+
+test "string literal" {
+    try testLex("\"abc\"", &.{.str_lit});
+    try testLex("\"\"", &.{.str_lit});
+    try testLex("\"123456\"", &.{.str_lit});
+    try testLex("\"let\"", &.{.str_lit});
+}
+
+test "character literal" {
+    try testLex("'a'", &.{.char_lit});
+    try testLex("'0'", &.{.char_lit});
+    try testLex("'abc'", &.{.invalid});
+    try testLex("''", &.{.invalid});
+}
+
+test "integer literal" {
     // decimal
     try testLex("0", &.{.int_lit});
     try testLex("123", &.{.int_lit});
@@ -812,8 +854,9 @@ test "literal" {
     try testLex("0xABCDEF", &.{.int_lit});
     try testLex("0x123G", &.{.invalid});
     try testLex("0x12_3456_789_a_b_CDEF", &.{.int_lit});
+}
 
-    // float
+test "float literal" {
     try testLex(".", &.{.period});
     try testLex(".5", &.{.float_lit});
     try testLex("0.5", &.{.float_lit});
@@ -822,4 +865,131 @@ test "literal" {
     try testLex(".51231232e05", &.{.float_lit});
     try testLex(".51231232e+15", &.{.float_lit});
     try testLex(".51231232e-15", &.{.float_lit});
+    try testLex(".5_234_12_32e-10", &.{.float_lit});
+}
+
+test "punctuation" {
+    try testLex(";", &.{.semi});
+    try testLex(":", &.{.colon});
+    try testLex("=", &.{.equal});
+    try testLex(".", &.{.period});
+    try testLex(",", &.{.comma});
+    try testLex("_", &.{.underscore});
+    try testLex("(", &.{.l_paren});
+    try testLex(")", &.{.r_paren});
+    try testLex("[", &.{.l_bracket});
+    try testLex("]", &.{.r_bracket});
+    try testLex("{", &.{.l_brace});
+    try testLex("}", &.{.r_brace});
+    try testLex("+", &.{.plus});
+    try testLex("-", &.{.minus});
+    try testLex("*", &.{.asterisk});
+    try testLex("/", &.{.slash});
+    try testLex("%", &.{.percent});
+    try testLex("&", &.{.ampersand});
+    try testLex("|", &.{.pipe});
+    try testLex("^", &.{.caret});
+    try testLex("~", &.{.tilde});
+    try testLex("!", &.{.bang});
+    try testLex("<", &.{.l_angle});
+    try testLex(">", &.{.r_angle});
+
+    try testLex("+=", &.{.plus_equal});
+    try testLex("+ =", &.{.plus, .equal});
+    try testLex("-=", &.{.minus_equal});
+    try testLex("- =", &.{.minus, .equal});
+    try testLex("*=", &.{.asterisk_equal});
+    try testLex("* =", &.{.asterisk, .equal});
+    try testLex("/=", &.{.slash_equal});
+    try testLex("/ =", &.{.slash, .equal});
+    try testLex("%=", &.{.percent_equal});
+    try testLex("% =", &.{.percent, .equal});
+    try testLex("&=", &.{.ampersand_equal});
+    try testLex("& =", &.{.ampersand, .equal});
+    try testLex("|=", &.{.pipe_equal});
+    try testLex("| =", &.{.pipe, .equal});
+    try testLex("^=", &.{.caret_equal});
+    try testLex("^ =", &.{.caret, .equal});
+    try testLex("<<", &.{.l_angle_l_angle});
+    try testLex("< <", &.{.l_angle, .l_angle});
+    try testLex(">>", &.{.r_angle_r_angle});
+    try testLex("> >", &.{.r_angle, .r_angle});
+    try testLex("&&", &.{.ampersand_ampersand});
+    try testLex("& &", &.{.ampersand, .ampersand});
+    try testLex("||", &.{.pipe_pipe});
+    try testLex("| |", &.{.pipe, .pipe});
+    try testLex("^^", &.{.caret_caret});
+    try testLex("^ ^", &.{.caret, .caret});
+    try testLex("==", &.{.equal_equal});
+    try testLex("= =", &.{.equal, .equal});
+    try testLex("<=", &.{.l_angle_equal});
+    try testLex("< =", &.{.l_angle, .equal});
+    try testLex(">=", &.{.r_angle_equal});
+    try testLex("> =", &.{.r_angle, .equal});
+    try testLex("!=", &.{.bang_equal});
+    try testLex("! =", &.{.bang, .equal});
+    try testLex("::", &.{.colon_colon});
+    try testLex(": :", &.{.colon, .colon});
+
+    try testLex("<<=", &.{.l_angle_l_angle_equal});
+    try testLex("<< =", &.{.l_angle_l_angle, .equal});
+    try testLex(">>=", &.{.r_angle_r_angle_equal});
+    try testLex(">> =", &.{.r_angle_r_angle, .equal});
+    try testLex("&&=", &.{.ampersand_ampersand_equal});
+    try testLex("&& =", &.{.ampersand_ampersand, .equal});
+    try testLex("||=", &.{.pipe_pipe_equal});
+    try testLex("|| =", &.{.pipe_pipe, .equal});
+    try testLex("^^=", &.{.caret_caret_equal});
+    try testLex("^^ =", &.{.caret_caret, .equal});
+}
+
+test "keywords" {
+    try testLex("use", &.{.k_use});
+    try testLex("as", &.{.k_as});
+    try testLex("fn", &.{.k_fn});
+    try testLex("assoc", &.{.k_assoc});
+    try testLex("return", &.{.k_return});
+    try testLex("let", &.{.k_let});
+    try testLex("mut", &.{.k_mut});
+    try testLex("type", &.{.k_type});
+    try testLex("if", &.{.k_if});
+    try testLex("else", &.{.k_else});
+    try testLex("yield", &.{.k_yield});
+    try testLex("struct", &.{.k_struct});
+    try testLex("enum", &.{.k_enum});
+    try testLex("variant", &.{.k_variant});
+    try testLex("defer", &.{.k_defer});
+    try testLex("for", &.{.k_for});
+}
+
+test "annotations" {
+    try testLex("@inline", &.{.a_inline});
+    try testLex("@import", &.{.a_import});
+    try testLex("@export", &.{.a_export});
+}
+
+test "arith.fm" {
+    try testLex(@embedFile("tests/arith.fm"), &.{
+        .k_let, .ident, .equal, .k_fn, .l_paren, .r_paren, .ident, .l_brace,
+        .k_let, .ident, .equal, .int_lit, .semi,
+        .k_let, .ident, .equal, .int_lit, .semi,
+        .k_let, .ident, .equal, .ident, .plus, .ident, .semi,
+        .r_brace,
+    });
+}
+
+test "fact-iter.fm" {
+    try testLex(@embedFile("tests/fact-iter.fm"), &.{
+        .k_let, .ident, .equal, .k_fn, .l_paren, .ident, .colon, .ident, .r_paren, .ident, .l_brace,
+        .k_let, .k_mut, .ident, .colon, .ident, .equal, .int_lit, .semi,
+        .k_for,
+        .k_let, .k_mut, .ident, .equal, .int_lit, .semi,
+        .ident, .l_angle_equal, .ident, .semi,
+        .ident, .plus_equal, .int_lit,
+        .l_brace,
+        .ident, .asterisk_equal, .ident, .semi,
+        .r_brace,
+        .k_return, .ident, .semi,
+        .r_brace,
+    });
 }
