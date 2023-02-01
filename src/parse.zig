@@ -26,8 +26,6 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Allocator.Error!Ast {
         if (token.tag == .eof) break;
     }
 
-    // std.log.debug("{any}", .{tokens.items(.tag)});
-
     var parser = Parser {
         .source = source,
         .gpa = gpa,
@@ -357,9 +355,11 @@ const Parser = struct {
     }
 
     fn expectParamDecl(p: *Parser) !Node.Index {
-        _ = try p.expectToken(.ident);
+        const ident_token = try p.expectToken(.ident);
         _ = try p.expectToken(.colon);
-        return p.expectTypeExpr();
+        const type_node = p.expectTypeExpr();
+
+        return hg.
     }
 
     fn expectFnDecl(p: *Parser) !Node.Index {
@@ -420,7 +420,6 @@ const Parser = struct {
     fn expectIfStmt(p: *Parser) !Node.Index {
         const if_token = try p.expectToken(.k_if);
         const condition_node = try p.expectExpr();
-        // std.log.debug("next token: {any}", .{p.token_tags[p.index - 2..p.index + 1]});
         const block_node = try p.expectBlock();
 
         return p.addNode(.{
@@ -446,14 +445,6 @@ const Parser = struct {
             },
         });
     }
-    // fn parseStructMembers(self: *Parser) !Node.Index {
-    //     while (true) {
-    //         const member_token = try self.expectToken(.ident);
-    //         _ = try self.expectToken(.colon);
-    //         const member_type = try self.parseTypeExpr();
-    //         _ = try self.expect
-    //     }
-    // }
 
     fn parseUse(self: *Parser) !Node.Index {
         const use_token = try self.expectToken(.k_use);

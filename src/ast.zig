@@ -29,6 +29,7 @@ pub const Node = struct {
         const_decl,
         struct_proto,
         fn_proto,
+        param,
         fn_decl,
         ret_stmt,
         block,
@@ -60,12 +61,6 @@ pub const Node = struct {
     //     type_node: Index,
     //     value_node: Index,
     // };
-    //
-    // pub const FnProto = struct {
-    //     params_start: Index,
-    //     params_end: Index,
-    //     return_type: Index,
-    // };
 };
 
 pub const Ast = struct {
@@ -75,11 +70,11 @@ pub const Ast = struct {
     extra_data: []Node.Index,
     //errors: []const Error,
 
-    pub fn extraData(self: *Ast, index: usize, comptime T: type) T {
+    pub fn extraData(self: *const Ast, index: usize, comptime T: type) T {
         const fields = std.meta.fields(T);
         var result: T = undefined;
         inline for (fields) |field, i| {
-            comptime std.debug.assert(field.type == Node.Index);
+            comptime std.debug.assert(field.field_type == Node.Index);
             @field(result, field.name) = self.extra_data[index + i];
         }
         return result;

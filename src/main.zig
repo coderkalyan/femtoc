@@ -1,5 +1,6 @@
 const std = @import("std");
 const parse = @import("parse.zig");
+const hirgen = @import("hirgen.zig");
 
 const max_file_size = std.math.maxInt(u32);
 
@@ -7,7 +8,7 @@ pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var file = try std.fs.cwd().openFile("fact.fm", .{});
+    var file = try std.fs.cwd().openFile("samples/arith.fm", .{});
     defer file.close();
 
     const stat = try file.stat();
@@ -26,4 +27,7 @@ pub fn main() anyerror!void {
     const ast = try parse.parse(allocator, source);
     std.log.debug("{any} {any}", .{ast.nodes.items(.tag), ast.nodes.items(.main_token)});
     std.log.debug("{any}", .{ast.nodes.items(.data)});
+
+    const hir = try hirgen.generate(allocator, &ast);
+    _ = hir;
 }
