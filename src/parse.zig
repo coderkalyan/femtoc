@@ -9,13 +9,16 @@ const Node = ast.Node;
 const Ast = ast.Ast;
 const TokenIndex = ast.TokenIndex;
 
-pub const Error = error { ParseError } || Allocator.Error;
+pub const Error = error { UnexpectedToken } || Allocator.Error;
 const null_node: Node.Index = 0;
 
+// parses a string of source characters into an abstract syntax tree
+// gpa: allocator for tree data that outlives this function call
 pub fn parse(gpa: Allocator, source: [:0]const u8) Allocator.Error!Ast {
     var tokens = ast.TokenList{};
     defer tokens.deinit(gpa);
 
+    // lex entire source file into token list
     var lexer = Lexer.init(source);
     while (true) {
         const token = lexer.next();
@@ -26,26 +29,20 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Allocator.Error!Ast {
         if (token.tag == .eof) break;
     }
 
-    var parser = Parser {
-        .source = source,
-        .gpa = gpa,
-        .token_tags = tokens.items(.tag),
-        .token_starts = tokens.items(.start),
-        .index = 0,
-        .nodes = .{},
-        .extra_data = .{},
-        .scratch = .{},
-    };
+    // initialize parser
+    var parser = Parser.init(gpa, source, &tokens);
     defer parser.nodes.deinit(gpa);
-    defer parser.extra_data.deinit(gpa);
+    defer parser.extra_data.deinit();
 
     parser.parseRoot();
 
+    // copy parser results into an abstract syntax tree
+    // that owns the source, token list, node list, and node extra data
     return Ast {
         .source = source,
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
-        .extra_data = parser.extra_data.toOwnedSlice(gpa),
+        .extra_data = parser.extra_data.toOwnedSlice(),
     };
 }
 
@@ -58,9 +55,22 @@ const Parser = struct {
     index: u32,
 
     nodes: std.MultiArrayList(Node),
-    extra_data: std.ArrayListUnmanaged(Node.Index),
-    scratch: std.ArrayListUnmanaged(Node.Index),
+    extra_data: std.ArrayList(Node.Index),
+    scratch: std.ArrayList(Node.Index),
     // errors: std.ArrayListUnmanaged(Ast.Error),
+
+    pub fn init(gpa: Allocator, source: []const u8, tokens: *ast.TokenList) Parser {
+        return .{
+            .source = source,
+            .gpa = gpa,
+            .token_tags = tokens.items(.tag),
+            .token_starts = tokens.items(.start),
+            .index = 0,
+            .nodes = .{},
+            .extra_data = std.ArrayList(Node.Index).init(gpa),
+            .scratch = std.ArrayList(Node.Index).init(gpa),
+        };
+    }
 
     fn addNode(self: *Parser, node: Node) !Node.Index {
         const result = @intCast(Node.Index, self.nodes.len);
@@ -92,13 +102,13 @@ const Parser = struct {
         if (self.eatToken(tag)) |token| {
             return token;
         } else {
-            return Error.ParseError;
+            return Error.UnexpectedToken;
         }
     }
 
     fn addExtra(self: *Parser, extra: anytype) Allocator.Error!Node.Index {
         const fields = std.meta.fields(@TypeOf(extra));
-        try self.extra_data.ensureUnusedCapacity(self.gpa, fields.len);
+        try self.extra_data.ensureUnusedCapacity(fields.len);
         const len = @intCast(u32, self.extra_data.items.len);
         inline for (fields) |field| {
             comptime std.debug.assert(field.field_type == Node.Index);
@@ -125,26 +135,6 @@ const Parser = struct {
         }
     }
 
-    fn parseDecl(p: *Parser) !Node.Index {
-        const global_node = try p.reserveNode(.const_decl);
-
-        const let_token = p.eatToken(.k_let) orelse return null_node;
-        if (p.token_tags[p.index] == .k_mut) p.index += 1;
-        _ = try p.expectToken(.ident);
-        const type_node: Node.Index = if (p.eatToken(.colon) == null) 0 else try p.expectTypeExpr();
-        // TODO: extern symbols will only be declarations
-        _ = try p.expectToken(.equal);
-        const value_node = try p.expectExpr();
-
-        return p.setNode(global_node, .{
-            .tag = .const_decl,
-            .main_token = let_token,
-            .data = .{
-                .l = type_node,
-                .r = value_node,
-            },
-        });
-    }
 
     fn precedence(tag: Token.Tag) i32 {
         return switch (tag) {
@@ -161,8 +151,12 @@ const Parser = struct {
     }
 
     fn expectExpr(p: *Parser) !Node.Index {
-        const tag = p.token_tags[p.index];
-        return switch (tag) {
+        // declarations that aren't part of logical or arithmetic expressions,
+        // like string literals, function and aggregate declarations, etc,
+        // are parsed and returned here directly
+        // for everything else, we part in expectPrimaryExpr() and try to
+        // associate it with a binary companion (parseBinRExp())
+        return switch (p.token_tags[p.index]) {
             .k_fn => p.expectFnDecl(),
             else => {
                 const left_node = try p.expectPrimaryExpr();
@@ -172,72 +166,39 @@ const Parser = struct {
     }
 
     fn expectPrimaryExpr(p: *Parser) Error!Node.Index {
-        const tag = p.token_tags[p.index];
-        return switch (tag) {
-            .l_paren => p.expectParenExpr(),
-            .ident => p.expectIdentExpr(),
-            else => p.addNode(.{
-                .tag = switch (tag) {
-                    .int_lit => .int_lit,
-                    .float_lit => .float_lit,
-                    else => return Error.ParseError,
-                },
-                .main_token = p.eatToken(tag) orelse unreachable,
-                .data = undefined,
-            }),
-        };
-    }
+        // parses an elementary expression such as a literal,
+        // variable value, function call, or parenthesis
+        return switch (p.token_tags[p.index]) {
+            .l_paren => node: {
+                // parentheses are used only for grouping in source code,
+                // and don't generate ast nodes since the ast nesting itself
+                // provides the correct grouping
+                _ = try p.expectToken(.l_paren);
+                const inner_node = p.expectExpr();
+                _ = try p.expectToken(.r_paren);
 
-    fn expectParenExpr(p: *Parser) !Node.Index {
-        _ = try p.expectToken(.l_paren);
-        const value_node = p.expectExpr();
-        _ = try p.expectToken(.r_paren);
-
-        return value_node;
-    }
-
-    fn expectIdentExpr(p: *Parser) !Node.Index {
-        const ident_token = try p.expectToken(.ident);
-        if (p.token_tags[p.index] == .l_paren) {
-            const params = try p.expectParamList();
-            return p.addNode(.{
-                .tag = .call_expr,
-                .main_token = ident_token,
+                break :node inner_node;
+            },
+            .ident => p.expectIdentExpr(),      // handles variables and calls (starts with ident)
+            .int_lit => p.addNode(.{
+                .main_token = try p.expectToken(.int_lit),
                 .data = .{
-                    .l = params.start,
-                    .r = params.end,
+                    .integer_literal = undefined,
                 },
-            });
-        } else {
-            return p.addNode(.{
-                .tag = .ident_expr,
-                .main_token = ident_token,
-                .data = undefined,
-            });
-        }
-    }
-
-    fn expectParamList(p: *Parser) !Node.Range {
-        _ = try p.expectToken(.l_paren);
-        const params_start = p.nodes.len;
-        while (true) {
-            if (p.eatToken(.r_paren)) |_| break;
-            _ = try p.expectExpr();
-            switch (p.token_tags[p.index]) {
-                .comma => _ = p.eatToken(.comma),
-                .r_paren => {},
-                else => return Error.ParseError,
-            }
-        }
-        const params_end = p.nodes.len;
-
-        return Node.Range {
-            .start = @intCast(u32, params_start),
-            .end = @intCast(u32, params_end),
+            }),
+            .float_lit => p.addNode(.{
+                .main_token = try p.expectToken(.float_lit),
+                .data = .{
+                    .float_literal = undefined,
+                },
+            }),
+            else => return Error.UnexpectedToken,
         };
     }
 
     fn parseBinRExpr(p: *Parser, l: Node.Index, expr_precedence: i32) !Node.Index {
+        // tries to associate an existing "left side" node with a right side
+        // in one or more binary expressions - operator precedence parsing
         var l_node = l;
         while (true) {
             const prec = Parser.precedence(p.token_tags[p.index]);
@@ -254,161 +215,239 @@ const Parser = struct {
             }
 
             l_node = try p.addNode(.{
-                .tag = .bin_expr,
                 .main_token = op_token,
                 .data = .{
-                    .l = l_node,
-                    .r = r_node,
+                    .binary_expr = .{
+                        .left = l_node,
+                        .right = r_node,
+                    },
                 },
             });
         }
     }
 
-    fn parseTypeDecl(self: *Parser) !Node.Index {
-        const type_token = try self.expectToken(.k_type);
-        _ = try self.expectToken(.ident);
-        _ = try self.expectToken(.equal);
-        const type_expr = try self.expectTypeExpr();
-
-        return self.addNode(.{
-            .tag = .type_decl,
-            .main_token = type_token,
-            .data = .{
-                .l = type_expr,
-                .r = undefined,
-            },
-        });
+    fn expectIdentExpr(p: *Parser) !Node.Index {
+        // parses variable identifier expressions (variable value)
+        // and function calls
+        const ident_token = try p.expectToken(.ident);
+        if (p.token_tags[p.index] == .l_paren) {
+            // function call
+            const args_range = try p.expectArgList();
+            return p.addNode(.{
+                .main_token = ident_token,
+                .data = .{
+                    .call_expr = .{
+                        .args_start = args_range.start,
+                        .args_end = args_range.end,
+                    },
+                },
+            });
+        } else {
+            // variable value
+            return p.addNode(.{
+                .main_token = ident_token,
+                .data = .{
+                    .var_expr = undefined,
+                }
+            });
+        }
     }
 
-    fn expectTypeExpr(self: *Parser) !Node.Index {
-        const tag = self.token_tags[self.index];
-        return switch (tag) {
-            .k_struct => self.parseStructProto(),
-            .k_fn => self.expectFnProto(),
-            .ident => {
-                _ = self.eatToken(.ident);
-                return null_node;
-            },
-            else => Error.ParseError,
-        };
-    }
-
-    fn parseStructProto(self: *Parser) !Node.Index {
-        const struct_token = self.eatToken(.k_struct) orelse return null_node;
-        _ = try self.expectToken(.l_brace);
-        // const members = try self.parseStructMembers();
-
-        return self.addNode(.{
-            .tag = .struct_proto,
-            .main_token = struct_token,
-            .data = .{
-                // .l = members,
-                .l = undefined,
-                .r = undefined,
-            }
-        });
-    }
-
-    fn expectFnProto(p: *Parser) !Node.Index {
-        const fn_token = p.eatToken(.k_fn) orelse return null_node;
-
-        // fn proto node should before children in array
-        const fn_proto_index = try p.reserveNode(.fn_proto);
-        const params = try p.parseParamDeclList();
-        const return_type = try p.expectTypeExpr();
-
-        return p.setNode(fn_proto_index, .{
-            .tag = .fn_proto,
-            .main_token = fn_token,
-            .data = .{
-                .l = try p.addExtra(Node.FnProto {
-                    .params_start = params.start,
-                    .params_end = params.end,
-                }),
-                .r = return_type,
-            },
-        });
-    }
-
-    fn parseParamDeclList(p: *Parser) !Node.Range {
+    fn expectArgList(p: *Parser) !Node.ExtraRange {
         _ = try p.expectToken(.l_paren);
+
+        // since each argument may create arbitrarily many nodes
+        // (arguments can be inline exprsesions),
+        // we collect the toplevel argument indices in the scratch list,
+        // append all of them to extra_data at the end, and return the
+        // range in extra_data containing those indices
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
             if (p.eatToken(.r_paren)) |_| break;
-            const param = try p.expectParamDecl();
-            if (param != null_node) try p.scratch.append(p.gpa, param);
+            const arg_node = try p.expectExpr();
+            try p.scratch.append(arg_node);
             switch (p.token_tags[p.index]) {
-                .comma, => _ = p.eatToken(.comma),
+                .comma => _ = p.eatToken(.comma),
                 .r_paren => {},
-                else => return Error.ParseError,
+                else => return Error.UnexpectedToken,
             }
         }
 
         const params = p.scratch.items[scratch_top..];
-        try p.extra_data.appendSlice(p.gpa, params);
-        return Node.Range {
-            .start = @intCast(Node.Index, scratch_top),
-            .end = @intCast(Node.Index, p.extra_data.items.len),
+        try p.extra_data.appendSlice(params);
+        return Node.ExtraRange {
+            .start = @intCast(Node.ExtraIndex, scratch_top),
+            .end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
         };
     }
 
-    fn expectParamDecl(p: *Parser) !Node.Index {
-        const ident_token = try p.expectToken(.ident);
-        _ = try p.expectToken(.colon);
-        const type_node = p.expectTypeExpr();
 
-        return hg.
+    fn expectType(p: *Parser) !Node.Index {
+        // parses a type as either an named identifier (u32, Point),
+        // function prototype, or aggregate prototype
+        return switch (p.token_tags[p.index]) {
+            // .k_struct => p.parseStructProto(),
+            .k_fn => p.expectFnProto(),
+            .ident => {
+                const ident_token = try p.expectToken(.ident);
+                return p.addNode(.{
+                    .main_token = ident_token,
+                    .data = .{
+                        .named_ty = undefined,
+                    },
+                });
+            },
+            else => Error.UnexpectedToken,
+        };
     }
+
+    // fn parseStructProto(self: *Parser) !Node.Index {
+    //     const struct_token = self.eatToken(.k_struct) orelse return null_node;
+    //     _ = try self.expectToken(.l_brace);
+        // const members = try self.parseStructMembers();
+
+    //     return self.addNode(.{
+    //         .tag = .struct_proto,
+    //         .main_token = struct_token,
+    //         .data = .{
+    //             // .l = members,
+    //             .l = undefined,
+    //             .r = undefined,
+    //         }
+    //     });
+    // }
 
     fn expectFnDecl(p: *Parser) !Node.Index {
         const proto_node = try p.expectFnProto();
-        const block_node = try p.expectBlock();
+        const body_node = try p.expectBlock();
 
         return p.addNode(.{
-            .tag = .fn_decl,
-            .main_token = 0,
+            .main_token = 0,            // no main token
             .data = .{
-                .l = proto_node,
-                .r = block_node,
+                .fn_decl = .{
+                    .proto = proto_node,
+                    .body = body_node,
+                },
+            },
+        });
+    }
+
+    fn expectFnProto(p: *Parser) !Node.Index {
+        const fn_token = try p.expectToken(.k_fn);
+        const params_range = try p.expectParamList();
+        const return_type_node = try p.expectType();
+
+        return p.addNode(.{
+            .main_token = fn_token,
+            .data = .{
+                .fn_proto = .{
+                    .params = try p.addExtra(Node.FnProto {
+                        .params_start = params_range.start,
+                        .params_end = params_range.end,
+                    }),
+                    .return_ty = return_type_node,
+                },
+            },
+        });
+    }
+
+    fn expectParamList(p: *Parser) !Node.ExtraRange {
+        _ = try p.expectToken(.l_paren);
+
+        // since each parameter may create multiple nodes (depending on type complexity)
+        // we collect the toplevel parameter indices in the scratch list,
+        // append all of them to extra_data at the end, and return the
+        // range in extra_data containing those indices
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        while (true) {
+            if (p.eatToken(.r_paren)) |_| break;
+            const param_node = try p.expectParam();
+            try p.scratch.append(param_node);
+            switch (p.token_tags[p.index]) {
+                .comma => _ = p.eatToken(.comma),
+                .r_paren => {},
+                else => return Error.UnexpectedToken,
+            }
+        }
+
+        const params = p.scratch.items[scratch_top..];
+        try p.extra_data.appendSlice(params);
+        return Node.ExtraRange {
+            .start = @intCast(Node.ExtraIndex, scratch_top),
+            .end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
+        };
+    }
+
+    fn expectParam(p: *Parser) !Node.Index {
+        const ident_token = try p.expectToken(.ident);
+        _ = try p.expectToken(.colon);
+        
+        const type_node = try p.expectType();
+        return p.addNode(.{
+            .main_token = ident_token,
+            .data = .{
+                .param = .{
+                    .ty = type_node,
+                },
+            },
+        });
+    }
+
+    fn parseTypeDecl(self: *Parser) !Node.Index {
+        // parses a type declaration (type Point = ...)
+        const type_token = try self.expectToken(.k_type);
+        _ = try self.expectToken(.ident); // not stored, (main_token == type_token) + 1
+        _ = try self.expectToken(.equal);
+        const type_node = try self.expectType();
+
+        return self.addNode(.{
+            .main_token = type_token,
+            .data = .{
+                .ty_decl = .{
+                    .ty = type_node,
+                },
             },
         });
     }
 
     fn expectBlock(p: *Parser) !Node.Index {
-        const block_node = try p.reserveNode(.block);
         const l_brace_token = try p.expectToken(.l_brace);
 
-        const block_start = p.nodes.len;
+        // since each block may create an arbitrary number of statements,
+        // we collect the toplevel statement indices in the scratch list,
+        // append all of them to extra_data at the end, and return the
+        // range in extra_data containing those indices
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
         while (true) {
             if (p.eatToken(.r_brace)) |_| break;
-
-            switch (p.token_tags[p.index]) {
-                // TODO: remove
-                .l_brace => _ = try p.expectBlock(),
-                else => {
-                    if (try p.parseStmt() == null_node) p.index += 1;
-                },
-            }
+            const stmt_node = try p.expectStmt();
+            try p.scratch.append(stmt_node);
         }
-        const block_end = p.nodes.len;
 
-        return p.setNode(block_node, .{
-            .tag = .block,
+        const stmts = p.scratch.items[scratch_top..];
+        try p.extra_data.appendSlice(stmts);
+
+        return p.addNode(.{
             .main_token = l_brace_token,
             .data = .{
-                .l = @intCast(u32, block_start),
-                .r = @intCast(u32, block_end),
-            }
+                .block = .{
+                    .stmts_start = @intCast(Node.ExtraIndex, scratch_top),
+                    .stmts_end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
+                },
+            },
         });
     }
 
-    fn parseStmt(p: *Parser) Error!Node.Index {
-        const tag = p.token_tags[p.index];
-        const node = switch (tag) {
+    fn expectStmt(p: *Parser) Error!Node.Index {
+        const node = switch (p.token_tags[p.index]) {
             .k_let => p.parseDecl(),
-            .k_return => p.parseRetStmt(),
+            .k_return => p.expectReturnStmt(),
             .k_if => p.expectIfStmt(),
             else => null_node,
         };
@@ -417,68 +456,109 @@ const Parser = struct {
         return node;
     }
 
+    fn parseDecl(p: *Parser) !Node.Index {
+        const let_token = try p.expectToken(.k_let);
+        const mut_token = p.eatToken(.k_mut);
+
+        const type_node = if (p.eatToken(.colon) == null) null else try p.expectType();
+        const value_node = try p.expectExpr();
+
+        if (mut_token) |_| {
+            return p.addNode(.{
+                .main_token = let_token,
+                .data = .{
+                    .var_decl = .{
+                        .ty = type_node orelse 0,
+                        .val = value_node,
+                    },
+                },
+            });
+        } else {
+            return p.addNode(.{
+                .main_token = let_token,
+                .data = .{
+                    .const_decl = .{
+                        .ty = type_node orelse 0,
+                        .val = value_node,
+                    },
+                },
+            });
+        }
+    }
+
+    fn expectReturnStmt(p: *Parser) !Node.Index {
+        const ret_token = try p.expectToken(.k_return);
+
+        if (p.token_tags[p.index] == .semi) {
+            // no return value, assumed void function (will verify in IR during type checking)
+            return p.addNode(.{
+                .main_token = ret_token,
+                .data = .{
+                    .return_void = undefined,
+                },
+            });
+        } else {
+            const expr_node = try p.expectExpr();
+            return p.addNode(.{
+                .main_token = ret_token,
+                .data = .{
+                    .return_val = .{
+                        .val = expr_node,
+                    },
+                },
+            });
+        }
+    }
+
     fn expectIfStmt(p: *Parser) !Node.Index {
         const if_token = try p.expectToken(.k_if);
         const condition_node = try p.expectExpr();
-        const block_node = try p.expectBlock();
+        const body_node = try p.expectBlock();
 
         return p.addNode(.{
-            .tag = .if_stmt,
             .main_token = if_token,
             .data = .{
-                .l = condition_node,
-                .r = block_node,
-            }
-        });
-    }
-
-    fn parseRetStmt(p: *Parser) !Node.Index {
-        const ret_token = try p.expectToken(.k_return);
-        const value_node: Node.Index = p.expectExpr() catch null_node;
-
-        return p.addNode(.{
-            .tag = .ret_stmt,
-            .main_token = ret_token,
-            .data = .{
-                .l = value_node,
-                .r = undefined,
+                .if_stmt = .{
+                    .condition = condition_node,
+                    .body = body_node,
+                },
             },
         });
     }
 
-    fn parseUse(self: *Parser) !Node.Index {
-        const use_token = try self.expectToken(.k_use);
-        const scope = try self.expectScopeList();
-
-        const as_token = self.eatToken(.k_as) orelse 0;
-        if (as_token != 0) _ = try self.expectToken(.ident);
-
-        return self.addNode(.{
-            .tag = .use,
-            .main_token = use_token,
-            .data = .{
-                .l = scope,
-                .r = as_token,
-            }
-        });
-    }
-
-    fn expectScopeList(p: *Parser) !Node.Range {
-        const scratch_top = p.scratch.items.len;
-        defer p.scratch.shrinkRetainingCapacity(scratch_top);
-
-        while (true) {
-            _ = try p.expectToken(.ident);
-            if (p.token_tags[p.index] == .colon_colon) {
-                _ = p.eatToken(.colon_colon);
-            } else break;
-        }
-
-        const params = p.scratch.items[scratch_top..];
-        try p.extra_data.appendSlice(p.gpa, params);
-        return Node.Range {
-            .start = @intCast(Node.Index, scratch_top),
-            .end = @intCast(Node.Index, p.extra_data.items.len),
-        };
-    }
+    // fn parseUse(self: *Parser) !Node.Index {
+    //     const use_token = try self.expectToken(.k_use);
+    //     const scope = try self.expectScopeList();
+    //
+    //     const as_token = self.eatToken(.k_as) orelse 0;
+    //     if (as_token != 0) _ = try self.expectToken(.ident);
+    //
+    //     return self.addNode(.{
+    //         .tag = .use,
+    //         .main_token = use_token,
+    //         .data = .{
+    //             .l = scope,
+    //             .r = as_token,
+    //         }
+    //     });
+    // }
+    //
+    // fn expectScopeList(p: *Parser) !Node.Range {
+    //     const scratch_top = p.scratch.items.len;
+    //     defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    //
+    //     while (true) {
+    //         _ = try p.expectToken(.ident);
+    //         if (p.token_tags[p.index] == .colon_colon) {
+    //             _ = p.eatToken(.colon_colon);
+    //         } else break;
+    //     }
+    //
+    //     const params = p.scratch.items[scratch_top..];
+    //     try p.extra_data.appendSlice(p.gpa, params);
+    //     return Node.Range {
+    //         .start = @intCast(Node.Index, scratch_top),
+    //         .end = @intCast(Node.Index, p.extra_data.items.len),
+    //     };
+    // }
 };

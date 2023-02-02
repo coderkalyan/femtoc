@@ -12,47 +12,107 @@ pub const TokenList = std.MultiArrayList(struct {
 });
 
 pub const Node = struct {
-    tag: Tag,
     main_token: TokenIndex,
     data: Data,
 
-    pub const Data = struct {
-        l: Index,
-        r: Index,
+    pub const Tag = enum(u32) {
+        named_ty,
+        fn_decl,
+        fn_proto,
+        param,
+
+        integer_literal,
+        float_literal,
+        binary_expr,
+        var_expr,
+        call_expr,
+
+        ty_decl,
+
+        block,
+        const_decl,
+        var_decl,
+        return_void,
+        return_val,
+        if_stmt,
+
+        // use,
+        // struct_proto,
+    };
+
+    pub const Data = union(Tag) {
+        // types
+        named_ty: void,
+        fn_decl: struct {
+            proto: Index,
+            body: Index,
+        },
+        fn_proto: struct {
+            params: ExtraIndex,
+            return_ty: Index,
+        },
+        param: struct {
+            ty: Index,
+        },
+
+        // expressions
+        integer_literal: void,
+        float_literal: void,
+        binary_expr: struct {
+            left: Index,
+            right: Index,
+        },
+        var_expr: void,
+        call_expr: struct {
+            args_start: Index,
+            args_end: Index,
+        },
+
+        // declarations
+        ty_decl: struct {
+            ty: Index,
+        },
+
+        // statements
+        block: struct {
+            stmts_start: ExtraIndex,
+            stmts_end: ExtraIndex,
+        },
+        const_decl: struct {
+            ty: Index,
+            val: Index,
+        },
+        var_decl: struct {
+            ty: Index,
+            val: Index,
+        },
+        return_void: void,
+        return_val: struct {
+            val: Index,
+        },
+        if_stmt: struct {
+            condition: Index,
+            body: Index,
+        },
     };
 
     pub const Index = u32;
-
-    pub const Tag = enum {
-        use,
-        type_decl,
-        const_decl,
-        struct_proto,
-        fn_proto,
-        param,
-        fn_decl,
-        ret_stmt,
-        block,
-        add,
-        sub,
-        mul,
-        div,
-        int_lit,
-        float_lit,
-        ident_expr,
-        call_expr,
-        bin_expr,
-        if_stmt,
-    };
+    pub const ExtraIndex = u32;
 
     pub const Range = struct {
         start: Index,
         end: Index,
     };
 
+    // functionally identical to above, differentiated for clarity
+    pub const ExtraRange = struct {
+        start: ExtraIndex,
+        end: ExtraIndex,
+    };
+
     pub const FnProto = struct {
-        params_start: Index,
-        params_end: Index,
+        params_start: ExtraIndex,
+        params_end: ExtraIndex,
     };
 
     // pub const GlobalDecl = struct {
