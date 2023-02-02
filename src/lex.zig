@@ -215,7 +215,20 @@ pub const Lexer = struct {
         };
 
         // finite state machine that parses one character at a time
+        // the state starts with .start, where we parse (almost) any
+        // character and decide what to do with it
+        // 0 = null terminator
+        // single character tokens are returned immediately, while
+        // multi character tokens (multi character operators, keywords,
+        // and identifiers) require intermediate states
+
+        // if the current character ends a token (inclusive), we increment
+        // the index to set the correct end location, and break
+        // current characters signaling the end of a previous token (exclusive)
+        // break but don't increment the index
+        // else, the while loop predicate will increment automatically
         while (true) : (self.index += 1) {
+            // switch on the state, and then the current character c
             const c = self.source[self.index];
             switch (state) {
                 .start => switch (c) {
