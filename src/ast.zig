@@ -64,8 +64,8 @@ pub const Node = struct {
         },
         var_expr: void,
         call_expr: struct {
-            args_start: Index,
-            args_end: Index,
+            args_start: ExtraIndex,
+            args_end: ExtraIndex,
         },
 
         // declarations

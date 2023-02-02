@@ -60,7 +60,6 @@ pub const HirGen = struct {
         var lexer = lex.Lexer {
             .buffer = source,
             .index = start,
-            .pending_invalid_token = null,
         };
         const token = lexer.next();
         std.debug.assert(token.tag == .int_lit);
@@ -73,7 +72,6 @@ pub const HirGen = struct {
         var lexer = lex.Lexer {
             .buffer = source,
             .index = start,
-            .pending_invalid_token = null,
         };
         const token = lexer.next();
         std.debug.assert(token.tag == .float_lit);

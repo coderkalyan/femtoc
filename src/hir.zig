@@ -24,7 +24,7 @@ pub const Inst = struct {
         int: u64,
         float: f64,
         val_ref: ValRef,
-        arg_index: u64, // no more u8 in practice but kept for consistency
+        arg_index: u64, // no more than u8 in practice but kept for consistency
         // ty_ref: TyRef,
         extra_index: u64,
     };
@@ -83,7 +83,6 @@ pub const Inst = struct {
         ty: TyRef,
     };
 };
-
 
 pub const Hir = struct {
     inst: std.MultiArrayList(Inst).Slice,

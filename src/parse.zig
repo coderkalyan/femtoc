@@ -14,7 +14,7 @@ const null_node: Node.Index = 0;
 
 // parses a string of source characters into an abstract syntax tree
 // gpa: allocator for tree data that outlives this function call
-pub fn parse(gpa: Allocator, source: [:0]const u8) Allocator.Error!Ast {
+pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
     var tokens = ast.TokenList{};
     defer tokens.deinit(gpa);
 
@@ -34,7 +34,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Allocator.Error!Ast {
     defer parser.nodes.deinit(gpa);
     defer parser.extra_data.deinit();
 
-    parser.parseRoot();
+    _ = try parser.parseRoot();
 
     // copy parser results into an abstract syntax tree
     // that owns the source, token list, node list, and node extra data
@@ -117,22 +117,23 @@ const Parser = struct {
         return len;
     }
 
-    pub fn parseRoot(self: *Parser) void {
-        while (true) {
+    pub fn parseRoot(self: *Parser) !Node.Index {
+        // while (true) {
             const tag = self.token_tags[self.index];
             const node: Node.Index = switch (tag) {
                 // .k_use => self.parseUse() catch null_node,
                 // .k_type => self.parseTypeDecl() catch null_node,
-                .k_let => self.parseDecl() catch null_node,
-                .eof => break,
-                else => node: {
-                    self.index += 1;
-                    break :node null_node;
-                },
+                .k_let => try self.parseDecl(),
+                // .eof => break,
+                else => return Error.UnexpectedToken,
+                // else => node: {
+                //     self.index += 1;
+                //     break :node null_node;
+                // },
             };
 
-            _ = node;
-        }
+            return node;
+        // }
     }
 
 
@@ -206,7 +207,7 @@ const Parser = struct {
                 return l_node;
             }
 
-            const op_token = p.eatToken(p.token_tags[p.index]) orelse unreachable;
+            const op_token = try p.expectToken(p.token_tags[p.index]);
             var r_node = try p.expectPrimaryExpr();
 
             const next_prec = Parser.precedence(p.token_tags[p.index]);
@@ -276,9 +277,10 @@ const Parser = struct {
         }
 
         const params = p.scratch.items[scratch_top..];
+        const extra_top = p.extra_data.items.len;
         try p.extra_data.appendSlice(params);
         return Node.ExtraRange {
-            .start = @intCast(Node.ExtraIndex, scratch_top),
+            .start = @intCast(Node.ExtraIndex, extra_top),
             .end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
         };
     }
@@ -375,9 +377,10 @@ const Parser = struct {
         }
 
         const params = p.scratch.items[scratch_top..];
+        const extra_top = p.extra_data.items.len;
         try p.extra_data.appendSlice(params);
         return Node.ExtraRange {
-            .start = @intCast(Node.ExtraIndex, scratch_top),
+            .start = @intCast(Node.ExtraIndex, extra_top),
             .end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
         };
     }
@@ -431,13 +434,14 @@ const Parser = struct {
         }
 
         const stmts = p.scratch.items[scratch_top..];
+        const extra_top = p.extra_data.items.len;
         try p.extra_data.appendSlice(stmts);
 
         return p.addNode(.{
             .main_token = l_brace_token,
             .data = .{
                 .block = .{
-                    .stmts_start = @intCast(Node.ExtraIndex, scratch_top),
+                    .stmts_start = @intCast(Node.ExtraIndex, extra_top),
                     .stmts_end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
                 },
             },
@@ -459,10 +463,14 @@ const Parser = struct {
     fn parseDecl(p: *Parser) !Node.Index {
         const let_token = try p.expectToken(.k_let);
         const mut_token = p.eatToken(.k_mut);
+        _ = p.eatToken(.ident);
 
         const type_node = if (p.eatToken(.colon) == null) null else try p.expectType();
+        _ = try p.expectToken(.equal);
         const value_node = try p.expectExpr();
 
+        // instead of storing the mutability token,
+        // create separate tags for constant and variable declarations
         if (mut_token) |_| {
             return p.addNode(.{
                 .main_token = let_token,
