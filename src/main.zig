@@ -1,6 +1,7 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 // const hirgen = @import("hirgen.zig");
+const render = @import("render.zig");
 
 const max_file_size = std.math.maxInt(u32);
 
@@ -8,7 +9,7 @@ pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var file = try std.fs.cwd().openFile("samples/arith.fm", .{});
+    var file = try std.fs.cwd().openFile("samples/fact.fm", .{});
     defer file.close();
 
     const stat = try file.stat();
@@ -25,8 +26,13 @@ pub fn main() anyerror!void {
     }
 
     const ast = try parse.parse(allocator, source);
-    std.log.debug("{any}", .{ast.nodes.items(.main_token)});
-    std.log.debug("{any}", .{ast.nodes.items(.data)});
+
+    // const out = std.io.getStdOut();
+    // var buf = std.io.bufferedWriter(out.writer());
+    try render.renderAst(&ast);//, buf.writer());
+    // render.renderNode(&ast, ast.nodes.len - 1, buf.writer(), 0);
+    // std.log.debug("{any}", .{ast.nodes.items(.main_token)});
+    // std.log.debug("{any}", .{ast.nodes.items(.data)});
 
     // const hir = try hirgen.generate(allocator, &ast);
     // _ = hir;
