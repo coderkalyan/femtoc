@@ -1,5 +1,7 @@
 const std = @import("std");
 const lex = @import("lex.zig");
+
+const Lexer = lex.Lexer;
 const Token = lex.Token;
 
 pub const Error = error { InvalidNode };
@@ -140,17 +142,12 @@ pub const Ast = struct {
         return result;
     }
 
-    pub fn parseGlobalDecl(self: *Ast, index: usize) !Node.GlobalDecl {
-        if (self.nodes(.tag)[index] != .global_decl) return Error.InvalidNode;
+    pub fn tokenString(tree: *const Ast, index: TokenIndex) []const u8 {
+        const tokens = tree.tokens;
+        const token_start = tokens.items(.start)[index];
+        var lexer = Lexer.init_index(tree.source, token_start);
+        const token = lexer.next();
 
-        const main_token = self.nodes(.main_token)[index];
-        const data = self.nodes(.data)[index];
-        const mutable = self.tokens[main_token + 1] == .k_mut;
-        return .{
-            .mutable = mutable,
-            .ident = if (mutable) self.tokens[main_token + 2] else self.tokens[main_token + 1],
-            .type_node = data.l,
-            .value_node = data.r,
-        };
+        return tree.source[token.loc.start..token.loc.end];
     }
 };

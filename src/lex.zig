@@ -195,12 +195,16 @@ pub const Lexer = struct {
     };
 
     pub fn init(source: [:0]const u8) Lexer {
+        return Lexer.init_index(source, 0);
+    }
+
+    pub fn init_index(source: [:0]const u8, index: u32) Lexer {
         // we only parse <= ~4GiB files (u32_max characters)
         std.debug.assert(source.len <= std.math.maxInt(u32)); // TODO: nice error
 
         return Lexer {
             .source = source,
-            .index = 0,
+            .index = index,
         };
     }
 

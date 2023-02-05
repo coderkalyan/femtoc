@@ -8,11 +8,11 @@ pub const IdentifierError = error { Invalid, Shadowed };
 pub const Scope = struct {
     tag: Tag,
 
-    fn cast(base: *Scope, comptime T: type) ?*T {
+    pub fn cast(base: *Scope, comptime T: type) ?*T {
         return @fieldParentPtr(T, "base", base);
     }
 
-    fn parent(base: *Scope) ?*Scope {
+    pub fn parent(base: *Scope) ?*Scope {
         return switch (base.tag) {
             .toplevel => null,
             .namespace => base.cast(Namespace).?.parent,
@@ -28,12 +28,12 @@ pub const Scope = struct {
         local_var,
     };
 
-    const Toplevel = struct {
+    pub const Toplevel = struct {
         const base_tag: Tag = .toplevel;
         base: Scope = .{ .tag = base_tag },
     };
 
-    const Namespace = struct {
+    pub const Namespace = struct {
         const base_tag: Tag = .namespace;
         base: Scope = .{ .tag = base_tag },
 
@@ -48,7 +48,7 @@ pub const Scope = struct {
         }
     };
 
-    const Block = struct {
+    pub const Block = struct {
         const base_tag: Tag = .block;
         base: Scope = .{ .tag = base_tag },
 
@@ -61,7 +61,7 @@ pub const Scope = struct {
         }
     };
 
-    const LocalVar = struct {
+    pub const LocalVar = struct {
         const base_tag: Tag = .local_var;
         base: Scope = .{ .tag = base_tag },
 
@@ -78,7 +78,7 @@ pub const Scope = struct {
         }
     };
 
-    fn resolveVar(scope: *Scope, ident: u32) !Inst.Ref {
+    pub fn resolveVar(scope: *Scope, ident: u32) !Inst.Ref {
         var found: ?Inst.Ref = null;
         var shadows_scope: bool = false;
         var s: *Scope = scope;

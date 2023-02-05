@@ -184,13 +184,13 @@ const Parser = struct {
             .int_lit => p.addNode(.{
                 .main_token = try p.expectToken(.int_lit),
                 .data = .{
-                    .integer_literal = undefined,
+                    .integer_literal = {},
                 },
             }),
             .float_lit => p.addNode(.{
                 .main_token = try p.expectToken(.float_lit),
                 .data = .{
-                    .float_literal = undefined,
+                    .float_literal = {},
                 },
             }),
             else => return Error.UnexpectedToken,
@@ -248,7 +248,7 @@ const Parser = struct {
             return p.addNode(.{
                 .main_token = ident_token,
                 .data = .{
-                    .var_expr = undefined,
+                    .var_expr = {},
                 }
             });
         }
@@ -297,7 +297,7 @@ const Parser = struct {
                 return p.addNode(.{
                     .main_token = ident_token,
                     .data = .{
-                        .named_ty = undefined,
+                        .named_ty = {},
                     },
                 });
             },
@@ -502,7 +502,7 @@ const Parser = struct {
             return p.addNode(.{
                 .main_token = ret_token,
                 .data = .{
-                    .return_void = undefined,
+                    .return_void = {},
                 },
             });
         } else {

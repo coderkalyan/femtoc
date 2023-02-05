@@ -1,43 +1,58 @@
 const std = @import("std");
+const HirGen = @import("hirgen.zig").HirGen;
 
-pub const Inst = struct {
-    tag: Tag,
-    data: Data,
+pub const Error = error { InvalidRef };
+pub const Tag = enum(u8) {
+    int,
+    float,
+    call,
+    add,
+    sub,
+    mul,
+    div,
+    eq,
+    neq,
 
-    pub const Tag = enum(u8) {
-        int,
-        float,
-        arg,
-        ret,
-        decl_var,
-        add,
-        sub,
-        mul,
-        div,
-        call,
-        param,
-        branch,
-    };
+    fn_decl,
 
-    pub const Data = union {
-        operand: ValRef,
-        int: u64,
-        float: f64,
-        val_ref: ValRef,
-        arg_index: u64, // no more than u8 in practice but kept for consistency
-        // ty_ref: TyRef,
-        extra_index: u64,
-    };
+    block,
+    if_stmt,
+    // TODO: unify-ish
+    return_void,
+    return_val,
+};
+
+pub const Inst = union(Tag) {
+    int: u64,
+    float: f64,
+    call: Inst.Ref,
+    add: Inst.Ref,
+    sub: Inst.Ref,
+    mul: Inst.Ref,
+    div: Inst.Ref,
+    eq: Inst.Ref,
+    neq: Inst.Ref,
+    fn_decl: Inst.Ref,
+    if_stmt: Inst.Ref,
+    block: Inst.Ref,
+    return_void: void,
+    return_val: Inst.Ref,
 
     pub const Index = u64;
+    pub const ExtraIndex = u64;
 
-    pub const ValRef = enum(u64) {
-        zero,
-        one,
-        _,
-    };
+    pub fn indexToRef(index: Inst.Index) Inst.Ref {
+        const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
+        return @intToEnum(Inst.Ref, ref_len + index);
+    }
 
-    pub const TyRef = enum(u64) {
+    pub fn refToIndex(ref: Inst.Ref) !Inst.Index {
+        const ref_len = @intCast(u64, @typeInfo(Inst.Ref).Enum.fields.len);
+        const index = @enumToInt(ref);
+        return if (index >= ref_len) index - ref_len else Error.InvalidRef;
+    }
+
+    pub const Ref = enum(u64) {
         u8,
         u16,
         u32,
@@ -49,55 +64,71 @@ pub const Inst = struct {
         f32,
         f64,
         bool,
-        infer,
+
+        zero,
+        one,
+        _,
     };
 
-    pub const Ref = union {
-        val: ValRef,
-        ty: TyRef,
-        str: u64,
+    // pub const Extra = union {
+    //     ref: Ref,
+    //     extra: ExtraIndex,
+    //     str: u64,
+    // }; 
+
+    pub const Call = struct {
+        addr: Ref,
+        args_start: ExtraIndex,
+        args_end: ExtraIndex,
     };
 
     pub const Binary = struct {
-        lref: ValRef,
-        rref: ValRef,
+        lref: Ref,
+        rref: Ref,
     };
 
-    pub const Call = struct {
-        addr: ValRef,
-        args_start: ValRef,
-        args_end: ValRef,
-    };
-
-    pub const Arg = struct {
-        val: ValRef,
-    };
-
-    pub const Branch = struct {
-        cond: ValRef,
-        addr: ValRef,
+    pub const FnDecl = struct {
+        params_start: ExtraIndex,
+        params_end: ExtraIndex,
+        body: Ref,
     };
 
     pub const Param = struct {
         name: u64,
-        ty: TyRef,
+        ty: Ref,
+    };
+
+    pub const ConstDecl = struct {
+        name: u64,
+        ty: Ref,
+    };
+    // pub const Arg = struct {
+    //     val: Ref,
+    // };
+
+    pub const If = struct {
+        condition: Ref,
+        body: Ref,
+    };
+
+    pub const Block = struct {
+        insts_start: ExtraIndex,
+        insts_end: ExtraIndex,
     };
 };
 
 pub const Hir = struct {
-    inst: std.MultiArrayList(Inst).Slice,
+    inst: std.ArrayList(Inst).Slice,
     extra_data: []Inst.Ref,
 
     pub fn extraData(hir: *Hir, index: usize, comptime T: type) T {
         const fields = std.meta.fields(T);
         var result: T = undefined;
         inline for (fields) |field, i| {
-            if (field.type == Inst.ValRef) {
-                @field(result, field.name) = hir.extra_data[index + i].val;
-            } else if (field.type == Inst.TyRef) {
-                @field(result, field.name) = hir.extra_data[index + i].ty;
-            } else if (field.type == u64) {
-                @field(result, field.name) = hir.extra_data[index + i].str;
+            if (field.type == Inst.ExtraIndex) {
+                @field(result, field.name) = try HirGen.refToIndex(hir.extra_data[index + i]);
+            } else if (field.type == Inst.Ref) {
+                @field(result, field.name) = hir.extra_data[index + i];
             } else {
                 unreachable;
             }
