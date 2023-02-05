@@ -37,7 +37,7 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
         },
         .fn_proto => |proto| {
             _ = try writer.write("(");
-            const params = tree.extraData(proto.params, Node.FnProto);
+            const params = tree.extraData(proto.params, Node.CallSignature);
             var param_index: u32 = params.params_start;
             while (param_index < params.params_end) : (param_index += 1) {
                 var param_node = tree.extra_data[param_index];
@@ -201,6 +201,13 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
             try renderNode(tree, stmt.condition, writer, depth);
             _ = try writer.write("\n");
             try renderNode(tree, stmt.body, writer, depth + 1);
+        },
+        .toplevel => |toplevel| {
+            var stmt_index = toplevel.stmts_start;
+            while (stmt_index < toplevel.stmts_end) : (stmt_index += 1) {
+                var stmt_node = tree.extra_data[stmt_index];
+                try renderNode(tree, stmt_node, writer, depth);
+            }
         },
     }
 }

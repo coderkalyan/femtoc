@@ -62,6 +62,7 @@ pub const Node = struct {
         return_void,
         return_val,
         if_stmt,
+        toplevel,
 
         // use,
         // struct_proto,
@@ -131,6 +132,9 @@ pub const Node = struct {
             args_start: ExtraIndex,
             args_end: ExtraIndex,
         },
+        // string literal '"Hello, world!"'
+        // main_token = string literal
+        // str_literal = void,
 
         // declarations
         // type alias 'type Index = u32'
@@ -182,6 +186,11 @@ pub const Node = struct {
         if_stmt: struct {
             condition: Index,
             body: Index,
+        },
+
+        toplevel: struct {
+            stmts_start: ExtraIndex,
+            stmts_end: ExtraIndex,
         },
     };
 

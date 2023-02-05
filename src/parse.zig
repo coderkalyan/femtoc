@@ -34,7 +34,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
     defer parser.nodes.deinit(gpa);
     defer parser.extra_data.deinit();
 
-    _ = try parser.parseRoot();
+    _ = try parser.parseToplevel();
 
     // copy parser results into an abstract syntax tree
     // that owns the source, token list, node list, and node extra data
@@ -117,26 +117,6 @@ const Parser = struct {
         return len;
     }
 
-    pub fn parseRoot(self: *Parser) !Node.Index {
-        // while (true) {
-            const tag = self.token_tags[self.index];
-            const node: Node.Index = switch (tag) {
-                // .k_use => self.parseUse() catch null_node,
-                // .k_type => self.parseTypeDecl() catch null_node,
-                .k_let => try self.parseDecl(),
-                // .eof => break,
-                else => return Error.UnexpectedToken,
-                // else => node: {
-                //     self.index += 1;
-                //     break :node null_node;
-                // },
-            };
-
-            return node;
-        // }
-    }
-
-
     fn precedence(tag: Token.Tag) i32 {
         return switch (tag) {
             .equal_equal => 10,
@@ -149,6 +129,38 @@ const Parser = struct {
             .slash => 140,
             else => -1,
         };
+    }
+
+    pub fn parseToplevel(p: *Parser) !Node.Index {
+        // each toplevel (file) may create any number of global statements
+        // so we collect the statement indices in the scratch list,
+        // append all of them to extra_data at the end, and return the
+        // range in extra_data containing those indices
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        while (true) {
+            const node = switch (p.token_tags[p.index]) {
+                .eof => break,
+                .k_let => try p.parseDecl(),
+                else => unreachable,
+            };
+            try p.scratch.append(node);
+        }
+
+        const stmts = p.scratch.items[scratch_top..];
+        const extra_top = p.extra_data.items.len;
+        try p.extra_data.appendSlice(stmts);
+
+        return p.addNode(.{
+            .main_token = 0,
+            .data = .{
+                .toplevel = .{
+                    .stmts_start = @intCast(Node.ExtraIndex, extra_top),
+                    .stmts_end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
+                },
+            },
+        });
     }
 
     fn expectExpr(p: *Parser) !Node.Index {
@@ -570,3 +582,13 @@ const Parser = struct {
     //     };
     // }
 };
+
+// fn testParse(source: [:0]const u8, allocator: Allocator, anything_changed: *bool) ![]u8 {
+//     const stderr = std.io.getStdErr().writer();
+//
+//     var tree = try parse(allocator, source);
+
+    // for (tree.errors) |parse_error| {
+    //
+    // }
+// }

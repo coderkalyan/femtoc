@@ -1,0 +1,10 @@
+let main = fn() void {
+    let a = 5;
+    let b = 1;
+    let c = a + b;
+    let d = func(a, b, c);
+}
+
+let func = fn(x: i32, y: i32, z: i32) i32 {
+    return x * y + z;
+}

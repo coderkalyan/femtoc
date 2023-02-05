@@ -9,7 +9,7 @@ pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var file = try std.fs.cwd().openFile("samples/arith.fm", .{});
+    var file = try std.fs.cwd().openFile("samples/arith2.fm", .{});
     defer file.close();
 
     const stat = try file.stat();
@@ -34,6 +34,6 @@ pub fn main() anyerror!void {
     // std.log.debug("{any}", .{ast.nodes.items(.main_token)});
     // std.log.debug("{any}", .{ast.nodes.items(.data)});
 
-    const hir = try hirgen.generate(allocator, &ast);
-    _ = hir;
+    // const hir = try hirgen.generate(allocator, &ast);
+    // _ = hir;
 }
