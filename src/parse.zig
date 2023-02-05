@@ -345,7 +345,7 @@ const Parser = struct {
             .main_token = fn_token,
             .data = .{
                 .fn_proto = .{
-                    .params = try p.addExtra(Node.FnProto {
+                    .params = try p.addExtra(Node.CallSignature {
                         .params_start = params_range.start,
                         .params_end = params_range.end,
                     }),
