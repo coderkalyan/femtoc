@@ -1,0 +1,23 @@
+let main = fn() void {
+    // variables can be type annotated
+    let logical: bool = true;
+
+    // but they can also be inferred
+    let proposition = false;
+
+    // numerical literals cannot be inferred due to ambiguity
+    // for clarity, femto does not try to infer size from larger context
+    let a_float: f32 = 1.0;
+    let an_integer: i32 = 5;
+
+    // variables are constant by default, and cannot be changed
+    // mutable variables' values can be changed
+    let mut mutable: i32 = 12;
+    // mutable = 21;
+
+    // but types of mutable values can't be changed
+    // mutable = true; // error
+
+    // variables can be overwritten with shadowing
+    let mutable = true;
+};

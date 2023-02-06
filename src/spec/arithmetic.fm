@@ -1,0 +1,11 @@
+let main = fn() void {
+    let x: i32 = 5;
+    let y: i32 = 1;
+    let z = x + y;
+
+    let modulo = (z * z) % 20;
+
+    let a: f32 = 10.0;
+    let b: f32 = 4.0;
+    let c = a / b;
+};
