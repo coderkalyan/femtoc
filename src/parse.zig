@@ -127,6 +127,7 @@ const Parser = struct {
             .minus => 120,
             .asterisk => 130,
             .slash => 140,
+            .percent => 140,
             else => -1,
         };
     }
@@ -143,9 +144,14 @@ const Parser = struct {
             const node = switch (p.token_tags[p.index]) {
                 .eof => break,
                 .k_let => try p.parseDecl(),
-                else => unreachable,
+                else => {
+                    std.debug.print("{}\n", .{p.token_tags[p.index]});
+                    unreachable;
+                },
             };
             try p.scratch.append(node);
+
+            _ = p.eatToken(.semi);
         }
 
         const stmts = p.scratch.items[scratch_top..];
@@ -313,7 +319,10 @@ const Parser = struct {
                     },
                 });
             },
-            else => Error.UnexpectedToken,
+            else => {
+                std.debug.print("{}\n", .{p.token_tags[p.index]});
+                return Error.UnexpectedToken;
+            },
         };
     }
 
@@ -465,7 +474,11 @@ const Parser = struct {
             .k_let => p.parseDecl(),
             .k_return => p.expectReturnStmt(),
             .k_if => p.expectIfStmt(),
-            else => null_node,
+            // .ident => p.expectAssignment(),
+            else => {
+                std.debug.print("{}\n", .{p.token_tags[p.index]});
+                unreachable;
+            },
         };
 
         _ = p.eatToken(.semi);
@@ -505,7 +518,7 @@ const Parser = struct {
             });
         }
     }
-
+    
     fn expectReturnStmt(p: *Parser) !Node.Index {
         const ret_token = try p.expectToken(.k_return);
 
@@ -514,7 +527,9 @@ const Parser = struct {
             return p.addNode(.{
                 .main_token = ret_token,
                 .data = .{
-                    .return_void = {},
+                    .return_val = .{
+                        .val = null_node,
+                    },
                 },
             });
         } else {

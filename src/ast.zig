@@ -59,7 +59,7 @@ pub const Node = struct {
         block,
         const_decl,
         var_decl,
-        return_void,
+        // return_void,
         return_val,
         if_stmt,
         toplevel,
@@ -171,7 +171,7 @@ pub const Node = struct {
         },
         // empty return 'return'
         // main_token = 'return'
-        return_void: void,
+        // return_void: void,
         // return value 'return 5'
         // main_token = 'return'
         // val = return value node

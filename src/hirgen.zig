@@ -27,16 +27,14 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .arena = arena.allocator(),
         .tree = tree,
         .inst = std.ArrayList(Inst).init(gpa),
-        .extra_data = std.ArrayList(Inst.Ref).init(gpa),
-        .scratch = std.ArrayList(Inst.Ref).init(arena.allocator()),
+        .extra_data = std.ArrayList(Inst.Extra).init(gpa),
+        .scratch = std.ArrayList(Inst.Extra).init(arena.allocator()),
         .interner = Interner.init(gpa),
     };
 
     // const ref = try hirgen.toplevel(@intCast(u32, tree.nodes.len - 1));
-    var toplevel = Scope.Toplevel {};
-    var namespace = Scope.Namespace.init(arena.allocator(), &toplevel.base);
-    const ref = try hirgen.globalConstDecl(&namespace.base, @intCast(u32, tree.nodes.len - 1));
-    _ = ref;
+    // const ref = try hirgen.globalConstDecl(&namespace.base, @intCast(u32, tree.nodes.len - 1));
+    // _ = ref;
 
     return Hir {
         .inst = hirgen.inst.toOwnedSlice(),
@@ -45,17 +43,17 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
 }
 
 const builtin_types = std.ComptimeStringMap(Inst.Ref, .{
-    .{ "u8", .u8 },
-    .{ "u16", .u16 },
-    .{ "u32", .u32 },
-    .{ "u64", .u64 },
-    .{ "i8", .i8 },
-    .{ "i16", .i16 },
-    .{ "i32", .i32 },
-    .{ "i64", .i64 },
-    .{ "f32", .f32 },
-    .{ "f64", .f64 },
-    .{ "bool", .bool },
+    .{ "u8", .u8_ty },
+    .{ "u16", .u16_ty },
+    .{ "u32", .u32_ty },
+    .{ "u64", .u64_ty },
+    .{ "i8", .i8_ty },
+    .{ "i16", .i16_ty },
+    .{ "i32", .i32_ty },
+    .{ "i64", .i64_ty },
+    .{ "f32", .f32_ty },
+    .{ "f64", .f64_ty },
+    .{ "bool", .bool_ty },
 });
 
 pub const HirGen = struct {
@@ -64,8 +62,8 @@ pub const HirGen = struct {
 
     tree: *const Ast,
     inst: std.ArrayList(Inst),
-    extra_data: std.ArrayList(Inst.Ref),
-    scratch: std.ArrayList(Inst.Ref),
+    extra_data: std.ArrayList(Inst.Extra),
+    scratch: std.ArrayList(Inst.Extra),
     interner: Interner,
 
     fn parseIntToken(hg: *HirGen, index: ast.TokenIndex) !u64 {
@@ -101,20 +99,20 @@ pub const HirGen = struct {
         return Inst.indexToRef(result);
     }
 
-    fn addExtra(hg: *HirGen, extra: anytype) Allocator.Error!Inst.Ref {
+    fn addExtra(hg: *HirGen, extra: anytype) Allocator.Error!Inst.ExtraIndex {
         const fields = std.meta.fields(@TypeOf(extra));
         try hg.extra_data.ensureUnusedCapacity(fields.len);
         const len = @intCast(u32, hg.extra_data.items.len);
         inline for (fields) |field| {
             if (field.field_type == Inst.ExtraIndex) {
-                hg.extra_data.appendAssumeCapacity(Inst.indexToRef(@field(extra, field.name)));
+                hg.extra_data.appendAssumeCapacity(.{ .index = @field(extra, field.name) });
             } else if (field.field_type == Inst.Ref) {
-                hg.extra_data.appendAssumeCapacity(@field(extra, field.name));
+                hg.extra_data.appendAssumeCapacity(.{ .ref = @field(extra, field.name) });
             } else {
                 unreachable;
             }
         }
-        return Inst.indexToRef(len);
+        return len;
     }
 
     fn integerLiteral(hg: *HirGen, index: Node.Index) !Inst.Ref {
@@ -122,9 +120,12 @@ pub const HirGen = struct {
         const int_token = nodes.items(.main_token)[index];
         const value = hg.parseIntToken(int_token) catch return GenError.UnexpectedToken;
         return switch (value) {
-            0 => .zero,
-            1 => .one,
-            else => try hg.addInst(.{ .int = value }),
+            0 => .izero_val,
+            1 => .ione_val,
+            else => try hg.addInst(.{
+                .tag = .int,
+                .data = .{ .int = value },
+            }),
         };
     }
 
@@ -132,7 +133,10 @@ pub const HirGen = struct {
         const nodes = hg.tree.nodes;
         const float_token = nodes.items(.main_token)[index];
         const value = hg.parseFloatToken(float_token) catch return GenError.UnexpectedToken;
-        return hg.addInst(.{ .float = value });
+        return hg.addInst(.{ 
+            .tag = .float,
+            .data = .{ .float = value },
+        });
     }
 
     fn identifier(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
@@ -142,7 +146,6 @@ pub const HirGen = struct {
         const id = try hg.interner.intern(ident_str);
         const ref = scope.resolveVar(id);
 
-        // std.debug.print("{s}\n", .{ident_str});
         return ref;
     }
 
@@ -166,18 +169,23 @@ pub const HirGen = struct {
 
         var arg_index = call_expr.args_start;
         while (arg_index < call_expr.args_end) : (arg_index += 1) {
-            try hg.scratch.append(try hg.expr(scope, arg_index));
+            try hg.scratch.append(.{ .ref = try hg.expr(scope, arg_index) });
         }
 
         const args = hg.scratch.items[scratch_top..];
         const extra_top = hg.extra_data.items.len;
         try hg.extra_data.appendSlice(args);
 
-        return hg.addInst(.{ .call = try hg.addExtra(Inst.Call {
+        const pl = try hg.addExtra(Inst.Call {
             .addr = ref,
-            .args_start = extra_top,
-            .args_end = hg.extra_data.items.len,
-        })});
+            .args_start = @intCast(u32, extra_top),
+            .args_end = @intCast(u32, hg.extra_data.items.len),
+        });
+
+        return hg.addInst(.{ 
+            .tag = .call,
+            .data = .{ .pl_node = .{ .node = index, .pl = pl, } },
+        });
     }
 
     fn binary(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
@@ -192,14 +200,17 @@ pub const HirGen = struct {
             .rref = rref,
         });
 
-        return hg.addInst(switch (hg.tree.tokens.items(.tag)[main_token]) {
-            .plus => .{ .add = bin },
-            .minus => .{ .sub = bin },
-            .asterisk => .{ .mul = bin },
-            .slash => .{ .div = bin },
-            .equal_equal => .{ .eq = bin },
-            .bang_equal => .{ .neq = bin },
-            else => unreachable,
+        return hg.addInst(.{
+            .tag = switch (hg.tree.tokens.items(.tag)[main_token]) {
+                .plus => .add,
+                .minus => .sub,
+                .asterisk => .mul,
+                .slash => .div,
+                .equal_equal => .eq,
+                .bang_equal => .neq,
+                else => return Error.UnexpectedToken,
+            },
+            .data = .{ .pl_node = .{ .node = index, .pl = bin, } },
         });
     }
 
@@ -208,7 +219,7 @@ pub const HirGen = struct {
 
         const fn_decl = nodes.items(.data)[index].fn_decl;
         const proto = nodes.items(.data)[fn_decl.proto].fn_proto;
-        const params_range = hg.tree.extraData(proto.params, Node.FnProto);
+        const params_range = hg.tree.extraData(proto.params, Node.CallSignature);
 
         const scratch_top = hg.scratch.items.len;
         defer hg.scratch.shrinkRetainingCapacity(scratch_top);
@@ -221,11 +232,12 @@ pub const HirGen = struct {
             const param_str = hg.tree.tokenString(param_token);
             const param_id = try hg.interner.intern(param_str);
 
-            const param_ref = try hg.addExtra(Inst.Param {
+            const param_extra = try hg.addExtra(Inst.Param {
                 .name = param_id,
                 .ty = try hg.ty(scope, param.ty),
             });
-            try hg.scratch.append(param_ref);
+            const param_ref = Inst.indexToRef(param_extra);
+            try hg.scratch.append(.{ .ref = param_ref });
 
             var param_var = try hg.arena.alloc(Scope.LocalVar, 1);
             param_var[0] = Scope.LocalVar.init(s, param_id, param_ref);
@@ -239,11 +251,15 @@ pub const HirGen = struct {
 
         const body = try hg.block(s, fn_decl.body);
 
-        return hg.addInst(.{ .fn_decl = try hg.addExtra(Inst.FnDecl {
-            .params_start = param_base,
-            .params_end = param_top,
+        const decl = try hg.addExtra(Inst.FnDecl {
+            .params_start = @intCast(u32, param_base),
+            .params_end = @intCast(u32, param_top),
             .body = body,
-        })});
+        });
+        return hg.addInst(.{
+            .tag = .fn_decl,
+            .data = .{ .pl_node = .{ .node = index, .pl = decl, } },
+        });
     }
 
     fn expr(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
@@ -254,7 +270,7 @@ pub const HirGen = struct {
             .call_expr => hg.call(scope, index),
             .binary_expr => hg.binary(scope, index),
             .fn_decl => hg.fnDecl(scope, index),
-            else => unreachable,
+            else => GenError.UnexpectedToken,
         };
     }
 
@@ -277,15 +293,15 @@ pub const HirGen = struct {
                 },
                 .if_stmt => {
                     const ref = try hg.ifStmt(s, stmt_node);
-                    try hg.scratch.append(ref);
+                    try hg.scratch.append(.{ .ref = ref });
                 },
-                .return_void => {
-                    const ref = try hg.returnVoid(s, stmt_node);
-                    try hg.scratch.append(ref);
-                },
+                // .return_void => {
+                //     const ref = try hg.returnVoid(s, stmt_node);
+                //     try hg.scratch.append(ref);
+                // },
                 .return_val => {
-                    const ref = try hg.returnVal(s, stmt_node);
-                    try hg.scratch.append(ref);
+                    const ref = try hg.returnStmt(s, stmt_node);
+                    try hg.scratch.append(.{ .ref = ref });
                 },
                 else => {
                     unreachable;
@@ -297,10 +313,14 @@ pub const HirGen = struct {
         const insts_base = hg.extra_data.items.len;
         try hg.extra_data.appendSlice(insts);
 
-        return hg.addInst(.{ .block = try hg.addExtra(Inst.Block {
-            .insts_start = insts_base,
-            .insts_end = hg.extra_data.items.len,
-        })});
+        const ref = try hg.addExtra(Inst.Block {
+            .insts_start = @intCast(u32, insts_base),
+            .insts_end = @intCast(u32, hg.extra_data.items.len),
+        });
+        return hg.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = index, .pl = ref, } },
+        });
     }
 
     fn constDecl(hg: *HirGen, scope: *Scope, index: Node.Index) !Scope.LocalVar {
@@ -323,6 +343,7 @@ pub const HirGen = struct {
         const ident_str = hg.tree.tokenString(ident_index);
         const id = try hg.interner.intern(ident_str);
 
+        std.debug.print("{}\n", .{hg.tree.nodes.items(.data)[index]});
         const const_decl = hg.tree.nodes.items(.data)[index].const_decl;
         const ref = try hg.expr(scope, const_decl.val);
 
@@ -336,28 +357,65 @@ pub const HirGen = struct {
 
         const condition_ref = try hg.expr(scope, if_stmt.condition);
         const body_ref = try hg.block(scope, if_stmt.body);
+        const branch = try hg.addExtra(Inst.Branch {
+            .condition = condition_ref,
+            .body = body_ref,
+        });
 
         return hg.addInst(.{
-            .if_stmt = try hg.addExtra(Inst.If {
-                .condition = condition_ref,
-                .body = body_ref,
-            }),
+            .tag = .branch,
+            .data = .{ .pl_node = .{ .node = index, .pl = branch, } },
         });
     }
 
-    fn returnVoid(hg: *HirGen, _: *Scope, _: Node.Index) !Inst.Ref {
-        return hg.addInst(.{
-            .return_void = {},
-        });
-    }
-
-    fn returnVal(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
+    fn returnStmt(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
         const nodes = hg.tree.nodes;
         const return_val = nodes.items(.data)[index].return_val;
 
-        const expr_ref = try hg.expr(scope, return_val.val);
+        const expr_ref = if (return_val.val == 0) ref: {
+            break :ref Inst.Ref.void_val;
+        } else ref: {
+            break :ref try hg.expr(scope, return_val.val);
+        };
         return hg.addInst(.{
-            .return_val = expr_ref,
+            .tag = .ret_node,
+            .data = .{ .un_node = .{ .node = index, .operand = expr_ref, } },
+        });
+    }
+
+    fn toplevel(hg: *HirGen, index: Node.Index) Error!Inst.Ref {
+        const toplevel_data = hg.tree.nodes.items(.data)[index].toplevel;
+        var toplevel_scope = Scope.Toplevel {};
+        var namespace = Scope.Namespace.init(hg.arena.allocator(), &toplevel_scope.base);
+
+        const scratch_top = hg.scratch.items.len;
+        defer hg.scratch.shrinkRetainingCapacity(scratch_top);
+
+        var stmt_index = toplevel_data.stmts_start;
+        while (stmt_index < toplevel_data.stmts_end) : (stmt_index += 1) {
+            var stmt_node = hg.tree.extra_data[stmt_index];
+            switch (hg.tree.nodes.items(.data)[stmt_node]) {
+                .const_decl => {
+                    try hg.globalConstDecl(&namespace.base, stmt_node);
+                },
+                else => {
+                    std.debug.print("{}\n", hg.tree.nodes.items(.data)[stmt_node]);
+                    return Error.UnexpectedToken;
+                },
+            }
+        }
+
+        const insts = hg.scratch.items[scratch_top..];
+        const insts_base = hg.extra_data.items.len;
+        try hg.extra_data.appendSlice(insts);
+
+        const ref = try hg.addExtra(Inst.Toplevel {
+            .insts_start = @intCast(u32, insts_base),
+            .insts_end = @intCast(u32, hg.extra_data.items.len),
+        });
+        return hg.addInst(.{
+            .tag = .toplevel,
+            .data = .{ .pl_node = .{ .node = index, .pl = ref, } },
         });
     }
 };

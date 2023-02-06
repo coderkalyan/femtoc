@@ -2,29 +2,42 @@ const std = @import("std");
 
 pub const Error = error { InternTableFull, InvalidId };
 
+// "Interns" strings by storing each unique string exactly once
+// and returning a unique handle to the string the next time it
+// is interned. Can also return the string given a handle
 pub const Interner = struct {
     gpa: std.mem.Allocator,
+    // maps string buffers to unique u32 handles
+    // entries can be accessed not only by key (string)
+    // but also index (ArrayHashMap) which allows us to
+    // store a handle->index mapping to get back the string,
+    // rather than a more expensive bimap
     map: std.StringArrayHashMap(u32),
-    list: std.ArrayList(u64),
+    // holds handle->index mappings. handles are incremented
+    // rather than randomized, so all elements in this arraylist
+    // map exactly one handle to a real entry index
+    list: std.ArrayList(u32),
 
     pub fn init(gpa: std.mem.Allocator) Interner {
         return Interner {
             .gpa = gpa,
             .map = std.StringArrayHashMap(u32).init(gpa),
-            .list = std.ArrayList(u64).init(gpa),
+            .list = std.ArrayList(u32).init(gpa),
         };
     }
 
     pub fn intern(self: *Interner, string: []const u8) !u32 {
+        // if we've seen this string before, return its handle
         if (self.map.get(string)) |id| {
             return id;
         }
 
         if (self.list.items.len >= std.math.maxInt(u32)) return Error.InternTableFull;
+        // handle is the "next" element in the list
         const id = @intCast(u32, self.list.items.len);
         try self.map.put(string, id);
         const index = self.map.getIndex(string).?;
-        try self.list.append(index);
+        try self.list.append(@intCast(u32, index));
 
         return id;
     }

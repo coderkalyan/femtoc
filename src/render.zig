@@ -32,7 +32,7 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
             try indent(writer, depth);
             _ = try writer.write("fn");
             try renderNode(tree, decl.proto, writer, depth);
-            _ = try writer.write("\n");
+            _ = try writer.write(" ");
             try renderNode(tree, decl.body, writer, depth + 1);
         },
         .fn_proto => |proto| {
@@ -67,9 +67,7 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
             const token = lexer.next();
             const literal = tree.source[token.loc.start..token.loc.end];
 
-            _ = try writer.write("int(");
             _ = try writer.write(literal);
-            _ = try writer.write(")");
         },
         .float_literal => |_| {
             var lexer = lex.Lexer {
@@ -79,9 +77,7 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
             const token = lexer.next();
             const literal = tree.source[token.loc.start..token.loc.end];
 
-            _ = try writer.write("float(");
             _ = try writer.write(literal);
-            _ = try writer.write(")");
         },
         .binary_expr => |expr| {
             _ = try writer.write("(");
@@ -144,14 +140,15 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
             _ = try writer.write("\n");
         },
         .block => |block| {
-            try indent(writer, depth);
-            _ = try writer.write("block\n");
+            _ = try writer.write("{\n");
 
             var stmt_index = block.stmts_start;
             while (stmt_index < block.stmts_end) : (stmt_index += 1) {
                 var stmt_node = tree.extra_data[stmt_index];
                 try renderNode(tree, stmt_node, writer, depth + 1);
             }
+
+            _ = try writer.write("}");
         },
         .const_decl => |decl| {
             try indent(writer, depth);
@@ -167,7 +164,7 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
 
             _ = try writer.write(" = ");
             try renderNode(tree, decl.val, writer, depth);
-            _ = try writer.write("\n");
+            _ = try writer.write(";\n");
         },
         .var_decl => |decl| {
             try indent(writer, depth);
@@ -185,15 +182,15 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
             try renderNode(tree, decl.val, writer, depth);
             _ = try writer.write("\n");
         },
-        .return_void => |_| {
-            try indent(writer, depth);
-            _ = try writer.write("return\n");
-        },
+        // .return_void => |_| {
+        //     try indent(writer, depth);
+        //     _ = try writer.write("return;\n");
+        // },
         .return_val => |val| {
             try indent(writer, depth);
             _ = try writer.write("return ");
             try renderNode(tree, val.val, writer, depth);
-            _ = try writer.write("\n");
+            _ = try writer.write(";\n");
         },
         .if_stmt => |stmt| {
             try indent(writer, depth);
@@ -207,6 +204,7 @@ pub fn renderNode(tree: *const Ast, index: Node.Index, writer: @TypeOf(std.io.ge
             while (stmt_index < toplevel.stmts_end) : (stmt_index += 1) {
                 var stmt_node = tree.extra_data[stmt_index];
                 try renderNode(tree, stmt_node, writer, depth);
+                _ = try writer.write("\n");
             }
         },
     }

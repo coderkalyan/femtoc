@@ -1,45 +1,87 @@
 const std = @import("std");
 const HirGen = @import("hirgen.zig").HirGen;
+const TokenIndex = @import("ast.zig").TokenIndex;
 
 pub const Error = error { InvalidRef };
-pub const Tag = enum(u8) {
-    int,
-    float,
-    call,
-    add,
-    sub,
-    mul,
-    div,
-    eq,
-    neq,
 
-    fn_decl,
+pub const Inst = struct {
+    tag: Tag,
+    data: Data,
 
-    block,
-    if_stmt,
-    // TODO: unify-ish
-    return_void,
-    return_val,
-};
+    pub const Tag = enum(u8) {
+        int,
+        float,
+        call,
+        add,
+        sub,
+        mul,
+        div,
+        eq,
+        neq,
 
-pub const Inst = union(Tag) {
-    int: u64,
-    float: f64,
-    call: Inst.Ref,
-    add: Inst.Ref,
-    sub: Inst.Ref,
-    mul: Inst.Ref,
-    div: Inst.Ref,
-    eq: Inst.Ref,
-    neq: Inst.Ref,
-    fn_decl: Inst.Ref,
-    if_stmt: Inst.Ref,
-    block: Inst.Ref,
-    return_void: void,
-    return_val: Inst.Ref,
+        fn_decl,
 
-    pub const Index = u64;
-    pub const ExtraIndex = u64;
+        block,
+        branch,
+        // returns control flow to the function's callee
+        // includes an operand as the return value
+        // includes the instruction
+        ret_implicit,
+        ret_node,
+    };
+
+    pub const Data = union {
+        // integer constant
+        int: u64,
+        // float constant
+        float: f64,
+        // binary operation
+        bin: struct {
+            l: Ref,
+            r: Ref,
+        },
+        // used for unary operations (single operand) linking to the source node
+        un_node: struct {
+            // reference to the node creating this instruction
+            node: NodeIndex,
+            // unary operand reference
+            operand: Ref,
+        },
+        // used for unary operations (single operand) linking to the source token
+        un_tok: struct {
+            // reference to the token creating this instruction
+            tok: TokenIndex,
+            // unary operand reference
+            operand: Ref,
+        },
+        pl_node: struct {
+            // reference to the node creating this instruction
+            node: NodeIndex,
+            // index into extra where payload is stored
+            pl: ExtraIndex,
+        },
+        pl_tok: struct {
+            // reference to the token creating this instruction
+            tok: TokenIndex,
+            // index into extra where payload is stored
+            pl: ExtraIndex,
+        },
+    };
+    // call: Inst.Ref,
+    // fn_decl: Inst.Ref,
+    // if_stmt: Inst.Ref,
+    // block: Inst.Ref,
+    // return_void: void,
+    // return_val: Inst.Ref,
+
+    pub const Index = u32;
+    pub const NodeIndex = u32;
+    pub const ExtraIndex = u32;
+
+    pub const Extra = union {
+        index: u32,
+        ref: Ref,
+    };
 
     pub fn indexToRef(index: Inst.Index) Inst.Ref {
         const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
@@ -52,21 +94,25 @@ pub const Inst = union(Tag) {
         return if (index >= ref_len) index - ref_len else Error.InvalidRef;
     }
 
-    pub const Ref = enum(u64) {
-        u8,
-        u16,
-        u32,
-        u64,
-        i8,
-        i16,
-        i32,
-        i64,
-        f32,
-        f64,
-        bool,
+    pub const Ref = enum(u32) {
+        u8_ty,
+        u16_ty,
+        u32_ty,
+        u64_ty,
+        i8_ty,
+        i16_ty,
+        i32_ty,
+        i64_ty,
+        f32_ty,
+        f64_ty,
+        bool_ty,
 
-        zero,
-        one,
+        izero_val,
+        ione_val,
+        fzero_val,
+        fone_val,
+
+        void_val,
         _,
     };
 
@@ -106,7 +152,7 @@ pub const Inst = union(Tag) {
     //     val: Ref,
     // };
 
-    pub const If = struct {
+    pub const Branch = struct {
         condition: Ref,
         body: Ref,
     };
@@ -115,11 +161,16 @@ pub const Inst = union(Tag) {
         insts_start: ExtraIndex,
         insts_end: ExtraIndex,
     };
+
+    pub const Toplevel = struct {
+        insts_start: ExtraIndex,
+        insts_end: ExtraIndex,
+    };
 };
 
 pub const Hir = struct {
     inst: std.ArrayList(Inst).Slice,
-    extra_data: []Inst.Ref,
+    extra_data: []Inst.Extra,
 
     pub fn extraData(hir: *Hir, index: usize, comptime T: type) T {
         const fields = std.meta.fields(T);
