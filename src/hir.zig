@@ -16,18 +16,28 @@ pub const Inst = struct {
         sub,
         mul,
         div,
+        mod,
         eq,
         neq,
+
+        validate_ty,
+        alloc,
+        load,
+        store,
 
         fn_decl,
 
         block,
-        branch,
+        jump,
+        branch_single,
+        branch_double,
         // returns control flow to the function's callee
         // includes an operand as the return value
         // includes the instruction
         ret_implicit,
         ret_node,
+
+        toplevel,
     };
 
     pub const Data = union {
@@ -67,12 +77,6 @@ pub const Inst = struct {
             pl: ExtraIndex,
         },
     };
-    // call: Inst.Ref,
-    // fn_decl: Inst.Ref,
-    // if_stmt: Inst.Ref,
-    // block: Inst.Ref,
-    // return_void: void,
-    // return_val: Inst.Ref,
 
     pub const Index = u32;
     pub const NodeIndex = u32;
@@ -111,6 +115,8 @@ pub const Inst = struct {
         ione_val,
         fzero_val,
         fone_val,
+        btrue_val,
+        bfalse_val,
 
         void_val,
         _,
@@ -140,21 +146,31 @@ pub const Inst = struct {
     };
 
     pub const Param = struct {
-        name: u64,
+        name: u32,
         ty: Ref,
     };
 
     pub const ConstDecl = struct {
-        name: u64,
+        name: u32,
+        ty: Ref,
+    };
+
+    pub const Store = struct {
+        addr: Ref,
+        val: Ref,
+    };
+
+    pub const ValidateTy = struct {
+        ref: Ref,
         ty: Ref,
     };
     // pub const Arg = struct {
     //     val: Ref,
     // };
 
-    pub const Branch = struct {
+    pub const BranchSingle = struct {
         condition: Ref,
-        body: Ref,
+        exec_true: Ref,
     };
 
     pub const Block = struct {

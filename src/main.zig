@@ -9,7 +9,7 @@ pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var file = try std.fs.cwd().openFile("src/spec/arithmetic.fm", .{});
+    var file = try std.fs.cwd().openFile("src/spec/primitives.fm", .{});
     defer file.close();
 
     const stat = try file.stat();
@@ -27,12 +27,16 @@ pub fn main() anyerror!void {
 
     const ast = try parse.parse(allocator, source);
 
-    // const out = std.io.getStdOut();
-    // var buf = std.io.bufferedWriter(out.writer());
-    try render.renderAst(&ast);//, buf.writer());
-    // render.renderNode(&ast, ast.nodes.len - 1, buf.writer(), 0);
-    // std.log.debug("{any}", .{ast.nodes.items(.main_token)});
-    // std.log.debug("{any}", .{ast.nodes.items(.data)});
+    const out = std.io.getStdOut();
+    var buf = std.io.bufferedWriter(out.writer());
+    var writer = buf.writer();
+
+    // try writer.writeAll("hello");
+
+    var ast_renderer = render.AstRenderer(4, @TypeOf(writer)).init(writer, &ast);
+    _ = ast_renderer;
+    // try ast_renderer.render();
+    try buf.flush();
 
     const hir = try hirgen.generate(allocator, &ast);
     _ = hir;

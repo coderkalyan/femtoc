@@ -91,7 +91,6 @@ pub const Token = struct {
         k_use,
         k_as,
         k_fn,
-        k_assoc,
         k_return,
         k_let,
         k_mut,
@@ -104,6 +103,11 @@ pub const Token = struct {
         k_variant,
         k_defer,
         k_for,
+        k_or,
+        k_and,
+        k_not,
+        k_true,
+        k_false,
 
         // annotations
         a_unknown,
@@ -116,7 +120,6 @@ pub const Token = struct {
         .{ "use", .k_use },
         .{ "as", .k_as },
         .{ "fn", .k_fn },
-        .{ "assoc", .k_assoc },
         .{ "return", .k_return },
         .{ "let", .k_let },
         .{ "mut", .k_mut },
@@ -129,6 +132,11 @@ pub const Token = struct {
         .{ "variant", .k_variant },
         .{ "defer", .k_defer },
         .{ "for", .k_for },
+        .{ "or", .k_or },
+        .{ "and", .k_and },
+        .{ "not", .k_not },
+        .{ "true", .k_true },
+        .{ "false", .k_false },
     });
 
     pub const annotations = std.ComptimeStringMap(Tag, .{

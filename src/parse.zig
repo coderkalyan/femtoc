@@ -119,7 +119,14 @@ const Parser = struct {
 
     fn precedence(tag: Token.Tag) i32 {
         return switch (tag) {
-            .equal_equal => 10,
+            .k_or => 10,
+            .k_and => 11,
+            .equal_equal => 12,
+            .bang_equal => 12,
+            .l_angle => 13,
+            .r_angle => 13,
+            .l_angle_equal => 13,
+            .r_angle_equal => 13,
             .pipe_pipe => 20,
             .ampersand_ampersand => 30,
             .caret_caret => 40,
@@ -198,7 +205,10 @@ const Parser = struct {
 
                 break :node inner_node;
             },
-            .ident => p.expectIdentExpr(),      // handles variables and calls (starts with ident)
+            .ident => switch (p.token_tags[p.index + 1]) {
+                .l_paren => p.expectCall(),
+                else => p.expectVarExpr(),
+            },
             .int_lit => p.addNode(.{
                 .main_token = try p.expectToken(.int_lit),
                 .data = .{
@@ -210,6 +220,14 @@ const Parser = struct {
                 .data = .{
                     .float_literal = {},
                 },
+            }),
+            .k_true => p.addNode(.{
+                .main_token = try p.expectToken(.k_true),
+                .data = .{ .bool_literal = {} },
+            }),
+            .k_false => p.addNode(.{
+                .main_token = try p.expectToken(.k_false),
+                .data = .{ .bool_literal = {} },
             }),
             else => return Error.UnexpectedToken,
         };
@@ -245,31 +263,15 @@ const Parser = struct {
         }
     }
 
-    fn expectIdentExpr(p: *Parser) !Node.Index {
+    fn expectVarExpr(p: *Parser) !Node.Index {
         // parses variable identifier expressions (variable value)
-        // and function calls
         const ident_token = try p.expectToken(.ident);
-        if (p.token_tags[p.index] == .l_paren) {
-            // function call
-            const args_range = try p.expectArgList();
-            return p.addNode(.{
-                .main_token = ident_token,
-                .data = .{
-                    .call_expr = .{
-                        .args_start = args_range.start,
-                        .args_end = args_range.end,
-                    },
-                },
-            });
-        } else {
-            // variable value
-            return p.addNode(.{
-                .main_token = ident_token,
-                .data = .{
-                    .var_expr = {},
-                }
-            });
-        }
+        return p.addNode(.{
+            .main_token = ident_token,
+            .data = .{
+                .var_expr = {},
+            }
+        });
     }
 
     fn expectArgList(p: *Parser) !Node.ExtraRange {
@@ -309,7 +311,7 @@ const Parser = struct {
         // function prototype, or aggregate prototype
         return switch (p.token_tags[p.index]) {
             // .k_struct => p.parseStructProto(),
-            .k_fn => p.expectFnProto(),
+            // .k_fn => p.expectFnProto(),
             .ident => {
                 const ident_token = try p.expectToken(.ident);
                 return p.addNode(.{
@@ -343,35 +345,22 @@ const Parser = struct {
     // }
 
     fn expectFnDecl(p: *Parser) !Node.Index {
-        const proto_node = try p.expectFnProto();
-        const body_node = try p.expectBlock();
-
-        return p.addNode(.{
-            .main_token = 0,            // no main token
-            .data = .{
-                .fn_decl = .{
-                    .proto = proto_node,
-                    .body = body_node,
-                },
-            },
-        });
-    }
-
-    fn expectFnProto(p: *Parser) !Node.Index {
         const fn_token = try p.expectToken(.k_fn);
-        const params_range = try p.expectParamList();
-        const return_type_node = try p.expectType();
+        const params = try p.expectParamList();
+        const return_ty = try p.expectType();
+        const body = try p.expectBlock();
 
         return p.addNode(.{
             .main_token = fn_token,
             .data = .{
-                .fn_proto = .{
-                    .params = try p.addExtra(Node.CallSignature {
-                        .params_start = params_range.start,
-                        .params_end = params_range.end,
+                .fn_decl = .{
+                    .signature = try p.addExtra(Node.FnSignature {
+                        .params_start = params.start,
+                        .params_end = params.end,
+                        .return_ty = return_ty,
                     }),
-                    .return_ty = return_type_node,
-                },
+                    .body = body,
+                }
             },
         });
     }
@@ -450,7 +439,7 @@ const Parser = struct {
 
         while (true) {
             if (p.eatToken(.r_brace)) |_| break;
-            const stmt_node = try p.expectStmt();
+            const stmt_node = try p.parseStatement();
             try p.scratch.append(stmt_node);
         }
 
@@ -469,20 +458,67 @@ const Parser = struct {
         });
     }
 
-    fn expectStmt(p: *Parser) Error!Node.Index {
+    fn parseStatement(p: *Parser) Error!Node.Index {
         const node = switch (p.token_tags[p.index]) {
             .k_let => p.parseDecl(),
             .k_return => p.expectReturnStmt(),
-            .k_if => p.expectIfStmt(),
-            // .ident => p.expectAssignment(),
+            .k_if => p.parseConditional(),
+            .k_for => p.parseLoop(),
+            .ident => switch (p.token_tags[p.index + 1]) {
+                .l_paren => p.expectCall(),
+                .equal,
+                .plus_equal, .minus_equal,
+                .asterisk_equal, .slash_equal, .percent_equal,
+                .ampersand_equal, .pipe_equal, .caret_equal,
+                .l_angle_l_angle_equal,
+                .r_angle_r_angle_equal => p.parseAssignment(),
+                else => return Error.UnexpectedToken,
+            },
             else => {
                 std.debug.print("{}\n", .{p.token_tags[p.index]});
-                unreachable;
+                return Error.UnexpectedToken;
             },
         };
 
         _ = p.eatToken(.semi);
         return node;
+    }
+
+    fn expectCall(p: *Parser) !Node.Index {
+        const ident_token = try p.expectToken(.ident);
+        const args_range = try p.expectArgList();
+
+        return p.addNode(.{
+            .main_token = ident_token,
+            .data = .{
+                .call_expr = .{
+                    .args_start = args_range.start,
+                    .args_end = args_range.end,
+                },
+            },
+        });
+    }
+
+    fn parseAssignment(p: *Parser) !Node.Index {
+        const ident_token = try p.expectToken(.ident);
+
+        if (p.token_tags[p.index] == .equal) {
+            _ = try p.expectToken(.equal);
+            const value = try p.expectExpr();
+
+            return p.addNode(.{
+                .main_token = ident_token,
+                .data = .{ .assign_simple = .{ .val = value } },
+            });
+        } else {
+            _ = p.eatToken(p.token_tags[p.index]);
+            const value = try p.expectExpr();
+
+            return p.addNode(.{
+                .main_token = ident_token,
+                .data = .{ .assign_binary = .{ .val = value } },
+            });
+        }
     }
 
     fn parseDecl(p: *Parser) !Node.Index {
@@ -545,20 +581,113 @@ const Parser = struct {
         }
     }
 
-    fn expectIfStmt(p: *Parser) !Node.Index {
+    fn parseConditional(p: *Parser) !Node.Index {
+        // all conditional branches start with the if keyword
         const if_token = try p.expectToken(.k_if);
-        const condition_node = try p.expectExpr();
-        const body_node = try p.expectBlock();
 
-        return p.addNode(.{
-            .main_token = if_token,
-            .data = .{
-                .if_stmt = .{
-                    .condition = condition_node,
-                    .body = body_node,
+        // we have three kinds of if statements: simple, else, and chain
+        // which we progressively try to match against
+        const condition = try p.expectExpr();
+        const exec_true = try p.expectBlock();
+
+        if (p.eatToken(.k_else)) |_| {
+            if (p.token_tags[p.index] == .k_if) {
+                // chained if
+                const next = try p.parseConditional();
+                const chain = try p.addExtra(Node.IfChain {
+                    .exec_true = exec_true,
+                    .next = next,
+                });
+                return p.addNode(.{
+                    .main_token = if_token,
+                    .data = .{
+                        .if_chain = .{
+                            .condition = condition,
+                            .chain = chain,
+                        }
+                    },
+                });
+            } else {
+                // if else
+                const exec_false = try p.expectBlock();
+                const exec = try p.addExtra(Node.IfElse {
+                    .exec_true = exec_true,
+                    .exec_false = exec_false,
+                });
+                return p.addNode(.{
+                    .main_token = if_token,
+                    .data = .{
+                        .if_else = .{
+                            .condition = condition,
+                            .exec = exec,
+                        }
+                    }
+                });
+            }
+        } else {
+            // simple if
+            return p.addNode(.{
+                .main_token = if_token,
+                .data = .{
+                    .if_simple = .{
+                        .condition = condition,
+                        .exec_true = exec_true,
+                    }
                 },
-            },
-        });
+            });
+        }
+    }
+
+    fn parseLoop(p: *Parser) !Node.Index {
+        // all loops start with the for keyword
+        const for_token = try p.expectToken(.k_for);
+
+        // we have three kinds of loops: forever, conditional, range
+        // which we progressively try to match against
+        if (p.token_tags[p.index] == .l_brace) {
+            // forever loop
+            const body = try p.expectBlock();
+            return p.addNode(.{
+                .main_token = for_token,
+                .data = .{ .loop_forever = .{ .body = body } },
+            });
+        } else if (p.token_tags[p.index] == .k_let) {
+            // declaration = assume this is the binding, and we are in a range loop
+            const binding = try p.parseDecl();
+            _ = try p.expectToken(.semi);
+            const condition = try p.expectExpr();
+            _ = try p.expectToken(.semi);
+            const afterthought = try p.parseStatement();
+            const signature = try p.addExtra(Node.RangeSignature {
+                .binding = binding,
+                .condition = condition,
+                .afterthought = afterthought,
+            });
+
+            const body = try p.expectBlock();
+            return p.addNode(.{
+                .main_token = for_token,
+                .data = .{
+                    .loop_range = .{
+                        .signature = signature,
+                        .body = body,
+                    }
+                },
+            });
+        } else {
+            // assume this is the condition of a conditional loop
+            const condition = try p.expectExpr();
+            const body = try p.expectBlock();
+            return p.addNode(.{
+                .main_token = for_token,
+                .data = .{
+                    .loop_conditional = .{
+                        .condition = condition,
+                        .body = body,
+                    }
+                }
+            });
+        }
     }
 
     // fn parseUse(self: *Parser) !Node.Index {

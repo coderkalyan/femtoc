@@ -45,11 +45,11 @@ pub const Node = struct {
     pub const Tag = enum(u32) {
         named_ty,
         fn_decl,
-        fn_proto,
         param,
 
         integer_literal,
         float_literal,
+        bool_literal,
         binary_expr,
         var_expr,
         call_expr,
@@ -59,9 +59,16 @@ pub const Node = struct {
         block,
         const_decl,
         var_decl,
-        // return_void,
+        assign_simple,
+        assign_binary,
         return_val,
-        if_stmt,
+        if_simple,
+        if_else,
+        if_chain,
+        loop_forever,
+        loop_conditional,
+        loop_range,
+
         toplevel,
 
         // use,
@@ -83,20 +90,20 @@ pub const Node = struct {
         named_ty: void,
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
-        // proto = prototype node 'fn (params...) ret'
+        // proto = FnSignature {} 'fn (params...) ret'
         // body = body block node
         fn_decl: struct {
-            proto: Index,
+            signature: ExtraIndex,
             body: Index,
         },
         // function prototype 'fn (params...) ret'
         // main_token = 'fn'
         // params = CallSignature {}
         // return_ty = return type node
-        fn_proto: struct {
-            params: ExtraIndex,
-            return_ty: Index,
-        },
+        // fn_proto: struct {
+        //     params: ExtraIndex,
+        //     return_ty: Index,
+        // },
         // function parameter (in the declaration/prototype)
         // as opposed to *arguments* at the call site
         // 'argc: u32'
@@ -113,6 +120,7 @@ pub const Node = struct {
         // float literal '1.2345'
         // main_token = unparsed literal string
         float_literal: void,
+        bool_literal: void,
         // binary expression 'a [+-*/...] b'
         // main_token = operator token
         // left = left side expression node
@@ -169,6 +177,20 @@ pub const Node = struct {
             ty: Index,
             val: Index,
         },
+
+        // variable assignment 'foo = "bar"'
+        // main_token = variable name
+        // val = value node
+        assign_simple: struct {
+            val: Index,
+        },
+
+        // variable assignment with operator 'foo += 1'
+        // main_token = variable name
+        assign_binary: struct {
+            val: Index,
+        },
+
         // empty return 'return'
         // main_token = 'return'
         // return_void: void,
@@ -179,15 +201,60 @@ pub const Node = struct {
             val: Index,
         },
         // return value 'return'
+
         // simple if statement 'if cond {body}'
         // main_token = 'if'
-        // condition = boolean condition node
+        // condition = conditional expression node
+        // exec_true = block node to execute on true
+        if_simple: struct {
+            condition: Index,
+            exec_true: Index,
+        },
+
+        // if else statement 'if cond {} else {}'
+        // main_token = 'if'
+        // condition = conditional expression node
+        // exec = extra index to body blocks
+        if_else: struct {
+            condition: Index,
+            exec: ExtraIndex,
+        },
+
+        // chained if-else if statement 'if cond {} else if cond {}'
+        // main_token = 'if'
+        // condition = conditional expression node
+        // chain = extra index to chain information
+        if_chain: struct {
+            condition: Index,
+            chain: ExtraIndex,
+        },
+
+        // forever loop 'for {}'
+        // main_token = 'for'
         // body = body block node
-        if_stmt: struct {
+        loop_forever: struct {
+            body: Index,
+        },
+
+        // loop while condition satisfied 'for cond {}'
+        // main_token = 'for'
+        // condition = conditional expression node
+        // body = body block node
+        loop_conditional: struct {
             condition: Index,
             body: Index,
         },
 
+        // traditional range loop while condition satisfied
+        // with binding and afterthought 'for let mut i = 0; i < 10; i += 1 {}'
+        // main_token = 'for'
+        // signature = extra index to loop range signature
+        loop_range: struct {
+            signature: ExtraIndex,
+            body: Index,
+        },
+
+        // body = body block node
         toplevel: struct {
             stmts_start: ExtraIndex,
             stmts_end: ExtraIndex,
@@ -214,9 +281,36 @@ pub const Node = struct {
     // function signature, excluding return type
     // params_start = start of parameter node index array
     // params_end = end of parameter node index array
-    pub const CallSignature = struct {
+    pub const FnSignature = struct {
         params_start: ExtraIndex,
         params_end: ExtraIndex,
+        return_ty: Index,
+    };
+
+    // if else execution information
+    // exec_true = block node to execute if condition is met
+    // exec_false = block node to execute if condition is not met
+    pub const IfElse = struct {
+        exec_true: Index,
+        exec_false: Index,
+    };
+
+    // chained if else if execution information
+    // exec_true = block node to execute if condition is met
+    // next = next conditional node in the chain (if, if else, or another if chain)
+    pub const IfChain = struct {
+        exec_true: Index,
+        next: Index,
+    };
+
+    // range-based for loop signature
+    // binding = variable declaration at beginning of loop
+    // condition = boolean expression to check loop continuation
+    // afterthought = statement executed at the end of each loop iteration
+    pub const RangeSignature = struct {
+        binding: Index,
+        condition: Index,
+        afterthought: Index,
     };
 };
 
@@ -247,5 +341,13 @@ pub const Ast = struct {
         const token = lexer.next();
 
         return tree.source[token.loc.start..token.loc.end];
+    }
+
+    pub fn mainToken(tree: *const Ast, node: Node.Index) TokenIndex {
+        return tree.nodes.items(.main_token)[node];
+    }
+
+    pub fn data(tree: *const Ast, node: Node.Index) Node.Data {
+        return tree.nodes.items(.data)[node];
     }
 };

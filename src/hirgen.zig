@@ -32,9 +32,8 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .interner = Interner.init(gpa),
     };
 
-    // const ref = try hirgen.toplevel(@intCast(u32, tree.nodes.len - 1));
-    // const ref = try hirgen.globalConstDecl(&namespace.base, @intCast(u32, tree.nodes.len - 1));
-    // _ = ref;
+    const ref = try hirgen.toplevel(@intCast(u32, tree.nodes.len - 1));
+    _ = ref;
 
     return Hir {
         .inst = hirgen.inst.toOwnedSlice(),
@@ -139,6 +138,17 @@ pub const HirGen = struct {
         });
     }
 
+    fn boolLiteral(hg: *HirGen, index: Node.Index) !Inst.Ref {
+        const nodes = hg.tree.nodes;
+        const bool_token = nodes.items(.main_token)[index];
+
+        return switch (hg.tree.tokens.items(.tag)[bool_token]) {
+            .k_true => Inst.Ref.btrue_val,
+            .k_false => Inst.Ref.bfalse_val,
+            else => unreachable,
+        };
+    }
+
     fn identifier(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
         const nodes = hg.tree.nodes;
         const ident_index = nodes.items(.main_token)[index];
@@ -206,6 +216,7 @@ pub const HirGen = struct {
                 .minus => .sub,
                 .asterisk => .mul,
                 .slash => .div,
+                .percent => .mod,
                 .equal_equal => .eq,
                 .bang_equal => .neq,
                 else => return Error.UnexpectedToken,
@@ -218,17 +229,16 @@ pub const HirGen = struct {
         const nodes = hg.tree.nodes;
 
         const fn_decl = nodes.items(.data)[index].fn_decl;
-        const proto = nodes.items(.data)[fn_decl.proto].fn_proto;
-        const params_range = hg.tree.extraData(proto.params, Node.CallSignature);
+        const signature = hg.tree.extraData(fn_decl.signature, Node.FnSignature);
 
         const scratch_top = hg.scratch.items.len;
         defer hg.scratch.shrinkRetainingCapacity(scratch_top);
 
         var s: *Scope = scope;
-        var param_index = params_range.params_start;
-        while (param_index < params_range.params_end) : (param_index += 1) {
+        var param_index = signature.params_start;
+        while (param_index < signature.params_end) : (param_index += 1) {
             const param = nodes.items(.data)[hg.tree.extra_data[param_index]].param;
-            const param_token = nodes.items(.main_token)[param_index] - 2;
+            const param_token = nodes.items(.main_token)[param_index];
             const param_str = hg.tree.tokenString(param_token);
             const param_id = try hg.interner.intern(param_str);
 
@@ -239,9 +249,9 @@ pub const HirGen = struct {
             const param_ref = Inst.indexToRef(param_extra);
             try hg.scratch.append(.{ .ref = param_ref });
 
-            var param_var = try hg.arena.alloc(Scope.LocalVar, 1);
-            param_var[0] = Scope.LocalVar.init(s, param_id, param_ref);
-            s = &param_var[0].base;
+            var param_var = try hg.arena.create(Scope.LocalVar);
+            param_var.* = Scope.LocalVar.init(s, param_id, param_ref);
+            s = &param_var.base;
         }
 
         const params = hg.scratch.items[scratch_top..];
@@ -266,6 +276,7 @@ pub const HirGen = struct {
         return switch (hg.tree.nodes.items(.data)[index]) {
             .integer_literal => hg.integerLiteral(index),
             .float_literal => hg.floatLiteral(index),
+            .bool_literal => hg.boolLiteral(index),
             .var_expr => hg.identifier(scope, index),
             .call_expr => hg.call(scope, index),
             .binary_expr => hg.binary(scope, index),
@@ -287,23 +298,41 @@ pub const HirGen = struct {
             var stmt_node = hg.tree.extra_data[stmt_index];
             switch (hg.tree.nodes.items(.data)[stmt_node]) {
                 .const_decl => {
-                    var var_scope = try hg.arena.alloc(Scope.LocalVar, 1);
-                    var_scope[0] = try hg.constDecl(s, stmt_node);
-                    s = &var_scope[0].base;
+                    const ref = try hg.constDecl(s, stmt_node);
+
+                    const ident_index = hg.tree.mainToken(stmt_node) + 1;
+                    const ident_str = hg.tree.tokenString(ident_index);
+                    const id = try hg.interner.intern(ident_str);
+                    const var_scope = try hg.arena.create(Scope.LocalVar);
+                    var_scope.* = Scope.LocalVar.init(s, id, ref);
+
+                    s = &var_scope.base;
                 },
-                .if_stmt => {
-                    const ref = try hg.ifStmt(s, stmt_node);
+                .var_decl => {
+                    const ref = try hg.varDecl(s, stmt_node);
+
+                    const ident_index = hg.tree.mainToken(stmt_node) + 2;
+                    const ident_str = hg.tree.tokenString(ident_index);
+                    const id = try hg.interner.intern(ident_str);
+                    const var_scope = try hg.arena.create(Scope.LocalVar);
+                    var_scope.* = Scope.LocalVar.init(s, id, ref);
+
+                    s = &var_scope.base;
+                },
+                .assign_simple => {
+                    const ref = try hg.assignSimple(s, stmt_node);
                     try hg.scratch.append(.{ .ref = ref });
                 },
-                // .return_void => {
-                //     const ref = try hg.returnVoid(s, stmt_node);
-                //     try hg.scratch.append(ref);
-                // },
+                .if_simple => {
+                    const ref = try hg.ifSimple(s, stmt_node);
+                    try hg.scratch.append(.{ .ref = ref });
+                },
                 .return_val => {
                     const ref = try hg.returnStmt(s, stmt_node);
                     try hg.scratch.append(.{ .ref = ref });
                 },
                 else => {
+                    std.debug.print("{}\n", .{hg.tree.nodes.items(.data)[stmt_node]});
                     unreachable;
                 },
             }
@@ -323,47 +352,111 @@ pub const HirGen = struct {
         });
     }
 
-    fn constDecl(hg: *HirGen, scope: *Scope, index: Node.Index) !Scope.LocalVar {
+    fn constDecl(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
+        // "initializes" constant variables
+        // this doesn't actually create any instructions for declaring the constant
+        // instead, the value to set the constant to is computed, and the resulting
+        // instruction return value is stored in the scope such that future
+        // code that needs to access this constant can simply look up the identifier
+        // and refer to the associated value instruction
         const nodes = hg.tree.nodes;
-        const ident_index = nodes.items(.main_token)[index] + 1;
-        const ident_str = hg.tree.tokenString(ident_index);
-        const id = try hg.interner.intern(ident_str);
 
-        const const_decl = hg.tree.nodes.items(.data)[index].const_decl;
-        // const ty = if (const_decl.ty == 0) hg.ty(scope, const_decl.ty);
-        const ref = try hg.expr(scope, const_decl.val);
+        const const_decl = nodes.items(.data)[index].const_decl;
+        if (const_decl.ty == 0) {
+            // untyped (inferred) declaration
+            return hg.expr(scope, const_decl.val);
+        } else {
+            const ref = try hg.expr(scope, const_decl.val);
+            const validate_ty = try hg.addExtra(Inst.ValidateTy {
+                .ref = ref,
+                .ty = try hg.ty(scope, const_decl.ty),
+            });
 
-        var var_scope = Scope.LocalVar.init(scope, id, ref);
-        return var_scope;
+            // generate a "type validation" marker instruction
+            // this is a passthrough which takes in the above value reference
+            // and the type reference and returns the value reference
+            // semantic analysis will validate that the type is as it should be
+            // and then remove this instruction in the mir
+            return hg.addInst(.{
+                .tag = .validate_ty,
+                .data = .{ .pl_node = .{ .node = index, .pl = validate_ty, } },
+            });
+        }
     }
 
-    fn globalConstDecl(hg: *HirGen, scope: *Scope, index: Node.Index) !void {
+    fn varDecl(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
+        // "initializes" mutable variables
+        // unlike constant declarations, mutable variables are stored in "memory"
+        // so we have to create alloc instructions in addition to computing the value
+        // otherwise, this function operates like constDecl
+        // this doesn't actually create any instructions for declaring the constant
+        // instead, the value to set the constant to is computed, and the resulting
+        // instruction return value is stored in the scope such that future
+        // code that needs to access this constant can simply look up the identifier
+        // and refer to the associated value instruction
         const nodes = hg.tree.nodes;
-        const ident_index = nodes.items(.main_token)[index] + 1;
-        const ident_str = hg.tree.tokenString(ident_index);
-        const id = try hg.interner.intern(ident_str);
 
-        std.debug.print("{}\n", .{hg.tree.nodes.items(.data)[index]});
-        const const_decl = hg.tree.nodes.items(.data)[index].const_decl;
-        const ref = try hg.expr(scope, const_decl.val);
+        const const_decl = nodes.items(.data)[index].var_decl;
+        const valref = if (const_decl.ty == 0) ref: {
+            // untyped (inferred) declaration
+            break :ref try hg.expr(scope, const_decl.val);
+        } else ref: {
+            const ref = try hg.expr(scope, const_decl.val);
+            const validate_ty = try hg.addExtra(Inst.ValidateTy {
+                .ref = ref,
+                .ty = try hg.ty(scope, const_decl.ty),
+            });
 
-        const namespace = scope.cast(Scope.Namespace).?;
-        try namespace.decls.put(id, ref);
+            // generate a "type validation" marker instruction
+            // this is a passthrough which takes in the above value reference
+            // and the type reference and returns the value reference
+            // semantic analysis will validate that the type is as it should be
+            // and then remove this instruction in the mir
+            break :ref try hg.addInst(.{
+                .tag = .validate_ty,
+                .data = .{ .pl_node = .{ .node = index, .pl = validate_ty, } },
+            });
+        };
+
+        return hg.addInst(.{
+            .tag = .alloc,
+            .data = .{ .un_node = .{ .node = index, .operand = valref, } },
+        });
     }
 
-    fn ifStmt(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
+    fn assignSimple(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
         const nodes = hg.tree.nodes;
-        const if_stmt = nodes.items(.data)[index].if_stmt;
+        const assign = nodes.items(.data)[index].assign_simple;
 
-        const condition_ref = try hg.expr(scope, if_stmt.condition);
-        const body_ref = try hg.block(scope, if_stmt.body);
-        const branch = try hg.addExtra(Inst.Branch {
+        const ident_index = nodes.items(.main_token)[index];
+        const ident_str = hg.tree.tokenString(ident_index);
+        const id = try hg.interner.intern(ident_str);
+        const ref = try scope.resolveVar(id);
+        const valref = try hg.expr(scope, assign.val);
+
+        const store = try hg.addExtra(Inst.Store {
+            .addr = ref,
+            .val = valref,
+        });
+        return hg.addInst(.{
+            .tag = .store,
+            .data = .{ .pl_node = .{ .node = index, .pl = store } },
+        });
+    }
+
+    fn ifSimple(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
+        const nodes = hg.tree.nodes;
+        const if_simple = nodes.items(.data)[index].if_simple;
+
+        const condition_ref = try hg.expr(scope, if_simple.condition);
+        const exec_ref = try hg.block(scope, if_simple.exec_true);
+        const branch = try hg.addExtra(Inst.BranchSingle {
             .condition = condition_ref,
-            .body = body_ref,
+            .exec_true = exec_ref,
         });
 
         return hg.addInst(.{
-            .tag = .branch,
+            .tag = .branch_single,
             .data = .{ .pl_node = .{ .node = index, .pl = branch, } },
         });
     }
@@ -386,7 +479,7 @@ pub const HirGen = struct {
     fn toplevel(hg: *HirGen, index: Node.Index) Error!Inst.Ref {
         const toplevel_data = hg.tree.nodes.items(.data)[index].toplevel;
         var toplevel_scope = Scope.Toplevel {};
-        var namespace = Scope.Namespace.init(hg.arena.allocator(), &toplevel_scope.base);
+        var namespace = Scope.Namespace.init(hg.arena, &toplevel_scope.base);
 
         const scratch_top = hg.scratch.items.len;
         defer hg.scratch.shrinkRetainingCapacity(scratch_top);
@@ -396,10 +489,15 @@ pub const HirGen = struct {
             var stmt_node = hg.tree.extra_data[stmt_index];
             switch (hg.tree.nodes.items(.data)[stmt_node]) {
                 .const_decl => {
-                    try hg.globalConstDecl(&namespace.base, stmt_node);
+                    const ref = try hg.constDecl(&namespace.base, stmt_node);
+
+                    const ident_index = hg.tree.nodes.items(.main_token)[index] + 1;
+                    const ident_str = hg.tree.tokenString(ident_index);
+                    const id = try hg.interner.intern(ident_str);
+                    try namespace.decls.put(id, ref);
                 },
                 else => {
-                    std.debug.print("{}\n", hg.tree.nodes.items(.data)[stmt_node]);
+                    std.debug.print("{}\n", .{hg.tree.nodes.items(.data)[stmt_node]});
                     return Error.UnexpectedToken;
                 },
             }
