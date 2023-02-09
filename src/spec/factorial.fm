@@ -1,0 +1,11 @@
+let factorial = fn(n: i32) i32 {
+    if n <= 1 {
+        return 1;
+    } else {
+        return n * factorial(n - 1);
+    }
+};
+
+let main = fn() void {
+    let fact = factorial(10);
+};

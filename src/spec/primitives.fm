@@ -13,7 +13,7 @@ let main = fn() void {
     // variables are constant by default, and cannot be changed
     // mutable variables' values can be changed
     let mut mutable: i32 = 12;
-    // mutable = 21;
+    mutable = 21;
 
     // but types of mutable values can't be changed
     // mutable = true; // error

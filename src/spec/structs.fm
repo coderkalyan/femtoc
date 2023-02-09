@@ -1,0 +1,23 @@
+use math;
+
+distinct type Point = struct {
+    x: f32,
+    y: f32,
+    z: f32,
+};
+
+let Point::new = fn (x: f32, y: f32, z: f32) Point {
+    Point {
+        .x = x,
+        .y = y,
+        .z = z,
+    }
+};
+
+let Point::dist = fn (a: *Point, b: *Point) f32 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let dz = b.z - a.z;
+
+    return math::hypot(math::hypot(dx, dy), dz);
+};
