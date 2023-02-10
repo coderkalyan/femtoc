@@ -1,6 +1,8 @@
 const std = @import("std");
 const HirGen = @import("hirgen.zig").HirGen;
 const TokenIndex = @import("ast.zig").TokenIndex;
+const Interner = @import("interner.zig").Interner;
+const Node = @import("ast.zig").Node;
 
 pub const Error = error { InvalidRef };
 
@@ -19,6 +21,10 @@ pub const Inst = struct {
         mod,
         eq,
         neq,
+        leq,
+        geq,
+        lt,
+        gt,
 
         validate_ty,
         alloc,
@@ -93,9 +99,15 @@ pub const Inst = struct {
     }
 
     pub fn refToIndex(ref: Inst.Ref) !Inst.Index {
-        const ref_len = @intCast(u64, @typeInfo(Inst.Ref).Enum.fields.len);
+        const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
         const index = @enumToInt(ref);
         return if (index >= ref_len) index - ref_len else Error.InvalidRef;
+    }
+
+    pub fn refIsIndex(ref: Inst.Ref) bool {
+        const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
+        const index = @enumToInt(ref);
+        return index > ref_len;
     }
 
     pub const Ref = enum(u32) {
@@ -173,6 +185,12 @@ pub const Inst = struct {
         exec_true: Ref,
     };
 
+    pub const BranchDouble = struct {
+        condition: Ref,
+        exec_true: Ref,
+        exec_false: Ref,
+    };
+
     pub const Block = struct {
         insts_start: ExtraIndex,
         insts_end: ExtraIndex,
@@ -187,14 +205,16 @@ pub const Inst = struct {
 pub const Hir = struct {
     inst: std.ArrayList(Inst).Slice,
     extra_data: []Inst.Extra,
+    interner: Interner,
+    resolution_map: std.AutoHashMap(Node.Index, Inst.Ref),
 
-    pub fn extraData(hir: *Hir, index: usize, comptime T: type) T {
+    pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
         const fields = std.meta.fields(T);
         var result: T = undefined;
         inline for (fields) |field, i| {
-            if (field.type == Inst.ExtraIndex) {
+            if (field.field_type == Inst.ExtraIndex) {
                 @field(result, field.name) = try HirGen.refToIndex(hir.extra_data[index + i]);
-            } else if (field.type == Inst.Ref) {
+            } else if (field.field_type == Inst.Ref) {
                 @field(result, field.name) = hir.extra_data[index + i];
             } else {
                 unreachable;

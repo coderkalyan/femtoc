@@ -523,34 +523,28 @@ const Parser = struct {
 
     fn parseDecl(p: *Parser) !Node.Index {
         const let_token = try p.expectToken(.k_let);
-        const mut_token = p.eatToken(.k_mut);
-        _ = p.eatToken(.ident);
+        if (p.token_tags[p.index] == .k_mut) {
+            _ = p.eatToken(.k_mut);
+            _ = try p.expectToken(.ident);
 
-        const type_node = if (p.eatToken(.colon) == null) null else try p.expectType();
-        _ = try p.expectToken(.equal);
-        const value_node = try p.expectExpr();
+            const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
+            _ = try p.expectToken(.equal);
 
-        // instead of storing the mutability token,
-        // create separate tags for constant and variable declarations
-        if (mut_token) |_| {
+            const val = try p.expectExpr();
             return p.addNode(.{
                 .main_token = let_token,
-                .data = .{
-                    .var_decl = .{
-                        .ty = type_node orelse 0,
-                        .val = value_node,
-                    },
-                },
+                .data = .{ .var_decl = .{ .ty = ty, .val = val } },
             });
         } else {
+            _ = try p.expectToken(.ident);
+
+            const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
+            _ = try p.expectToken(.equal);
+
+            const val = try p.expectExpr();
             return p.addNode(.{
                 .main_token = let_token,
-                .data = .{
-                    .const_decl = .{
-                        .ty = type_node orelse 0,
-                        .val = value_node,
-                    },
-                },
+                .data = .{ .const_decl = .{ .ty = ty, .val = val } },
             });
         }
     }

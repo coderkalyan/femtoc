@@ -1,11 +1,14 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const lex = @import("lex.zig");
+const hir = @import("hir.zig");
 
 const io = std.io;
 
 const Ast = ast.Ast;
 const Node = ast.Node;
+const Hir = hir.Hir;
+const HirRef = hir.Inst.Ref;
 
 pub fn AstRenderer(comptime width: u32, comptime WriterType: anytype) type {
     return struct {
@@ -64,11 +67,7 @@ pub fn AstRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.writeAll(": ");
                     try self.renderNode(param.ty);
                 },
-                .integer_literal => {
-                    const literal = tree.tokenString(tree.mainToken(node));
-                    try writer.writeAll(literal);
-                },
-                .float_literal => {
+                .integer_literal, .float_literal, .bool_literal => {
                     const literal = tree.tokenString(tree.mainToken(node));
                     try writer.writeAll(literal);
                 },
@@ -220,6 +219,105 @@ pub fn AstRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.renderNode(assign.val);
                 },
             }
+        }
+    };
+}
+
+pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
+    return struct {
+        stream: IndentingWriter(width, WriterType),
+        hir: *const Hir,
+
+        pub const Self = @This();
+
+        pub fn init(writer: anytype, hir_data: *const Hir) Self {
+            return .{ .stream = indentingWriter(writer), .hir = hir_data };
+        }
+
+        pub fn render(self: *Self) !void {
+            const toplevel_inst = self.hir.inst[self.hir.inst.len - 1];
+            const toplevel = self.hir.extraData(toplevel_inst.data.pl_node.pl, hir.Inst.Toplevel);
+
+            const inst_index = toplevel.insts_start;
+            while (inst_index < toplevel.insts_end) : (inst_index += 1) {
+                const inst = hir.Inst.refToIndex(self.hir.extra_data[inst_index]);
+                self.renderInst(inst);
+            }
+            // try self.renderNode(@intCast(u32, self.tree.nodes.len - 1));
+        }
+
+        pub fn formatRef(_: *Self, ref: HirRef) []const u8 {
+            if (hir.Inst.refIsIndex(ref)) {
+                const index = try hir.refToIndex(ref);
+                var buf: [32]u8 = undefined;
+                std.fmt.bufPrint(buf, "%{}", .{index});
+                return buf;
+            } else {
+                var buf: [32]u8 = undefined;
+                std.fmt.bufPrint(buf, "@Ref.{}", .{switch (ref) {
+                    .izero_val => "izero",
+                    .ione_val => "ione",
+                    .fzero_val => "fzero",
+                    .fone_val => "fone",
+                    .btrue_val => "btrue",
+                    .bfalse_val => "bfalse",
+                    .void_val => "void",
+                    .u8_ty => "u8",
+                    .u16_ty => "u16",
+                    .u32_ty => "u32",
+                    .u64_ty => "u64",
+                    .i8_ty => "i8",
+                    .i16_ty => "i16",
+                    .i32_ty => "i32",
+                    .i64_ty => "i64",
+                    .f32_ty => "f32",
+                    .f64_ty => "f64",
+                    .bool_ty => "bool",
+                    else => unreachable,
+                }});
+                return buf;
+            }
+        }
+
+        pub fn renderInst(self: *Self, index: u32) !void {
+            const ir = self.hir;
+            const writer = self.stream.writer();
+
+            // const block_index = try hir.Inst.refToIndex(block_ref);
+            // const block_inst = self.hir.inst[block_index];
+            // const block = self.hir.extraData(block_inst.data.pl_node.pl, hir.Inst.Block);
+
+            // var inst_index = block.insts_start;
+            // const index = try hir.Inst.refToIndex(self.hir.extra_data[inst_index]);
+            const inst = self.hir.inst[index];
+
+            try writer.print("%{} = ", .{index});
+            switch (inst.tag) {
+                .int => try writer.print("int({})", .{inst.data.int}),
+                .float => try writer.print("float({})", .{inst.data.float}),
+                .add, .sub, .mul, .div, .mod,
+                .eq, .neq => {
+                    try writer.writeAll(switch (inst.tag) {
+                        .add => "add",
+                        .sub => "sub",
+                        .mul => "mul",
+                        .div => "div",
+                        .mod => "mod",
+                        .eq => "eq",
+                        .neq => "neq",
+                    });
+
+                    const bin = ir.extraData(inst.data.pl_node.pl, Hir.Inst.Binary);
+                    try writer.print("({}, {})", self.formatRef(bin.lref), self.formatRef(bin.rref));
+                },
+                .validate_ty => {
+                    const data = ir.extraData(inst.data.pl_node.pl, Hir.Inst.ValidateTy);
+                    try writer.print("validate_ty({}, {})", .{data.ty, data.ref});
+                },
+                else => {},
+            }
+
+            try self.stream.newline();
         }
     };
 }
