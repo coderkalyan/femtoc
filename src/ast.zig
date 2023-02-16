@@ -43,6 +43,8 @@ pub const Node = struct {
 
     // data union tags, documented below in union
     pub const Tag = enum(u32) {
+        placeholder,
+
         named_ty,
         fn_decl,
         param,
@@ -85,6 +87,7 @@ pub const Node = struct {
     // extra data indices represent only the "start" of the
     // unpacked extra data struct in the extra_data array
     pub const Data = union(Tag) {
+        placeholder: void,
         // types
 
         named_ty: void,
@@ -341,6 +344,10 @@ pub const Ast = struct {
         const token = lexer.next();
 
         return tree.source[token.loc.start..token.loc.end];
+    }
+
+    pub fn tokenTag(tree: *const Ast, index: TokenIndex) Token.Tag {
+        return tree.tokens.items(.tag)[index];
     }
 
     pub fn mainToken(tree: *const Ast, node: Node.Index) TokenIndex {

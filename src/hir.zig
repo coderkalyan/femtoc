@@ -1,5 +1,4 @@
 const std = @import("std");
-const HirGen = @import("hirgen.zig").HirGen;
 const TokenIndex = @import("ast.zig").TokenIndex;
 const Interner = @import("interner.zig").Interner;
 const Node = @import("ast.zig").Node;
@@ -27,6 +26,7 @@ pub const Inst = struct {
         gt,
 
         validate_ty,
+        load_inline,
         alloc,
         load,
         store,
@@ -98,16 +98,16 @@ pub const Inst = struct {
         return @intToEnum(Inst.Ref, ref_len + index);
     }
 
-    pub fn refToIndex(ref: Inst.Ref) !Inst.Index {
+    pub fn refToIndex(ref: Inst.Ref) ?Inst.Index {
         const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
         const index = @enumToInt(ref);
-        return if (index >= ref_len) index - ref_len else Error.InvalidRef;
+        return if (index >= ref_len) index - ref_len else null;
     }
 
     pub fn refIsIndex(ref: Inst.Ref) bool {
         const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
         const index = @enumToInt(ref);
-        return index > ref_len;
+        return index >= ref_len;
     }
 
     pub const Ref = enum(u32) {
@@ -122,11 +122,10 @@ pub const Inst = struct {
         f32_ty,
         f64_ty,
         bool_ty,
+        void_ty,
 
-        izero_val,
-        ione_val,
-        fzero_val,
-        fone_val,
+        zero_val,
+        one_val,
         btrue_val,
         bfalse_val,
 
@@ -134,16 +133,9 @@ pub const Inst = struct {
         _,
     };
 
-    // pub const Extra = union {
-    //     ref: Ref,
-    //     extra: ExtraIndex,
-    //     str: u64,
-    // }; 
-
     pub const Call = struct {
         addr: Ref,
-        args_start: ExtraIndex,
-        args_end: ExtraIndex,
+        args_len: u32,
     };
 
     pub const Binary = struct {
@@ -154,7 +146,8 @@ pub const Inst = struct {
     pub const FnDecl = struct {
         params_start: ExtraIndex,
         params_end: ExtraIndex,
-        body: Ref,
+        return_ty: Ref,
+        body: Index,
     };
 
     pub const Param = struct {
@@ -168,7 +161,7 @@ pub const Inst = struct {
     };
 
     pub const Store = struct {
-        addr: Ref,
+        addr: Index,
         val: Ref,
     };
 
@@ -182,29 +175,31 @@ pub const Inst = struct {
 
     pub const BranchSingle = struct {
         condition: Ref,
-        exec_true: Ref,
+        exec_true: Index,
     };
 
     pub const BranchDouble = struct {
         condition: Ref,
-        exec_true: Ref,
-        exec_false: Ref,
+        exec_true: Index,
+        exec_false: Index,
     };
 
     pub const Block = struct {
-        insts_start: ExtraIndex,
-        insts_end: ExtraIndex,
+        len: u32,
+        // insts_start: ExtraIndex,
+        // insts_end: ExtraIndex,
     };
 
     pub const Toplevel = struct {
-        insts_start: ExtraIndex,
-        insts_end: ExtraIndex,
+        len: u32,
+        // insts_start: ExtraIndex,
+        // insts_end: ExtraIndex,
     };
 };
 
 pub const Hir = struct {
-    inst: std.ArrayList(Inst).Slice,
-    extra_data: []Inst.Extra,
+    insts: std.MultiArrayList(Inst).Slice,
+    extra_data: []const u32,
     interner: Interner,
     resolution_map: std.AutoHashMap(Node.Index, Inst.Ref),
 
@@ -213,9 +208,9 @@ pub const Hir = struct {
         var result: T = undefined;
         inline for (fields) |field, i| {
             if (field.field_type == Inst.ExtraIndex) {
-                @field(result, field.name) = try HirGen.refToIndex(hir.extra_data[index + i]);
-            } else if (field.field_type == Inst.Ref) {
                 @field(result, field.name) = hir.extra_data[index + i];
+            } else if (field.field_type == Inst.Ref) {
+                @field(result, field.name) = @intToEnum(Inst.Ref, hir.extra_data[index + i]);
             } else {
                 unreachable;
             }

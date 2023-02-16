@@ -1,6 +1,7 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 const hirgen = @import("hirgen.zig");
+const hirwalk = @import("hirwalk.zig");
 const render = @import("render.zig");
 
 const time = std.time;
@@ -40,16 +41,17 @@ pub fn main() anyerror!void {
     // try writer.writeAll("hello");
 
     const hir = try hirgen.generate(allocator, &ast);
-    _ = hir;
+    // _ = hir;
     const hirgen_time = timer.lap() / 1000;
 
     std.debug.print("read={}us ast={}us hirgen={}us\n", .{read_time, ast_time, hirgen_time});
     var ast_renderer = render.AstRenderer(4, @TypeOf(writer)).init(writer, &ast);
     _ = ast_renderer;
     // try ast_renderer.render();
-    try buf.flush();
-
-    // var hir_renderer = render.HirRenderer(4, @TypeOf(writer)).init(writer, &hir);
-    // try hir_renderer.render();
     // try buf.flush();
+
+    // try hirwalk.walk(allocator, &hir);
+    var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, &hir);
+    try hir_renderer.render();
+    try buf.flush();
 }

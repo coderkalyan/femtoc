@@ -34,6 +34,10 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
     defer parser.nodes.deinit(gpa);
     defer parser.extra_data.deinit();
 
+    _ = try parser.addNode(.{
+        .main_token = 0,
+        .data = .{ .placeholder = {} },
+    });
     _ = try parser.parseToplevel();
 
     // copy parser results into an abstract syntax tree
