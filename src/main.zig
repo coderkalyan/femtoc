@@ -1,7 +1,7 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 const hirgen = @import("hirgen.zig");
-const hirwalk = @import("hirwalk.zig");
+const MirGen = @import("MirGen.zig");
 const render = @import("render.zig");
 
 const time = std.time;
@@ -11,9 +11,12 @@ pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
+    var args = try std.process.argsWithAllocator(allocator);
+    _ = args.skip();
+
     var timer = try time.Timer.start();
 
-    var file = try std.fs.cwd().openFile("src/spec/factorial.fm", .{});
+    var file = try std.fs.cwd().openFile(args.next().?, .{});
     defer file.close();
 
     const stat = try file.stat();
