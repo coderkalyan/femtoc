@@ -1,9 +1,10 @@
 const std = @import("std");
-const TokenIndex = @import("ast.zig").TokenIndex;
 const Interner = @import("interner.zig").Interner;
-const Node = @import("ast.zig").Node;
+const Ast = @import("Ast.zig");
+const TokenIndex = Ast.TokenIndex;
 const Type = @import("typing.zig").Type;
 
+const Node = Ast.Node;
 pub const Error = error { InvalidRef };
 
 pub const Inst = struct {

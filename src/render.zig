@@ -1,5 +1,5 @@
 const std = @import("std");
-const ast = @import("ast.zig");
+const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const hir = @import("hir.zig");
 const Mir = @import("Mir.zig");
@@ -7,8 +7,7 @@ const Type = @import("typing.zig").Type;
 
 const io = std.io;
 
-const Ast = ast.Ast;
-const Node = ast.Node;
+const Node = Ast.Node;
 const Hir = hir.Hir;
 const HirRef = hir.Inst.Ref;
 

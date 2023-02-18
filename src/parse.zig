@@ -1,13 +1,12 @@
 const std = @import("std");
 const lex = @import("lex.zig");
-const ast = @import("ast.zig");
+const Ast = @import("Ast.zig");
 
 const Allocator = std.mem.Allocator;
 const Token = lex.Token;
 const Lexer = lex.Lexer;
-const Node = ast.Node;
-const Ast = ast.Ast;
-const TokenIndex = ast.TokenIndex;
+const Node = Ast.Node;
+const TokenIndex = Ast.TokenIndex;
 
 pub const Error = error { UnexpectedToken } || Allocator.Error;
 const null_node: Node.Index = 0;
@@ -15,7 +14,7 @@ const null_node: Node.Index = 0;
 // parses a string of source characters into an abstract syntax tree
 // gpa: allocator for tree data that outlives this function call
 pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
-    var tokens = ast.TokenList{};
+    var tokens = Ast.TokenList{};
     defer tokens.deinit(gpa);
 
     // lex entire source file into token list
@@ -32,7 +31,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
     // initialize parser
     var parser = Parser.init(gpa, source, &tokens);
     defer parser.nodes.deinit(gpa);
-    defer parser.extra_data.deinit();
+    defer parser.extra.deinit(gpa);
 
     _ = try parser.addNode(.{
         .main_token = 0,
@@ -46,7 +45,8 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
         .source = source,
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
-        .extra_data = parser.extra_data.toOwnedSlice(),
+        .extra_data = parser.extra.toOwnedSlice(gpa),
+        .errors = &.{},
     };
 }
 
@@ -59,11 +59,11 @@ const Parser = struct {
     index: u32,
 
     nodes: std.MultiArrayList(Node),
-    extra_data: std.ArrayList(Node.Index),
+    extra: std.ArrayListUnmanaged(Node.Index),
     scratch: std.ArrayList(Node.Index),
     // errors: std.ArrayListUnmanaged(Ast.Error),
 
-    pub fn init(gpa: Allocator, source: []const u8, tokens: *ast.TokenList) Parser {
+    pub fn init(gpa: Allocator, source: []const u8, tokens: *Ast.TokenList) Parser {
         return .{
             .source = source,
             .gpa = gpa,
@@ -71,52 +71,52 @@ const Parser = struct {
             .token_starts = tokens.items(.start),
             .index = 0,
             .nodes = .{},
-            .extra_data = std.ArrayList(Node.Index).init(gpa),
+            .extra = .{},
             .scratch = std.ArrayList(Node.Index).init(gpa),
         };
     }
 
-    fn addNode(self: *Parser, node: Node) !Node.Index {
-        const result = @intCast(Node.Index, self.nodes.len);
-        try self.nodes.append(self.gpa, node);
+    fn addNode(p: *Parser, node: Node) !Node.Index {
+        const result = @intCast(Node.Index, p.nodes.len);
+        try p.nodes.append(p.gpa, node);
         return result;
     }
 
-    fn setNode(self: *Parser, i: usize, node: Node) Node.Index {
-        self.nodes.set(i, node);
+    fn setNode(p: *Parser, i: usize, node: Node) Node.Index {
+        p.nodes.set(i, node);
         return @intCast(Node.Index, i);
     }
 
-    fn reserveNode(self: *Parser, tag: ast.Node.Tag) !usize {
-        try self.nodes.resize(self.gpa, self.nodes.len + 1);
-        self.nodes.items(.tag)[self.nodes.len - 1] = tag;
-        return self.nodes.len - 1;
+    fn reserveNode(p: *Parser, tag: Ast.Node.Tag) !usize {
+        try p.nodes.resize(p.gpa, p.nodes.len + 1);
+        p.nodes.items(.tag)[p.nodes.len - 1] = tag;
+        return p.nodes.len - 1;
     }
 
-    fn eatToken(self: *Parser, tag: Token.Tag) ?TokenIndex {
-        if (self.token_tags[self.index] == tag) {
-            self.index += 1;
-            return self.index - 1;
+    fn eatToken(p: *Parser, tag: Token.Tag) ?TokenIndex {
+        if (p.token_tags[p.index] == tag) {
+            p.index += 1;
+            return p.index - 1;
         } else {
             return null;
         }
     }
 
-    fn expectToken(self: *Parser, tag: Token.Tag) Error!TokenIndex {
-        if (self.eatToken(tag)) |token| {
+    fn expectToken(p: *Parser, tag: Token.Tag) Error!TokenIndex {
+        if (p.eatToken(tag)) |token| {
             return token;
         } else {
             return Error.UnexpectedToken;
         }
     }
 
-    fn addExtra(self: *Parser, extra: anytype) Allocator.Error!Node.Index {
+    fn addExtra(p: *Parser, extra: anytype) Allocator.Error!Node.Index {
         const fields = std.meta.fields(@TypeOf(extra));
-        try self.extra_data.ensureUnusedCapacity(fields.len);
-        const len = @intCast(u32, self.extra_data.items.len);
+        try p.extra.ensureUnusedCapacity(p.gpa, fields.len);
+        const len = @intCast(u32, p.extra.items.len);
         inline for (fields) |field| {
             comptime std.debug.assert(field.field_type == Node.Index);
-            self.extra_data.appendAssumeCapacity(@field(extra, field.name));
+            p.extra.appendAssumeCapacity(@field(extra, field.name));
         }
         return len;
     }
@@ -146,8 +146,8 @@ const Parser = struct {
     pub fn parseToplevel(p: *Parser) !Node.Index {
         // each toplevel (file) may create any number of global statements
         // so we collect the statement indices in the scratch list,
-        // append all of them to extra_data at the end, and return the
-        // range in extra_data containing those indices
+        // append all of them to extra at the end, and return the
+        // range in extra containing those indices
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -166,15 +166,15 @@ const Parser = struct {
         }
 
         const stmts = p.scratch.items[scratch_top..];
-        const extra_top = p.extra_data.items.len;
-        try p.extra_data.appendSlice(stmts);
+        const extra_top = p.extra.items.len;
+        try p.extra.appendSlice(p.gpa, stmts);
 
         return p.addNode(.{
             .main_token = 0,
             .data = .{
                 .toplevel = .{
                     .stmts_start = @intCast(Node.ExtraIndex, extra_top),
-                    .stmts_end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
+                    .stmts_end = @intCast(Node.ExtraIndex, p.extra.items.len),
                 },
             },
         });
@@ -184,18 +184,18 @@ const Parser = struct {
         // declarations that aren't part of logical or arithmetic expressions,
         // like string literals, function and aggregate declarations, etc,
         // are parsed and returned here directly
-        // for everything else, we part in expectPrimaryExpr() and try to
+        // for everything else, we part in parsePrimaryExpr() and try to
         // associate it with a binary companion (parseBinRExp())
         return switch (p.token_tags[p.index]) {
             .k_fn => p.expectFnDecl(),
             else => {
-                const left_node = try p.expectPrimaryExpr();
+                const left_node = try p.parsePrimaryExpr();
                 return p.parseBinRExpr(left_node, 0);
             },
         };
     }
 
-    fn expectPrimaryExpr(p: *Parser) Error!Node.Index {
+    fn parsePrimaryExpr(p: *Parser) Error!Node.Index {
         // parses an elementary expression such as a literal,
         // variable value, function call, or parenthesis
         return switch (p.token_tags[p.index]) {
@@ -248,7 +248,7 @@ const Parser = struct {
             }
 
             const op_token = try p.expectToken(p.token_tags[p.index]);
-            var r_node = try p.expectPrimaryExpr();
+            var r_node = try p.parsePrimaryExpr();
 
             const next_prec = Parser.precedence(p.token_tags[p.index]);
             if (prec < next_prec) {
@@ -284,8 +284,8 @@ const Parser = struct {
         // since each argument may create arbitrarily many nodes
         // (arguments can be inline exprsesions),
         // we collect the toplevel argument indices in the scratch list,
-        // append all of them to extra_data at the end, and return the
-        // range in extra_data containing those indices
+        // append all of them to extra at the end, and return the
+        // range in extra containing those indices
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -301,11 +301,11 @@ const Parser = struct {
         }
 
         const params = p.scratch.items[scratch_top..];
-        const extra_top = p.extra_data.items.len;
-        try p.extra_data.appendSlice(params);
+        const extra_top = p.extra.items.len;
+        try p.extra.appendSlice(p.gpa, params);
         return Node.ExtraRange {
             .start = @intCast(Node.ExtraIndex, extra_top),
-            .end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
+            .end = @intCast(Node.ExtraIndex, p.extra.items.len),
         };
     }
 
@@ -374,8 +374,8 @@ const Parser = struct {
 
         // since each parameter may create multiple nodes (depending on type complexity)
         // we collect the toplevel parameter indices in the scratch list,
-        // append all of them to extra_data at the end, and return the
-        // range in extra_data containing those indices
+        // append all of them to extra at the end, and return the
+        // range in extra containing those indices
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -391,11 +391,11 @@ const Parser = struct {
         }
 
         const params = p.scratch.items[scratch_top..];
-        const extra_top = p.extra_data.items.len;
-        try p.extra_data.appendSlice(params);
+        const extra_top = p.extra.items.len;
+        try p.extra.appendSlice(p.gpa, params);
         return Node.ExtraRange {
             .start = @intCast(Node.ExtraIndex, extra_top),
-            .end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
+            .end = @intCast(Node.ExtraIndex, p.extra.items.len),
         };
     }
 
@@ -436,8 +436,8 @@ const Parser = struct {
 
         // since each block may create an arbitrary number of statements,
         // we collect the toplevel statement indices in the scratch list,
-        // append all of them to extra_data at the end, and return the
-        // range in extra_data containing those indices
+        // append all of them to extra at the end, and return the
+        // range in extra containing those indices
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -448,15 +448,15 @@ const Parser = struct {
         }
 
         const stmts = p.scratch.items[scratch_top..];
-        const extra_top = p.extra_data.items.len;
-        try p.extra_data.appendSlice(stmts);
+        const extra_top = p.extra.items.len;
+        try p.extra.appendSlice(p.gpa, stmts);
 
         return p.addNode(.{
             .main_token = l_brace_token,
             .data = .{
                 .block = .{
                     .stmts_start = @intCast(Node.ExtraIndex, extra_top),
-                    .stmts_end = @intCast(Node.ExtraIndex, p.extra_data.items.len),
+                    .stmts_end = @intCast(Node.ExtraIndex, p.extra.items.len),
                 },
             },
         });
@@ -687,42 +687,6 @@ const Parser = struct {
             });
         }
     }
-
-    // fn parseUse(self: *Parser) !Node.Index {
-    //     const use_token = try self.expectToken(.k_use);
-    //     const scope = try self.expectScopeList();
-    //
-    //     const as_token = self.eatToken(.k_as) orelse 0;
-    //     if (as_token != 0) _ = try self.expectToken(.ident);
-    //
-    //     return self.addNode(.{
-    //         .tag = .use,
-    //         .main_token = use_token,
-    //         .data = .{
-    //             .l = scope,
-    //             .r = as_token,
-    //         }
-    //     });
-    // }
-    //
-    // fn expectScopeList(p: *Parser) !Node.Range {
-    //     const scratch_top = p.scratch.items.len;
-    //     defer p.scratch.shrinkRetainingCapacity(scratch_top);
-    //
-    //     while (true) {
-    //         _ = try p.expectToken(.ident);
-    //         if (p.token_tags[p.index] == .colon_colon) {
-    //             _ = p.eatToken(.colon_colon);
-    //         } else break;
-    //     }
-    //
-    //     const params = p.scratch.items[scratch_top..];
-    //     try p.extra_data.appendSlice(p.gpa, params);
-    //     return Node.Range {
-    //         .start = @intCast(Node.Index, scratch_top),
-    //         .end = @intCast(Node.Index, p.extra_data.items.len),
-    //     };
-    // }
 };
 
 // fn testParse(source: [:0]const u8, allocator: Allocator, anything_changed: *bool) ![]u8 {

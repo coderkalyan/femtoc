@@ -3,10 +3,28 @@ const lex = @import("lex.zig");
 
 const Lexer = lex.Lexer;
 const Token = lex.Token;
+pub const Ast = @This();
 
-pub const Error = error { InvalidNode };
 pub const TokenIndex = u32;
 pub const ByteOffset = u32;
+
+pub const Error = struct {
+    tag: Tag,
+    token: TokenIndex,
+
+    pub const Tag = enum {
+
+    };
+};
+
+// represents the entire, immutable, AST of a source file, once parsed.
+// in-progess mutable parsing data is stored in the `Parser` struct in parser.zig
+// the AST owns the source, token list, node list, and node extra_data list
+source: [:0]const u8,
+tokens: TokenList.Slice,
+nodes: std.MultiArrayList(Node).Slice,
+extra_data: []Node.Index,
+errors: []const Error,
 
 // we store an array of token tags and start locations
 // to reference during parsing. AST nodes don't store tokens
@@ -41,42 +59,6 @@ pub const Node = struct {
     // up to two u32 child references
     data: Data,
 
-    // data union tags, documented below in union
-    pub const Tag = enum(u32) {
-        placeholder,
-
-        named_ty,
-        fn_decl,
-        param,
-
-        integer_literal,
-        float_literal,
-        bool_literal,
-        binary_expr,
-        var_expr,
-        call_expr,
-
-        ty_decl,
-
-        block,
-        const_decl,
-        var_decl,
-        assign_simple,
-        assign_binary,
-        return_val,
-        if_simple,
-        if_else,
-        if_chain,
-        loop_forever,
-        loop_conditional,
-        loop_range,
-
-        toplevel,
-
-        // use,
-        // struct_proto,
-    };
-
     // each union member can hold up to
     // two u32 child references. these are either
     // `Index` types to index into the nodes array
@@ -86,7 +68,7 @@ pub const Node = struct {
     //
     // extra data indices represent only the "start" of the
     // unpacked extra data struct in the extra_data array
-    pub const Data = union(Tag) {
+    pub const Data = union(enum) {
         placeholder: void,
         // types
 
@@ -99,14 +81,6 @@ pub const Node = struct {
             signature: ExtraIndex,
             body: Index,
         },
-        // function prototype 'fn (params...) ret'
-        // main_token = 'fn'
-        // params = CallSignature {}
-        // return_ty = return type node
-        // fn_proto: struct {
-        //     params: ExtraIndex,
-        //     return_ty: Index,
-        // },
         // function parameter (in the declaration/prototype)
         // as opposed to *arguments* at the call site
         // 'argc: u32'
@@ -317,44 +291,33 @@ pub const Node = struct {
     };
 };
 
-// represents the entire, immutable, AST of a source file, once parsed.
-// in-progess mutable parsing data is stored in the `Parser` struct in parser.zig
-// the AST owns the source, token list, node list, and node extra_data list
-pub const Ast = struct {
-    source: [:0]const u8,
-    tokens: TokenList.Slice,
-    nodes: std.MultiArrayList(Node).Slice,
-    extra_data: []Node.Index,
-    //errors: []const Error,
-
-    pub fn extraData(self: *const Ast, index: usize, comptime T: type) T {
-        const fields = std.meta.fields(T);
-        var result: T = undefined;
-        inline for (fields) |field, i| {
-            comptime std.debug.assert(field.field_type == Node.Index);
-            @field(result, field.name) = self.extra_data[index + i];
-        }
-        return result;
+pub fn extraData(self: *const Ast, index: usize, comptime T: type) T {
+    const fields = std.meta.fields(T);
+    var result: T = undefined;
+    inline for (fields) |field, i| {
+        comptime std.debug.assert(field.field_type == Node.Index);
+        @field(result, field.name) = self.extra_data[index + i];
     }
+    return result;
+}
 
-    pub fn tokenString(tree: *const Ast, index: TokenIndex) []const u8 {
-        const tokens = tree.tokens;
-        const token_start = tokens.items(.start)[index];
-        var lexer = Lexer.init_index(tree.source, token_start);
-        const token = lexer.next();
+pub fn tokenString(tree: *const Ast, index: TokenIndex) []const u8 {
+    const tokens = tree.tokens;
+    const token_start = tokens.items(.start)[index];
+    var lexer = Lexer.init_index(tree.source, token_start);
+    const token = lexer.next();
 
-        return tree.source[token.loc.start..token.loc.end];
-    }
+    return tree.source[token.loc.start..token.loc.end];
+}
 
-    pub fn tokenTag(tree: *const Ast, index: TokenIndex) Token.Tag {
-        return tree.tokens.items(.tag)[index];
-    }
+pub fn tokenTag(tree: *const Ast, index: TokenIndex) Token.Tag {
+    return tree.tokens.items(.tag)[index];
+}
 
-    pub fn mainToken(tree: *const Ast, node: Node.Index) TokenIndex {
-        return tree.nodes.items(.main_token)[node];
-    }
+pub fn mainToken(tree: *const Ast, node: Node.Index) TokenIndex {
+    return tree.nodes.items(.main_token)[node];
+}
 
-    pub fn data(tree: *const Ast, node: Node.Index) Node.Data {
-        return tree.nodes.items(.data)[node];
-    }
-};
+pub fn data(tree: *const Ast, node: Node.Index) Node.Data {
+    return tree.nodes.items(.data)[node];
+}

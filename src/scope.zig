@@ -1,9 +1,9 @@
 const std = @import("std");
 const hir = @import("hir.zig");
-const ast = @import("ast.zig");
+const Ast = @import("Ast.zig");
 const Interner = @import("interner.zig").Interner;
 
-const Node = ast.Node;
+const Node = Ast.Node;
 const Inst = hir.Inst;
 pub const IdentifierError = error { Invalid, Shadowed };
 

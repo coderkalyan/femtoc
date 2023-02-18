@@ -1,6 +1,6 @@
 const std = @import("std");
 const hir = @import ("hir.zig");
-const ast = @import("ast.zig");
+const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const parse = @import("parse.zig");
 const parseInt = @import("integerLiteral.zig").parseInt;
@@ -12,8 +12,7 @@ const Allocator = std.mem.Allocator;
 const Hir = hir.Hir;
 const Inst = hir.Inst;
 const Ref = Inst.Ref;
-const Ast = ast.Ast;
-const Node = ast.Node;
+const Node = Ast.Node;
 const Token = lex.Token;
 const indexToRef = Inst.indexToRef;
 const refToIndex = Inst.refToIndex;
@@ -79,12 +78,12 @@ pub const HirGen = struct {
     interner: Interner,
     resolution_map: std.AutoHashMap(Node.Index, Inst.Ref),
 
-    fn parseIntToken(hg: *HirGen, index: ast.TokenIndex) !u64 {
+    fn parseIntToken(hg: *HirGen, index: Ast.TokenIndex) !u64 {
         const int_str = hg.tree.tokenString(index);
         return parseInt(int_str);
     }
 
-    fn parseFloatToken(hg: *HirGen, index: ast.TokenIndex) !f64 {
+    fn parseFloatToken(hg: *HirGen, index: Ast.TokenIndex) !f64 {
         const float_str = hg.tree.tokenString(index);
         return parseFloat(float_str);
     }
