@@ -2,6 +2,7 @@ const std = @import("std");
 const TokenIndex = @import("ast.zig").TokenIndex;
 const Interner = @import("interner.zig").Interner;
 const Node = @import("ast.zig").Node;
+const Type = @import("typing.zig").Type;
 
 pub const Error = error { InvalidRef };
 
@@ -104,10 +105,20 @@ pub const Inst = struct {
         return if (index >= ref_len) index - ref_len else null;
     }
 
-    pub fn refIsIndex(ref: Inst.Ref) bool {
-        const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
-        const index = @enumToInt(ref);
-        return index >= ref_len;
+    pub fn refToType(ref: Inst.Ref) ?Type {
+        return switch (ref) {
+            .u1_ty => Type.initTag(.u1),
+            .u8_ty => Type.initTag(.u8),
+            .i8_ty => Type.initTag(.i8),
+            .u16_ty => Type.initTag(.u16),
+            .i16_ty => Type.initTag(.i16),
+            .u32_ty => Type.initTag(.u32),
+            .i32_ty => Type.initTag(.i32),
+            .u64_ty => Type.initTag(.u64),
+            .i64_ty => Type.initTag(.i64),
+            .bool_ty => Type.initTag(.u8),
+            else => null,
+        };
     }
 
     pub const Ref = enum(u32) {

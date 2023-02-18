@@ -2,6 +2,8 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const lex = @import("lex.zig");
 const hir = @import("hir.zig");
+const Mir = @import("Mir.zig");
+const Type = @import("typing.zig").Type;
 
 const io = std.io;
 
@@ -250,14 +252,6 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             const ir = self.hir;
             const writer = self.stream.writer();
 
-            // const block_index = try hir.Inst.refToIndex(block_ref);
-            // const block_inst = self.hir.inst[block_index];
-            // const block = self.hir.extraData(block_inst.data.pl_node.pl, hir.Inst.Block);
-
-            // var inst_index = block.insts_start;
-            // const index = try hir.Inst.refToIndex(self.hir.extra_data[inst_index]);
-            // const inst = self.hir.insts[index];
-
             try writer.print("%{} = ", .{index});
             var lbuf: [32]u8 = [_]u8{0} ** 32;
             var rbuf: [32]u8 = [_]u8{0} ** 32;
@@ -427,6 +421,214 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
         fn formatIndex(_: *Self, index: hir.Inst.Index, buf: []u8) !void {
             _ = try std.fmt.bufPrint(buf, "%{}", .{index});
+        }
+    };
+}
+
+pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
+    return struct {
+        stream: IndentingWriter(width, WriterType),
+        mir: *const Mir,
+
+        pub const Self = @This();
+
+        pub fn init(writer: anytype, mir_data: *const Mir) Self {
+            return .{ .stream = indentingWriter(width, writer), .mir = mir_data };
+        }
+
+        pub fn render(r: *Self) !void {
+            const module = r.mir.insts.items(.data)[r.mir.insts.len - 1];
+            const data = r.mir.extraData(module.pl, Mir.Module);
+
+            var extra_index: u32 = 0;
+            while (extra_index < data.len) : (extra_index += 1) {
+                const index = r.mir.extra[module.pl + 1 + extra_index];
+                try r.renderInst(index);
+            }
+        }
+
+        pub fn renderInst(self: *Self, index: u32) !void {
+            const ir = self.mir;
+            const writer = self.stream.writer();
+
+            try writer.print("%{} = ", .{index});
+            var lbuf: [32]u8 = [_]u8{0} ** 32;
+            var rbuf: [32]u8 = [_]u8{0} ** 32;
+            switch (ir.insts.items(.tag)[index]) {
+                .constant => {
+                    const data = ir.insts.items(.data)[index];
+                    const value = ir.values[data.ty_pl.pl];
+                    switch (data.ty_pl.ty.tag) {
+                        .comptime_int => {
+                            try writer.print("constant(comptime_int, {})", .{value.int});
+                        },
+                        .comptime_float => {
+                            try writer.print("constant(comptime_float, {})", .{value.float});
+                        },
+                        else => {},
+                        // else => {std.debug.print("tag = {}\n", .{data.ty_pl.ty.tag});},
+                    }
+                },
+                // .add, .sub, .mul, .div, .mod,
+                // .eq, .neq, .leq, .geq, .lt, .gt => {
+                //     try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
+                //         .add => "add",
+                //         .sub => "sub",
+                //         .mul => "mul",
+                //         .div => "div",
+                //         .mod => "mod",
+                //         .eq => "eq",
+                //         .neq => "neq",
+                //         .leq => "leq",
+                //         .geq => "geq",
+                //         .lt => "lt",
+                //         .gt => "gt",
+                //         else => unreachable,
+                //     });
+                //
+                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
+                //     const bin = ir.extraData(pl, hir.Inst.Binary);
+                //     try self.formatRef(bin.lref, &lbuf);
+                //     try self.formatRef(bin.rref, &rbuf);
+                //     try writer.print("({s}, {s})", .{lbuf, rbuf});
+                // },
+                .alloc => {
+                    try self.formatTy(ir.insts.items(.data)[index].ty, &lbuf);
+                    try writer.print("alloc({s})", .{lbuf});
+                },
+                .store => {
+                    const addr = ir.insts.items(.data)[index].bin_op.lref;
+                    const val = ir.insts.items(.data)[index].bin_op.rref;
+                    try self.formatRef(addr, &lbuf);
+                    try self.formatRef(val, &rbuf);
+                    try writer.print("store({s}, {s})", .{lbuf, rbuf});
+                },
+                .load => {
+                    const ref = ir.insts.items(.data)[index].un_op;
+                    try self.formatRef(ref, &lbuf);
+                    try writer.print("load({s})", .{lbuf});
+                },
+                .function => {
+                    const pl = ir.insts.items(.data)[index].pl;
+                    const data = self.mir.extraData(pl, Mir.Function);
+                    try writer.print("func(ret_ty=, body={{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+
+                    var extra_index: u32 = 0;
+                    while (extra_index < data.len) : (extra_index += 1) {
+                        const inst = self.mir.extra[pl + 1 + extra_index];
+                        try self.renderInst(inst);
+                    }
+
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
+                },
+                // .block => {
+                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
+                //     const block = ir.extraData(pl, hir.Inst.Block);
+                //
+                //     try writer.print("block({{", .{});
+                //     self.stream.indent();
+                //     try self.stream.newline();
+                //
+                //     var extra_index: u32 = 0;
+                //     while (extra_index < block.len) : (extra_index += 1) {
+                //         const inst = self.hir.extra_data[pl + 1 + extra_index];
+                //         try self.renderInst(inst);
+                //     }
+                //
+                //     self.stream.dedent();
+                //     try writer.print("}})", .{});
+                // },
+                // .branch_double => {
+                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
+                //     const branch_double = ir.extraData(pl, hir.Inst.BranchDouble);
+                //
+                //     try self.formatRef(branch_double.condition, &lbuf);
+                //     try writer.print("branch_double({s},", .{lbuf});
+                //     self.stream.indent();
+                //     try self.stream.newline();
+                //     try writer.print("exec_true = {{", .{});
+                //     self.stream.indent();
+                //     try self.stream.newline();
+                //     try self.renderInst(branch_double.exec_true);
+                //     self.stream.dedent();
+                //     try writer.print("}}, exec_false = {{", .{});
+                //     self.stream.indent();
+                //     try self.stream.newline();
+                //     try self.renderInst(branch_double.exec_false);
+                //     self.stream.dedent();
+                //     try writer.print("}})", .{});
+                //     self.stream.dedent();
+                // },
+                // .ret_implicit => {
+                //     const operand = ir.insts.items(.data)[index].un_node.operand;
+                //     try self.formatRef(operand, &lbuf);
+                //     try writer.print("ret_implicit({s})", .{lbuf});
+                // },
+                // .ret_node => {
+                //     const operand = ir.insts.items(.data)[index].un_node.operand;
+                //     try self.formatRef(operand, &lbuf);
+                //     try writer.print("ret_node({s})", .{lbuf});
+                // },
+                // .call => {
+                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
+                //     const call = ir.extraData(pl, hir.Inst.Call);
+                //     try self.formatRef(call.addr, &lbuf);
+                //     try writer.print("call({s}", .{lbuf});
+                //     
+                //     var extra_index: u32 = 0;
+                //     while (extra_index < call.args_len) : (extra_index += 1) {
+                //         const arg = ir.extra_data[pl + 2 + extra_index];
+                //         try self.formatRef(@intToEnum(hir.Inst.Ref, arg), &rbuf);
+                //         try writer.print(", {s}", .{rbuf});
+                //     }
+                //     
+                //     try writer.print(")", .{});
+                // },
+                else => {try writer.print("{}", .{ir.insts.items(.tag)[index]});},
+            }
+
+            try self.stream.newline();
+        }
+
+        fn formatRef(_: *Self, ref: Mir.Ref, buf: []u8) !void {
+            if (Mir.refToIndex(ref)) |index| {
+                _ = try std.fmt.bufPrint(buf, "%{}", .{index});
+            } else {
+                _ = try std.fmt.bufPrint(buf, "@Ref.{s}", .{switch (ref) {
+                    .zero_val => "zero",
+                    .one_val => "one",
+                    .void_val => "void_val",
+                    else => unreachable,
+                }});
+            }
+        }
+
+        fn formatIndex(_: *Self, index: Mir.Index, buf: []u8) !void {
+            _ = try std.fmt.bufPrint(buf, "%{}", .{index});
+        }
+
+        fn formatTy(_: *Self, ty: Type, buf: []u8) !void {
+            if (ty.isTag()) {
+                _ = try std.fmt.bufPrint(buf, "{s}", .{switch (ty.tag) {
+                    .void => "void",
+                    .comptime_int => "comptime_int",
+                    .u1 => "u1",
+                    .u8 => "u8",
+                    .i8 => "i8",
+                    .u16 => "u16",
+                    .i16 => "i16",
+                    .u32 => "u32",
+                    .i32 => "i32",
+                    .u64 => "u64",
+                    .i64 => "i64",
+                    .comptime_float => "comptime_float",
+                    .f32 => "f32",
+                    .f64 => "f64",
+                }});
+            }
         }
     };
 }

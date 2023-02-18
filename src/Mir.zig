@@ -14,6 +14,9 @@ pub const Inst = struct {
     data: Data,
 
     pub const Tag = enum(u8) {
+        module,
+        function,
+
         constant, // data contains type
 
         add,
@@ -54,13 +57,13 @@ pub const Inst = struct {
             ty: Type,
             op: Ref,
         },
-        un_op: struct {
-            op: Ref,
-        },
+        un_op: Ref,
         bin_op: struct {
             lref: Ref,
             rref: Ref,
         },
+        ty: Type,
+        pl: u32,
     };
 
     pub fn typeOf(mir: *Mir, ref: Ref) Type {
@@ -80,8 +83,8 @@ pub const Inst = struct {
 
 pub const Index = u32;
 pub const Ref = enum(u32) {
-    izero_val,
-    ione_val,
+    zero_val,
+    one_val,
     void_val,
 
     _,
@@ -97,6 +100,27 @@ pub fn refToIndex(ref: Ref) ?Index {
     const index = @enumToInt(ref);
     return if (index >= ref_len) index - ref_len else null;
 }
+
+pub fn extraData(mir: *const Mir, index: usize, comptime T: type) T {
+    const fields = std.meta.fields(T);
+    var result: T = undefined;
+    inline for (fields) |field, i| {
+        if (field.field_type == u32) {
+            @field(result, field.name) = mir.extra[index + i];
+        } else if (field.field_type == Ref) {
+            @field(result, field.name) = @intToEnum(Ref, mir.extra[index + i]);
+        }
+    }
+    return result;
+}
+
+pub const Function = struct {
+    len: u32,
+};
+
+pub const Module = struct {
+    len: u32,
+};
 
 pub const Value = union {
     int: u64,
@@ -115,4 +139,15 @@ pub const Value = union {
 pub const TypedValue = struct {
     ty: Type,
     val: Value,
+
+    pub fn coerces(tv: *TypedValue, ty: Type) bool {
+        // TODO: payload types
+        switch (tv.ty.tag) {
+            .comptime_int => {
+                _ = ty;
+                return true;
+            },
+            else => return false,
+        }
+    }
 };

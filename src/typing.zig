@@ -44,6 +44,10 @@ pub const Type = extern union {
         };
     }
 
+    pub inline fn isTag(ty: Type) bool {
+        return @ptrToInt(ty.payload) < tagged_length;
+    }
+
     pub fn size(t: *const Type) usize {
         if (@enumToInt(t.tag) < tagged_length) {
             return switch (t.tag) {

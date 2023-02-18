@@ -1,0 +1,45 @@
+use math;
+
+type Point = struct {
+    x: f32,
+    y: f32,
+    z: f32,
+    link: *slist,
+};
+
+let Point::new = fn (x: f32, y: f32, z: f32) Point {
+    Point {
+        .x = x,
+        .y = y,
+        .z = z,
+        .link = null,
+    }
+};
+
+let Point::dist = fn (a: *Point, b: *Point) f32 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let dz = b.z - a.z;
+
+    return math::hypot(math::hypot(dx, dy), dz);
+};
+
+type slist = struct {
+    next: *slist,
+};
+
+let slist::data = fn <T> (l: *slist) T {
+    fm::parent(l, slist, link);
+}
+
+let main = fn () {
+    let points: slist = slist { .link = null };
+
+    let a = Point::new(1, 2, 3);
+    let b = Point::new(4, 5, 6);
+    let c = Point::new(7, 8, 9);
+
+    points.insert(a);
+    a.link.insert(b);
+    points.insert(c);
+}
