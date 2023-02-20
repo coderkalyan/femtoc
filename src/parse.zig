@@ -332,22 +332,6 @@ const Parser = struct {
         };
     }
 
-    // fn parseStructProto(self: *Parser) !Node.Index {
-    //     const struct_token = self.eatToken(.k_struct) orelse return null_node;
-    //     _ = try self.expectToken(.l_brace);
-        // const members = try self.parseStructMembers();
-
-    //     return self.addNode(.{
-    //         .tag = .struct_proto,
-    //         .main_token = struct_token,
-    //         .data = .{
-    //             // .l = members,
-    //             .l = undefined,
-    //             .r = undefined,
-    //         }
-    //     });
-    // }
-
     fn expectFnDecl(p: *Parser) !Node.Index {
         const fn_token = try p.expectToken(.k_fn);
         const params = try p.expectParamList();

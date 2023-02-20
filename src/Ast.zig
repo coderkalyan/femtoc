@@ -13,7 +13,7 @@ pub const Error = struct {
     token: TokenIndex,
 
     pub const Tag = enum {
-
+        
     };
 };
 

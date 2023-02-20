@@ -457,12 +457,14 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .constant => {
                     const data = ir.insts.items(.data)[index];
                     const value = ir.values[data.ty_pl.pl];
+                    try self.formatTy(data.ty_pl.ty, &lbuf);
                     switch (data.ty_pl.ty.tag) {
-                        .comptime_int => {
-                            try writer.print("constant(comptime_int, {})", .{value.int});
+                        .comptime_int,
+                        .u1, .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
+                            try writer.print("constant({s}, {})", .{lbuf, value.int});
                         },
-                        .comptime_float => {
-                            try writer.print("constant(comptime_float, {})", .{value.float});
+                        .comptime_float, .f32, .f64 => {
+                            try writer.print("constant({s}, {})", .{lbuf, value.float});
                         },
                         else => {},
                         // else => {std.debug.print("tag = {}\n", .{data.ty_pl.ty.tag});},

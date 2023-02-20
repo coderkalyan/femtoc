@@ -232,6 +232,7 @@ pub fn getTy(_: *MirGen, ref: HirRef) Type {
             .f32_ty => .f32,
             .f64_ty => .f64,
             .bool_ty => .u1,
+            else => unreachable,
         }
     };
 }
@@ -283,14 +284,33 @@ pub fn walkToplevel(mg: *MirGen) !void {
                 const pl = mg.hir.insts.items(.data)[hir_index].pl_node.pl;
                 const validate_ty = mg.hir.extraData(pl, hir.Inst.ValidateTy);
                 const ref = mg.map.resolveRef(validate_ty.ref);
-                const ty = try mg.resolveTy(ref);
-                const coerces = switch (ty.tag) {
-                    .comptime_int => true,
-                    .comptime_float => true,
-                    else => false,
-                };
-                std.debug.assert(coerces);
-                mg.map.putAssumeCapacity(hir_index, ref);
+                const found_ty = try mg.resolveTy(ref);
+                const expected_ty = mg.getTy(validate_ty.ty);
+
+                if (found_ty.tag == expected_ty.tag) {
+                    mg.map.putAssumeCapacity(hir_index, ref);
+                } else {
+                    const coerce_ref = switch (found_ty.tag) {
+                        .comptime_int => ref: {
+                            const value_index = Mir.refToIndex(ref).?;
+                            const int_value = mg.hir.insts.items(.data)[value_index].int;
+                            const value = try mg.addValue(.{ .int = int_value });
+                            const index = try mg.addInst(.{
+                                .tag = .constant,
+                                .data = .{
+                                    .ty_pl = .{
+                                        .ty = expected_ty,
+                                        .pl = value,
+                                    }
+                                }
+                            });
+                            try mg.scratch.append(mg.arena, index);
+                            break :ref Mir.indexToRef(index);
+                        },
+                        else => return Error.TypeError,
+                    };
+                    mg.map.putAssumeCapacity(hir_index, coerce_ref);
+                }
             },
             .fn_decl => {
                 const pl = mg.hir.insts.items(.data)[hir_index].pl_node.pl;

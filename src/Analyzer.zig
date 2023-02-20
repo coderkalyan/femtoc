@@ -75,14 +75,56 @@ pub fn analyzeInst(a: *Analyzer, inst: hir.Inst.Index) !void {
         .validate_ty => {
             const validate_ty = a.mg.hir.extraData(data.pl_node.pl, hir.Inst.ValidateTy);
             const ref = a.map.resolveRef(validate_ty.ref);
-            const ty = try a.mg.resolveTy(ref);
-            const coerces = switch (ty.tag) {
-                .comptime_int => true,
-                .comptime_float => true,
-                else => false,
-            };
-            std.debug.assert(coerces);
-            a.map.putAssumeCapacity(inst, ref);
+            const found_ty = try a.mg.resolveTy(ref);
+            const expected_ty = a.mg.getTy(validate_ty.ty);
+
+            if (found_ty.tag == expected_ty.tag) {
+                a.mg.map.putAssumeCapacity(inst, ref);
+            } else {
+                const coerce_ref = switch (found_ty.tag) {
+                    .comptime_int => ref: {
+                        const int_value: u64 = if (Mir.refToIndex(ref)) |value_index|
+                            a.mg.hir.insts.items(.data)[value_index].int
+                        else switch (ref) {
+                            .zero_val => 0,
+                            .one_val => 1,
+                            else => return error.InvalidRef,
+                        };
+                        const value = try a.mg.addValue(.{ .int = int_value });
+                        const index = try a.mg.addInst(.{
+                            .tag = .constant,
+                            .data = .{
+                                .ty_pl = .{
+                                    .ty = expected_ty,
+                                    .pl = value,
+                                }
+                            }
+                        });
+                        try a.mg.scratch.append(a.mg.arena, index);
+                    break :ref Mir.indexToRef(index);
+                    },
+                    .comptime_float => ref: {
+                        const float_value: f64 = if (Mir.refToIndex(ref)) |value_index|
+                            a.mg.hir.insts.items(.data)[value_index].float
+                        else
+                            return error.InvalidRef;
+                        const value = try a.mg.addValue(.{ .float = float_value });
+                        const index = try a.mg.addInst(.{
+                            .tag = .constant,
+                            .data = .{
+                                .ty_pl = .{
+                                    .ty = expected_ty,
+                                    .pl = value,
+                                }
+                            }
+                        });
+                        try a.mg.scratch.append(a.mg.arena, index);
+                    break :ref Mir.indexToRef(index);
+                    },
+                    else => return error.TypeError,
+                };
+                a.mg.map.putAssumeCapacity(inst, coerce_ref);
+            }
         },
         .alloc => {
             const ref = a.map.resolveRef(data.un_node.operand);
