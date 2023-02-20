@@ -471,29 +471,28 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         // else => {std.debug.print("tag = {}\n", .{data.ty_pl.ty.tag});},
                     }
                 },
-                // .add, .sub, .mul, .div, .mod,
-                // .eq, .neq, .leq, .geq, .lt, .gt => {
-                //     try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
-                //         .add => "add",
-                //         .sub => "sub",
-                //         .mul => "mul",
-                //         .div => "div",
-                //         .mod => "mod",
-                //         .eq => "eq",
-                //         .neq => "neq",
-                //         .leq => "leq",
-                //         .geq => "geq",
-                //         .lt => "lt",
-                //         .gt => "gt",
-                //         else => unreachable,
-                //     });
-                //
-                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const bin = ir.extraData(pl, Hir.Inst.Binary);
-                //     try self.formatRef(bin.lref, &lbuf);
-                //     try self.formatRef(bin.rref, &rbuf);
-                //     try writer.print("({s}, {s})", .{lbuf, rbuf});
-                // },
+                .add, .sub, .mul, .div, .mod,
+                .eq, .neq, .leq, .geq, .lt, .gt => {
+                    try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
+                        .add => "add",
+                        .sub => "sub",
+                        .mul => "mul",
+                        .div => "div",
+                        .mod => "mod",
+                        .eq => "eq",
+                        .neq => "neq",
+                        .leq => "leq",
+                        .geq => "geq",
+                        .lt => "lt",
+                        .gt => "gt",
+                        else => unreachable,
+                    });
+
+                    const bin = ir.insts.items(.data)[index].bin_op;
+                    try self.formatRef(bin.lref, &lbuf);
+                    try self.formatRef(bin.rref, &rbuf);
+                    try writer.print("({s}, {s})", .{lbuf, rbuf});
+                },
                 .alloc => {
                     try self.formatTy(ir.insts.items(.data)[index].ty, &lbuf);
                     try writer.print("alloc({s})", .{lbuf});

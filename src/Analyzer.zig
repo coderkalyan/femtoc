@@ -93,6 +93,7 @@ pub fn analyzeBody(analyzer: *Analyzer, inst: Hir.Index) !Mir {
             .load_inline => try analyzer.loadInline(block, index),
             .store => try analyzer.store(block, index),
             .validate_ty => try analyzer.validateTy(block, index),
+            .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
             else => Mir.indexToRef(0),
         };
         analyzer.map.putAssumeCapacity(index, ref);
@@ -216,4 +217,195 @@ fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
             else => return error.TypeError,
         }
     }
+}
+
+fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
+    const lref = analyzer.map.resolveRef(binary.lref);
+    const rref = analyzer.map.resolveRef(binary.rref);
+    const lty = try analyzer.resolveTy(b, lref);
+    const rty = try analyzer.resolveTy(b, rref);
+
+    switch (lty.tag) {
+        .comptime_int => {
+            switch (rty.tag) {
+                .comptime_int => {
+                    const lval = analyzer.intConstantValue(lref);
+                    const rval = analyzer.intConstantValue(rref);
+                    const val = .{
+                        .int = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => lval + rval,
+                            .sub => lval - rval,
+                            .mul => lval * rval,
+                            .div => lval / rval,
+                            .mod => lval % rval,
+                            else => unreachable,
+                        }
+                    };
+                    const index = try b.addConstant(Type.initTag(.comptime_int), val);
+                    return Mir.indexToRef(index);
+                },
+                .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
+                    const lval: Mir.Ref = switch (lref) {
+                        .zero_val => .zero_val,
+                        .one_val => .one_val,
+                        else => ref: {
+                            const int = analyzer.intConstantValue(lref);
+                            const index = try b.addConstant(rty, .{ .int = int });
+                            break :ref Mir.indexToRef(index);
+                        },
+                    };
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => .mod,
+                            else => unreachable,
+                        },
+                        .data = .{ .bin_op = .{ .lref = lval, .rref = rref } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                else => return error.TypeMismatch,
+            }
+        },
+        .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
+            switch (rty.tag) {
+                .comptime_int => {
+                    const rval: Mir.Ref = switch (rref) {
+                        .zero_val => .zero_val,
+                        .one_val => .one_val,
+                        else => ref: {
+                            const int = analyzer.intConstantValue(rref);
+                            const index = try b.addConstant(lty, .{ .int = int });
+                            break :ref Mir.indexToRef(index);
+                        },
+                    };
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => .mod,
+                            else => unreachable,
+                        },
+                        .data = .{ .bin_op = .{ .lref = lref, .rref = rval } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => .mod,
+                            else => unreachable,
+                        },
+                        .data = .{ .bin_op = .{ .lref = lref, .rref = rref } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                else => return error.TypeMismatch,
+            }
+        },
+        .comptime_float => {
+            switch (rty.tag) {
+                .comptime_float => {
+                    const lval = analyzer.floatConstantValue(lref);
+                    const rval = analyzer.floatConstantValue(rref);
+                    const val = .{
+                        .float = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => lval + rval,
+                            .sub => lval - rval,
+                            .mul => lval * rval,
+                            .div => lval / rval,
+                            .mod => return error.InvalidOperation,
+                            else => unreachable,
+                        }
+                    };
+                    const index = try b.addConstant(Type.initTag(.comptime_float), val);
+                    return Mir.indexToRef(index);
+                },
+                .f32, .f64 => {
+                    const lval = analyzer.floatConstantValue(lref);
+                    const value = try b.addConstant(rty, .{ .float = lval });
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => return error.InvalidOperation,
+                            else => unreachable,
+                        },
+                        .data = .{ .bin_op = .{ .lref = Mir.indexToRef(value), .rref = rref } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                else => return error.TypeMismatch,
+            }
+        },
+        .f32, .f64 => {
+            switch (rty.tag) {
+                .comptime_float => {
+                    const rval = analyzer.floatConstantValue(rref);
+                    const value = try b.addConstant(lty, .{ .float = rval });
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => return error.InvalidOperation,
+                            else => unreachable,
+                        },
+                        .data = .{ .bin_op = .{ .lref = lref, .rref = Mir.indexToRef(value) } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                .f32, .f64 => {
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => return error.InvalidOperation,
+                            else => unreachable,
+                        },
+                        .data = .{ .bin_op = .{ .lref = lref, .rref = rref } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                else => return error.TypeMismatch,
+            }
+        },
+        else => return error.TypeMismatch,
+    }
+}
+
+fn intConstantValue(analyzer: *Analyzer, ref: Mir.Ref) u64 {
+    const index = Mir.refToIndex(ref).?;
+    const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
+    return analyzer.values.items[pl].int;
+    // } else {
+    //     return switch (ref) {
+    //         .zero_val => return Mir.Ref.zero_val,
+    //         .one_val => return Mir.Ref.one_val,
+    //         else => unreachable,
+    //     };
+    // }
+}
+
+fn floatConstantValue(analyzer: *Analyzer, ref: Mir.Ref) f64 {
+    const index = Mir.refToIndex(ref).?;
+    // std.debug.print("{}\n", .{analyzer.instructions.items(.tag)[index]});
+    const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
+    return analyzer.values.items[pl].float;
 }
