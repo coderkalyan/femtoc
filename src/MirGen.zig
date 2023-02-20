@@ -4,6 +4,7 @@ const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
 const Analyzer = @import("Analyzer.zig");
 const MirMap = @import("MirMap.zig");
+const Module = @import("Module.zig");
 
 const math = std.math;
 
@@ -22,6 +23,28 @@ extra: std.ArrayListUnmanaged(u32),
 values: std.ArrayListUnmanaged(Value),
 scratch: std.ArrayListUnmanaged(u32),
 map: MirMap,
+
+pub fn generate(gpa: Allocator, hir: *const Hir) !Module {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    var mirgen = MirGen {
+        .gpa = gpa,
+        .arena = arena.allocator(),
+        .hir = hir,
+        .insts = .{},
+        .extra = .{},
+        .values = .{},
+        .scratch = .{},
+        .map = MirMap.init(null),
+    };
+    return mirgen.walkModule();
+    // return Mir {
+    //     .insts = mirgen.insts.toOwnedSlice(),
+    //     .extra = mirgen.extra.toOwnedSlice(gpa),
+    //     .values = mirgen.values.toOwnedSlice(gpa),
+    // };
+}
 
 pub fn addInst(mg: *MirGen, inst: Mir.Inst) !Mir.Index {
     const result = @intCast(Mir.Index, mg.insts.len);
@@ -55,7 +78,7 @@ pub fn resolveTy(mg: *MirGen, ref: Mir.Ref) !Type {
             .mul, .div, .mod => mg.resolveTy(mg.insts.items(.data)[index].bin_op.lref),
             .eq, .neq, .geq,
             .leq, .gt, .lt => mg.resolveTy(mg.insts.items(.data)[index].bin_op.lref),
-            .alloc => mg.resolveTy(mg.insts.items(.data)[index].op_pl.op),
+            .alloc => mg.insts.items(.data)[index].ty,
             else => Error.NotImplemented,
         };
     } else {
@@ -67,18 +90,19 @@ pub fn resolveTy(mg: *MirGen, ref: Mir.Ref) !Type {
     }
 }
 
-pub fn walkToplevel(mg: *MirGen) !void {
-    const toplevel = mg.hir.insts.items(.data)[mg.hir.insts.len - 1];
-    const toplevel_pl = toplevel.pl_node.pl;
-    const data = mg.hir.extraData(toplevel_pl, Hir.Inst.Module);
+pub fn walkModule(mg: *MirGen) !Module {
+    const hir_module = mg.hir.insts.items(.data)[mg.hir.insts.len - 1];
+    const module_pl = hir_module.pl_node.pl;
+    const data = mg.hir.extraData(module_pl, Hir.Inst.Module);
 
+    var function_mir = std.ArrayListUnmanaged(Mir){};
     const scratch_top = mg.scratch.items.len;
     defer mg.scratch.shrinkRetainingCapacity(scratch_top);
 
-    try mg.map.ensureSliceCapacity(mg.arena, mg.hir.extra_data[toplevel_pl + 1..toplevel_pl + 1 + data.len]);
+    try mg.map.ensureSliceCapacity(mg.arena, mg.hir.extra_data[module_pl + 1..module_pl + 1 + data.len]);
     var extra_index: u32 = 0;
     while (extra_index < data.len) : (extra_index += 1) {
-        const hir_index = mg.hir.extra_data[toplevel_pl + 1 + extra_index];
+        const hir_index = mg.hir.extra_data[module_pl + 1 + extra_index];
         switch (mg.hir.insts.items(.tag)[hir_index]) {
             .int => {
                 const value = try mg.addValue(.{ .int = mg.hir.insts.items(.data)[hir_index].int });
@@ -149,12 +173,20 @@ pub fn walkToplevel(mg: *MirGen) !void {
                 var analyzer = Analyzer {
                     .mg = mg,
                     .map = MirMap.init(&mg.map),
+                    .hir = mg.hir,
+                    .gpa = mg.gpa,
                     .arena = mg.arena,
+                    .instructions = .{},
+                    .extra = .{},
+                    .values = .{},
                     .scratch = .{},
                 };
-                const index = try analyzer.analyzeBody(fn_decl.body);
+
+                const mir = try analyzer.analyzeBody(fn_decl.body);
+                try function_mir.append(mg.gpa, mir);
+                // std.debug.print("{any}\n", .{mir.insts.items(.tag)});
                 // try analyzer.analyzeBody(fn_decl.body);
-                try mg.scratch.append(mg.arena, index);
+                // try mg.scratch.append(mg.arena, index);
                 // mg.map.putAssumeCapacity(hir_index, Mir.indexToRef(index));
             },
             .alloc => {
@@ -178,11 +210,15 @@ pub fn walkToplevel(mg: *MirGen) !void {
         .len = @intCast(u32, insts.len),
     });
     try mg.extra.appendSlice(mg.gpa, insts);
-    const module = try mg.addInst(.{
+    const module_inst = try mg.addInst(.{
         .tag = .module,
         .data = .{ .pl = module_data },
     });
-    _ = module;
+    _ = module_inst;
+
+    return Module {
+        .function_mir = function_mir.toOwnedSlice(mg.gpa),
+    };
 }
     //
     // fn call(mg: *MirGen, inst: Hir.Inst) !Mir.Ref {

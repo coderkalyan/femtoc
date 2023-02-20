@@ -16,7 +16,7 @@ pub const Scope = struct {
 
     pub fn parent(base: *Scope) ?*Scope {
         return switch (base.tag) {
-            .toplevel => null,
+            .module => null,
             .namespace => base.cast(Namespace).?.parent,
             .block => base.cast(Block).?.parent,
             .local_val => base.cast(LocalVal).?.parent,
@@ -267,24 +267,24 @@ test "namespace member" {
     defer arena.deinit();
 
     var interner = Interner.init(arena.allocator());
-    var toplevel = Scope.Toplevel {};
-    var namespace = Scope.Namespace.init(arena.allocator(), &toplevel.base);
+    var module = Scope.Module {};
+    var namespace = Scope.Namespace.init(arena.allocator(), &module.base);
 
     const apple = try interner.intern("apple");
     const banana = try interner.intern("banana");
     const cherry = try interner.intern("cherry");
 
-    try std.testing.expectEqual(namespace.base.resolveVar(apple).?, null);
-    try std.testing.expectEqual(namespace.base.resolveVar(banana).?, null);
-    try std.testing.expectEqual(namespace.base.resolveVar(cherry).?, null);
+    try std.testing.expectEqual(try namespace.base.resolveVar(apple), null);
+    try std.testing.expectEqual(try namespace.base.resolveVar(banana), null);
+    try std.testing.expectEqual(try namespace.base.resolveVar(cherry), null);
 
     try namespace.decls.putNoClobber(apple, 0);
     try namespace.decls.putNoClobber(banana, 1);
     try namespace.decls.putNoClobber(cherry, 2);
 
-    try std.testing.expectEqual(try namespace.base.resolveVar(apple), 0);
-    try std.testing.expectEqual(try namespace.base.resolveVar(banana), 1);
-    try std.testing.expectEqual(try namespace.base.resolveVar(cherry), 2);
+    try std.testing.expectEqual((try namespace.base.resolveVar(apple)).?, 0);
+    try std.testing.expectEqual((try namespace.base.resolveVar(banana)).?, 1);
+    try std.testing.expectEqual((try namespace.base.resolveVar(cherry)).?, 2);
 }
 
 test "local var" {
@@ -292,8 +292,8 @@ test "local var" {
     defer arena.deinit();
 
     var interner = Interner.init(arena.allocator());
-    var toplevel = Scope.Toplevel {};
-    var namespace = Scope.Namespace.init(arena.allocator(), &toplevel.base);
+    var module = Scope.Module {};
+    var namespace = Scope.Namespace.init(arena.allocator(), &module.base);
 
     const apple = try interner.intern("apple");
     const banana = try interner.intern("banana");
@@ -321,8 +321,8 @@ test "namespace shadowing" {
     defer arena.deinit();
 
     var interner = Interner.init(arena.allocator());
-    var toplevel = Scope.Toplevel {};
-    var namespace = Scope.Namespace.init(arena.allocator(), &toplevel.base);
+    var module = Scope.Module {};
+    var namespace = Scope.Namespace.init(arena.allocator(), &module.base);
 
     const apple = try interner.intern("apple");
     const banana = try interner.intern("banana");
@@ -345,8 +345,8 @@ test "block shadowing" {
     defer arena.deinit();
 
     var interner = Interner.init(arena.allocator());
-    var toplevel = Scope.Toplevel {};
-    var outer = Scope.Block.init(arena.allocator(), &toplevel.base);
+    var module = Scope.Module {};
+    var outer = Scope.Block.init(arena.allocator(), &module.base);
     defer outer.deinit();
 
     const apple = try interner.intern("apple");

@@ -433,14 +433,18 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         }
 
         pub fn render(r: *Self) !void {
-            const module = r.mir.insts.items(.data)[r.mir.insts.len - 1];
-            const data = r.mir.extraData(module.pl, Mir.Module);
-
-            var extra_index: u32 = 0;
-            while (extra_index < data.len) : (extra_index += 1) {
-                const index = r.mir.extra[module.pl + 1 + extra_index];
+            var index: u32 = 0;
+            while (index < r.mir.insts.len) : (index += 1) {
                 try r.renderInst(index);
             }
+            // const module = r.mir.insts.items(.data)[r.mir.insts.len - 1];
+            // const data = r.mir.extraData(module.pl, Mir.Module);
+            //
+            // var extra_index: u32 = 0;
+            // while (extra_index < data.len) : (extra_index += 1) {
+            //     const index = r.mir.extra[module.pl + 1 + extra_index];
+            //     try r.renderInst(index);
+            // }
         }
 
         pub fn renderInst(self: *Self, index: u32) !void {

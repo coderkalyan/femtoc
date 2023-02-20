@@ -567,7 +567,6 @@ pub const HirGen = struct {
             },
             else => unreachable,
         }
-        // const ref = hg.resolution_map.get(try scope.resolveVar(id)).?;
     }
 
     fn ifSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -590,8 +589,6 @@ pub const HirGen = struct {
         const if_else = hg.tree.data(node).if_else;
 
         const condition_ref = try hg.expr(gh, scope, if_else.condition);
-        // if (Inst.refToIndex(condition_ref)) |index| try gh.addInst(index);
-
         const exec = hg.tree.extraData(if_else.exec, Node.IfElse);
         const exec_true = try hg.block(gh, scope, exec.exec_true);
         const exec_false = try hg.block(gh, scope, exec.exec_false);
@@ -611,8 +608,6 @@ pub const HirGen = struct {
         const if_chain = hg.tree.data(node).if_chain;
 
         const condition_ref = try hg.expr(gh, scope, if_chain.condition);
-        // if (Inst.refToIndex(condition_ref)) |index| try gh.addInst(index);
-
         const chain = hg.tree.extraData(if_chain.chain, Node.IfChain);
         const exec_true = try hg.block(gh, scope, chain.exec_true);
         const next = switch (hg.tree.data(chain.next)) {
