@@ -70,7 +70,7 @@ pub fn resolveTy(mg: *MirGen, ref: Mir.Ref) !Type {
 pub fn walkToplevel(mg: *MirGen) !void {
     const toplevel = mg.hir.insts.items(.data)[mg.hir.insts.len - 1];
     const toplevel_pl = toplevel.pl_node.pl;
-    const data = mg.hir.extraData(toplevel_pl, Hir.Inst.Toplevel);
+    const data = mg.hir.extraData(toplevel_pl, Hir.Inst.Module);
 
     const scratch_top = mg.scratch.items.len;
     defer mg.scratch.shrinkRetainingCapacity(scratch_top);

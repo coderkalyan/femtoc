@@ -236,7 +236,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
         pub fn render(r: *Self) !void {
             const toplevel = r.hir.insts.items(.data)[r.hir.insts.len - 1];
-            const data = r.hir.extraData(toplevel.pl_node.pl, Hir.Inst.Toplevel);
+            const data = r.hir.extraData(toplevel.pl_node.pl, Hir.Inst.Module);
 
             var extra_index: u32 = 0;
             while (extra_index < data.len) : (extra_index += 1) {
@@ -297,9 +297,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("store({s}, {s})", .{lbuf, rbuf});
                 },
                 .load => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const ref = ir.resolution_map.get(pl).?;
-                    try self.formatRef(ref, &lbuf);
+                    const operand = ir.insts.items(.data)[index].un_node.operand;
+                    try self.formatRef(operand, &lbuf);
                     try writer.print("load({s})", .{lbuf});
                 },
                 .load_inline => {

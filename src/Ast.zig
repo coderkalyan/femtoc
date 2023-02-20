@@ -232,7 +232,7 @@ pub const Node = struct {
         },
 
         // body = body block node
-        toplevel: struct {
+        module: struct {
             stmts_start: ExtraIndex,
             stmts_end: ExtraIndex,
         },

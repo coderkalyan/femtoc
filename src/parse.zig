@@ -37,7 +37,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
         .main_token = 0,
         .data = .{ .placeholder = {} },
     });
-    _ = try parser.parseToplevel();
+    _ = try parser.parseModule();
 
     // copy parser results into an abstract syntax tree
     // that owns the source, token list, node list, and node extra data
@@ -143,7 +143,7 @@ const Parser = struct {
         };
     }
 
-    pub fn parseToplevel(p: *Parser) !Node.Index {
+    pub fn parseModule(p: *Parser) !Node.Index {
         // each toplevel (file) may create any number of global statements
         // so we collect the statement indices in the scratch list,
         // append all of them to extra at the end, and return the
@@ -172,7 +172,7 @@ const Parser = struct {
         return p.addNode(.{
             .main_token = 0,
             .data = .{
-                .toplevel = .{
+                .module = .{
                     .stmts_start = @intCast(Node.ExtraIndex, extra_top),
                     .stmts_end = @intCast(Node.ExtraIndex, p.extra.items.len),
                 },

@@ -21,9 +21,11 @@ pub const GenError = error {
     UnexpectedToken,
     InvalidIdentifier,
     InvalidRef,
+    IdentifierShadowed,
+    ConstAssign,
 };
 
-const Error = GenError || @import("scope.zig").IdentifierError || @import("interner.zig").Error || Allocator.Error || @import("integerLiteral.zig").ParseError;
+const Error = GenError || @import("interner.zig").Error || Allocator.Error || @import("integerLiteral.zig").ParseError;
 
 pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -37,17 +39,17 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .extra_data = std.ArrayList(Hir.Index).init(gpa),
         .scratch = std.ArrayList(Hir.Index).init(arena.allocator()),
         .interner = Interner.init(gpa),
-        .resolution_map = std.AutoHashMap(Node.Index, Hir.Ref).init(gpa),
+        .forward_map = .{},
     };
 
-    const ref = try hirgen.toplevel(@intCast(u32, tree.nodes.len - 1));
+    const ref = try hirgen.module(@intCast(u32, tree.nodes.len - 1));
     _ = ref;
 
     return Hir {
         .insts = hirgen.insts.toOwnedSlice(),
         .extra_data = hirgen.extra_data.toOwnedSlice(),
         .interner = hirgen.interner,
-        .resolution_map = hirgen.resolution_map,
+        .resolution_map = hirgen.forward_map,
     };
 }
 
@@ -75,7 +77,7 @@ pub const HirGen = struct {
     extra_data: std.ArrayList(Hir.Index),
     scratch: std.ArrayList(Hir.Index),
     interner: Interner,
-    resolution_map: std.AutoHashMap(Node.Index, Hir.Ref),
+    forward_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
 
     fn parseIntToken(hg: *HirGen, index: Ast.TokenIndex) !u64 {
         const int_str = hg.tree.tokenString(index);
@@ -170,29 +172,41 @@ pub const HirGen = struct {
         const ident_token = hg.tree.mainToken(node);
         const ident_str = hg.tree.tokenString(ident_token);
         const id = try hg.interner.intern(ident_str);
-        const var_node = try scope.resolveVar(id);
+        const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
 
         // for constants, the ref points to the instruction that returned its value
         // so we don't have to do anything else
         // but for variables, the ref points to the address in memory so we have to
         // generate a load instruction to get the value at that address
-        if (hg.tree.data(var_node) == .var_decl) {
-            // mutable var
-            const index = try hg.addInst(.{
-                .tag = .load,
-                .data = .{ .pl_node = .{ .node = node, .pl = var_node } },
-            });
-            try gh.addInst(index);
-
-            return indexToRef(index);
-        } else {
-            const index = try hg.addInst(.{
-                .tag = .load_inline,
-                .data = .{ .pl_node = .{ .node = node, .pl = var_node } },
-            });
-            try gh.addInst(index);
-
-            return indexToRef(index);
+        switch (var_scope.tag) {
+            .local_val => {
+                const local_val = var_scope.cast(Scope.LocalVal).?;
+                return local_val.ref;
+            },
+            .local_ptr => {
+                const local_ptr = var_scope.cast(Scope.LocalPtr).?;
+                const index = try hg.addInst(.{
+                    .tag = .load,
+                    .data = .{ .un_node = .{ .node = node, .operand = local_ptr.ptr } },
+                });
+                try gh.addInst(index);
+                return indexToRef(index);
+            },
+            .namespace => {
+                const namespace = var_scope.cast(Scope.Namespace).?;
+                const decl = namespace.decls.get(id).?;
+                if (hg.forward_map.get(decl)) |ref| {
+                    return ref;
+                } else {
+                    const index = try hg.addInst(.{
+                        .tag = .load_inline,
+                        .data = .{ .pl_node = .{ .node = node, .pl = decl } },
+                    });
+                    try gh.addInst(index);
+                    return indexToRef(index);
+                }
+            },
+            else => unreachable,
         }
     }
 
@@ -208,7 +222,7 @@ pub const HirGen = struct {
         // return Scope.resolveVar(scope, uniq) orelse GenError.InvalidIdentifier;
     }
 
-    fn call(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
+    fn call(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const ref = try hg.identifier(gh, scope, node);
         const call_expr = hg.tree.data(node).call_expr;
 
@@ -236,7 +250,7 @@ pub const HirGen = struct {
         return index;
     }
 
-    fn binary(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
+    fn binary(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const binary_expr = hg.tree.data(node).binary_expr;
 
         const lref = try hg.expr(gh, scope, binary_expr.left);
@@ -292,10 +306,9 @@ pub const HirGen = struct {
             });
             const ref = Inst.indexToRef(param_extra);
             try hg.scratch.append(param_extra);
-            try hg.resolution_map.put(param, ref);
 
-            var param_var = try hg.arena.create(Scope.LocalVar);
-            param_var.* = Scope.LocalVar.init(s, param_id, param);
+            var param_var = try hg.arena.create(Scope.LocalVal);
+            param_var.* = Scope.LocalVal.init(s, param_id, ref);
             s = &param_var.base;
         }
 
@@ -322,7 +335,7 @@ pub const HirGen = struct {
         return index;
     }
 
-    fn expr(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Ref {
+    fn expr(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Ref {
         return switch (hg.tree.data(node)) {
             .integer_literal => hg.integerLiteral(gh, node),
             .float_literal => hg.floatLiteral(gh, node),
@@ -339,7 +352,6 @@ pub const HirGen = struct {
     }
 
     fn block(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Hir.Index {
-        // std.debug.print("{}\n", .{scope.tag});
         const data = hg.tree.data(node).block;
         std.debug.assert(scope.tag == .block);
 
@@ -353,22 +365,18 @@ pub const HirGen = struct {
             switch (hg.tree.data(stmt)) {
                 .const_decl => {
                     const ref = try hg.constDecl(gh, s, stmt);
-                    try hg.resolution_map.put(stmt, ref);
-
                     const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
                     const id = try hg.interner.intern(ident);
-                    const var_scope = try hg.arena.create(Scope.LocalVar);
-                    var_scope.* = Scope.LocalVar.init(s, id, stmt);
+                    const var_scope = try hg.arena.create(Scope.LocalVal);
+                    var_scope.* = Scope.LocalVal.init(s, id, ref);
                     s = &var_scope.base;
                 },
                 .var_decl => {
                     const ref = try hg.varDecl(gh, s, stmt);
-                    try hg.resolution_map.put(stmt, ref);
-
                     const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 2);
                     const id = try hg.interner.intern(ident);
-                    const var_scope = try hg.arena.create(Scope.LocalVar);
-                    var_scope.* = Scope.LocalVar.init(s, id, stmt);
+                    const var_scope = try hg.arena.create(Scope.LocalPtr);
+                    var_scope.* = Scope.LocalPtr.init(s, id, ref);
                     s = &var_scope.base;
                 },
                 .assign_simple => {
@@ -435,13 +443,9 @@ pub const HirGen = struct {
         const const_decl = hg.tree.data(node).const_decl;
         if (const_decl.ty == 0) {
             // untyped (inferred) declaration
-            const ref = try hg.expr(gh, s, const_decl.val);
-            // if (Inst.refToIndex(ref)) |index| try gh.addInst(index);
-            return ref;
+            return try hg.expr(gh, s, const_decl.val);
         } else {
             const ref = try hg.expr(gh, s, const_decl.val);
-            // if (Inst.refToIndex(ref)) |index| try gh.addInst(index);
-
             const validate_data = try hg.addExtra(Inst.ValidateTy {
                 .ref = ref,
                 .ty = try hg.ty(s, const_decl.ty),
@@ -476,29 +480,15 @@ pub const HirGen = struct {
         if (var_decl.ty == 0) {
             // untyped (inferred) declaration
             const ref = try hg.expr(gh, s, var_decl.val);
-            // if (Inst.refToIndex(ref)) |index| try gh.addInst(index);
-
             const alloc = try hg.addInst(.{
                 .tag = .alloc,
                 .data = .{ .un_node = .{ .node = node, .operand = ref, } },
             });
             try gh.addInst(alloc);
-
-            // const store_data = try hg.addExtra(Inst.Store {
-            //     .addr = alloc,
-            //     .val = ref,
-            // });
-            // const store = try hg.addInst(.{
-            //     .tag = .store,
-            //     .data = .{ .pl_node = .{ .node = node, .pl = store_data, } },
-            // });
-            // try gh.addInst(store);
-
             return indexToRef(alloc);
         } else {
             // type annotated declaration
             const ref = try hg.expr(gh, s, var_decl.val);
-            // if (Inst.refToIndex(ref)) |index| try gh.addInst(index);
 
             // generate a "type validation" marker instruction
             // this is a passthrough which takes in the above value reference
@@ -520,98 +510,9 @@ pub const HirGen = struct {
                 .data = .{ .un_node = .{ .node = node, .operand = indexToRef(validate_ty), } },
             });
             try gh.addInst(alloc);
-
-            // const store_data = try hg.addExtra(Inst.Store {
-            //     .addr = alloc,
-            //     .val = ref,
-            // });
-            // const store = try hg.addInst(.{
-            //     .tag = .store,
-            //     .data = .{ .pl_node = .{ .node = node, .pl = store_data, } },
-            // });
-            // try gh.addInst(store);
-
             return indexToRef(alloc);
         }
     }
-
-    // fn globalVarDecl(hg: *HirGen, b: *Scope.Block, s: *Scope, node: Node.Index) !Hir.Ref {
-    //     // "initializes" global mutable variables
-    //     // unlike constant declarations, mutable variables are stored in "memory"
-    //     // so we have to create alloc instructions in addition to computing the value
-    //     // otherwise, this function operates like constDecl
-    //     // this doesn't actually create any instructions for declaring the constant
-    //     // instead, the value to set the constant to is computed, and the resulting
-    //     // instruction return value is stored in the scope such that future
-    //     // code that needs to access this constant can simply look up the identifier
-    //     // and refer to the associated value instruction
-    //     const nodes = hg.tree.nodes;
-    //     const var_decl = nodes.items(.data)[node].var_decl;
-    //     if (var_decl.ty == 0) {
-    //         // untyped (inferred) declaration
-    //         const ref = try hg.expr(gh, s, var_decl.val);
-    //         if (Inst.refIsIndex(ref)) {
-    //             try b.addInst(ref);
-    //         }
-    //
-    //         const alloc = try hg.addInst(.{
-    //             .tag = .alloc,
-    //             .data = .{ .un_node = .{ .node = node, .operand = ref, } },
-    //         });
-    //         try b.addInst(alloc);
-    //
-    //         const store_data = try hg.addExtra(Inst.Store {
-    //             .addr = alloc,
-    //             .val = ref,
-    //         });
-    //         const store = try hg.addInst(.{
-    //             .tag = .store,
-    //             .data = .{ .pl_node = .{ .node = node, .pl = store_data, } },
-    //         });
-    //         try b.addInst(store);
-    //
-    //         return alloc;
-    //     } else {
-    //         // type annotated declaration
-    //         const ref = try hg.expr(gh, s, var_decl.val);
-    //         if (Inst.refIsIndex(ref)) {
-    //             try b.addInst(ref);
-    //         }
-    //
-    //         // generate a "type validation" marker instruction
-    //         // this is a passthrough which takes in the above value reference
-    //         // and the type reference and returns the value reference
-    //         // semantic analysis will validate that the type is as it should be
-    //         // and then remove this instruction in the mir
-    //         const validate_data = try hg.addExtra(Inst.ValidateTy {
-    //             .ref = ref,
-    //             .ty = try hg.ty(s, var_decl.ty),
-    //         });
-    //         const validate_ty = try hg.addInst(.{
-    //             .tag = .validate_ty,
-    //             .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
-    //         });
-    //         try b.addInst(validate_ty);
-    //
-    //         const alloc = try hg.addInst(.{
-    //             .tag = .alloc,
-    //             .data = .{ .un_node = .{ .node = node, .operand = validate_ty, } },
-    //         });
-    //         try b.addInst(alloc);
-    //
-    //         const store_data = try hg.addExtra(Inst.Store {
-    //             .addr = alloc,
-    //             .val = ref,
-    //         });
-    //         const store = try hg.addInst(.{
-    //             .tag = .store,
-    //             .data = .{ .pl_node = .{ .node = node, .pl = store_data, } },
-    //         });
-    //         try b.addInst(store);
-    //
-    //         return alloc;
-    //     }
-    // }
 
     fn assignSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const assign = hg.tree.data(node).assign_simple;
@@ -619,25 +520,60 @@ pub const HirGen = struct {
         const ident_index = hg.tree.mainToken(node);
         const ident_str = hg.tree.tokenString(ident_index);
         const id = try hg.interner.intern(ident_str);
-        const ref = hg.resolution_map.get(try scope.resolveVar(id)).?;
-        const valref = try hg.expr(gh, scope, assign.val);
+        const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
 
-        const store = try hg.addExtra(Inst.Store {
-            .addr = refToIndex(ref).?,
-            .val = valref,
-        });
-        return hg.addInst(.{
-            .tag = .store,
-            .data = .{ .pl_node = .{ .node = node, .pl = store } },
-        });
+        switch (var_scope.tag) {
+            .local_val => return error.ConstAssign,
+            .local_ptr => {
+                const local_ptr = var_scope.cast(Scope.LocalPtr).?;
+                const valref = try hg.expr(gh, scope, assign.val);
+                const store = try hg.addExtra(Inst.Store {
+                    .addr = refToIndex(local_ptr.ptr).?,
+                    .val = valref,
+                });
+                return hg.addInst(.{
+                    .tag = .store,
+                    .data = .{ .pl_node = .{ .node = node, .pl = store } },
+                });
+            },
+            .namespace => {
+                const namespace = var_scope.cast(Scope.Namespace).?;
+                const decl = namespace.decls.get(id).?;
+                const valref = try hg.expr(gh, scope, assign.val);
+
+                if (hg.forward_map.get(decl)) |ref| {
+                    const store = try hg.addExtra(Inst.Store {
+                        .addr = refToIndex(ref).?,
+                        .val = valref,
+                    });
+                    return hg.addInst(.{
+                        .tag = .store,
+                        .data = .{ .pl_node = .{ .node = node, .pl = store } },
+                    });
+                } else {
+                    const index = try hg.addInst(.{
+                        .tag = .load_inline,
+                        .data = .{ .pl_node = .{ .node = node, .pl = decl } },
+                    });
+                    const store = try hg.addExtra(Inst.Store {
+                        .addr = index,
+                        .val = valref,
+                    });
+                    return hg.addInst(.{
+                        .tag = .store,
+                        .data = .{ .pl_node = .{ .node = node, .pl = store } },
+                    });
+                }
+            },
+            else => unreachable,
+        }
+        // const ref = hg.resolution_map.get(try scope.resolveVar(id)).?;
     }
 
     fn ifSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const if_simple = hg.tree.data(node).if_simple;
 
         const condition_ref = try hg.expr(gh, scope, if_simple.condition);
-        // if (Inst.refToIndex(condition_ref)) |index| try gh.addInst(index);
-
         const exec_ref = try hg.block(gh, scope, if_simple.exec_true);
         const branch = try hg.addExtra(Inst.BranchSingle {
             .condition = condition_ref,
@@ -706,9 +642,9 @@ pub const HirGen = struct {
         });
     }
 
-    fn toplevel(hg: *HirGen, node: Node.Index) !Hir.Index {
-        const data = hg.tree.data(node).toplevel;
-        var toplevel_scope = Scope.Toplevel {};
+    fn module(hg: *HirGen, node: Node.Index) !Hir.Index {
+        const data = hg.tree.data(node).module;
+        var toplevel_scope = Scope.Module {};
         var arena = std.heap.ArenaAllocator.init(hg.arena);
         defer arena.deinit();
         var genhir = Scope.GenHir.init(arena.allocator(), &toplevel_scope.base);
@@ -751,11 +687,11 @@ pub const HirGen = struct {
             switch (hg.tree.data(stmt)) {
                 .const_decl => {
                     const ref = try hg.constDecl(&genhir, &namespace.base, stmt);
-                    try hg.resolution_map.put(stmt, ref);
+                    try hg.forward_map.put(hg.gpa, stmt, ref);
                 },
                 .var_decl => {
                     const ref = try hg.varDecl(&genhir, &namespace.base, stmt);
-                    try hg.resolution_map.put(stmt, ref);
+                    try hg.forward_map.put(hg.gpa, stmt, ref);
                 },
                 else => {
                     std.debug.print("Unexpected node: {}\n", .{hg.tree.data(stmt)});
@@ -765,15 +701,10 @@ pub const HirGen = struct {
         }
 
         const insts = genhir.scratch.items[scratch_top..];
-        // const insts = block_scope.insts.items;
-        // std.debug.print("block insts: {any}\n", .{insts});
-
-        // const insts = block_scope.insts.items;
-        const ref = try hg.addExtra(Inst.Toplevel {
+        const ref = try hg.addExtra(Inst.Module {
             .len = @intCast(u32, insts.len),
         });
         try hg.extra_data.appendSlice(insts);
-        // std.debug.print("{any}\n", .{insts});
 
         return hg.addInst(.{
             .tag = .toplevel,

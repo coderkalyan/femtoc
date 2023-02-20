@@ -51,12 +51,13 @@ pub fn main() anyerror!void {
         .scratch = .{},
         .map = MirMap.init(null),
     };
-    try mirgen.walkToplevel();
-    const mir = Mir {
-        .insts = mirgen.insts.toOwnedSlice(),
-        .extra = mirgen.extra.toOwnedSlice(allocator),
-        .values = mirgen.values.toOwnedSlice(allocator),
-    };
+    _ = mirgen;
+    // try mirgen.walkToplevel();
+    // const mir = Mir {
+    //     .insts = mirgen.insts.toOwnedSlice(),
+    //     .extra = mirgen.extra.toOwnedSlice(allocator),
+    //     .values = mirgen.values.toOwnedSlice(allocator),
+    // };
     const mirgen_time = timer.lap() / 1000;
 
     std.debug.print("read={}us ast={}us hirgen={}us mirgen={}us\n", .{read_time, ast_time, hirgen_time, mirgen_time});
@@ -74,9 +75,9 @@ pub fn main() anyerror!void {
     // try ast_renderer.render();
     // try buf.flush();
 
-    var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
-    try mir_renderer.render();
-    try buf.flush();
+    // var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
+    // try mir_renderer.render();
+    // try buf.flush();
 
     // try hirwalk.walk(allocator, &hir);
 }

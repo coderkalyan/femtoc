@@ -11,7 +11,7 @@ pub const Hir = @This();
 insts: std.MultiArrayList(Inst).Slice,
 extra_data: []const u32,
 interner: Interner,
-resolution_map: std.AutoHashMap(Node.Index, Hir.Ref),
+resolution_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
 
 pub const Inst = struct {
     tag: Tag,
@@ -160,7 +160,7 @@ pub const Inst = struct {
         len: u32,
     };
 
-    pub const Toplevel = struct {
+    pub const Module = struct {
         len: u32,
     };
 };
