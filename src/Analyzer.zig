@@ -4,9 +4,9 @@ const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
 const TypedValue = @import("typing.zig").TypedValue;
 const MirGen = @import("MirGen.zig");
+const MirMap = @import("MirMap.zig");
 
 const Allocator = std.mem.Allocator;
-const MirMap = MirGen.MirMap;
 const Analyzer = @This();
 
 mg: *MirGen,

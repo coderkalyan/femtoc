@@ -2,6 +2,7 @@ const std = @import("std");
 const parse = @import("parse.zig");
 const hirgen = @import("hirgen.zig");
 const MirGen = @import("MirGen.zig");
+const MirMap = @import("MirMap.zig");
 const Mir = @import("Mir.zig");
 const render = @import("render.zig");
 
@@ -48,7 +49,7 @@ pub fn main() anyerror!void {
         .extra = .{},
         .values = .{},
         .scratch = .{},
-        .map = MirGen.MirMap.init(null),
+        .map = MirMap.init(null),
     };
     try mirgen.walkToplevel();
     const mir = Mir {
