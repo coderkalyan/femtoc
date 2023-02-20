@@ -1,5 +1,5 @@
 const std = @import("std");
-const hir = @import("hir.zig");
+const Hir = @import("Hir.zig");
 const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
 const TypedValue = @import("typing.zig").TypedValue;
@@ -14,9 +14,9 @@ map: MirMap,
 scratch: std.ArrayListUnmanaged(u32),
 arena: Allocator,
 
-pub fn analyzeBody(a: *Analyzer, inst: hir.Inst.Index) !Mir.Index {
+pub fn analyzeBody(a: *Analyzer, inst: Hir.Index) !Mir.Index {
     const pl = a.mg.hir.insts.items(.data)[inst].pl_node.pl;
-    const block = a.mg.hir.extraData(pl, hir.Inst.Block);
+    const block = a.mg.hir.extraData(pl, Hir.Inst.Block);
 
     const scratch_top = a.scratch.items.len;
     defer a.scratch.shrinkRetainingCapacity(scratch_top);
@@ -41,7 +41,7 @@ pub fn analyzeBody(a: *Analyzer, inst: hir.Inst.Index) !Mir.Index {
     // std.debug.print("{any}\n", .{hir_insts});
 }
 
-pub fn analyzeInst(a: *Analyzer, inst: hir.Inst.Index) !void {
+pub fn analyzeInst(a: *Analyzer, inst: Hir.Index) !void {
     const data = a.mg.hir.insts.items(.data)[inst];
     switch (a.mg.hir.insts.items(.tag)[inst]) {
         .int => {
@@ -73,10 +73,10 @@ pub fn analyzeInst(a: *Analyzer, inst: hir.Inst.Index) !void {
             try a.scratch.append(a.arena, index);
         },
         .validate_ty => {
-            const validate_ty = a.mg.hir.extraData(data.pl_node.pl, hir.Inst.ValidateTy);
+            const validate_ty = a.mg.hir.extraData(data.pl_node.pl, Hir.Inst.ValidateTy);
             const ref = a.map.resolveRef(validate_ty.ref);
             const found_ty = try a.mg.resolveTy(ref);
-            const expected_ty = a.mg.getTy(validate_ty.ty);
+            const expected_ty = validate_ty.ty.toType();
 
             if (found_ty.tag == expected_ty.tag) {
                 a.mg.map.putAssumeCapacity(inst, ref);
@@ -151,8 +151,8 @@ pub fn analyzeInst(a: *Analyzer, inst: hir.Inst.Index) !void {
             try a.scratch.append(a.arena, index);
         },
         .store => {
-            const store = a.mg.hir.extraData(data.pl_node.pl, hir.Inst.Store);
-            const addr = a.map.resolveRef(hir.Inst.indexToRef(store.addr));
+            const store = a.mg.hir.extraData(data.pl_node.pl, Hir.Inst.Store);
+            const addr = a.map.resolveRef(Hir.Inst.indexToRef(store.addr));
             const val = a.map.resolveRef(store.val);
             const index = try a.mg.addInst(.{
                 .tag = .store,

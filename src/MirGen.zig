@@ -1,5 +1,5 @@
 const std = @import("std");
-const hir = @import("hir.zig");
+const Hir = @import("Hir.zig");
 const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
 const Analyzer = @import("Analyzer.zig");
@@ -9,8 +9,6 @@ const math = std.math;
 
 const Allocator = std.mem.Allocator;
 const MirGen = @This();
-const Hir = hir.Hir;
-const HirRef = hir.Inst.Ref;
 const Value = Mir.Value;
 const TypedValue = Mir.TypedValue;
 const Error = error { TypeError, NotImplemented };
@@ -69,29 +67,10 @@ pub fn resolveTy(mg: *MirGen, ref: Mir.Ref) !Type {
     }
 }
 
-pub fn getTy(_: *MirGen, ref: HirRef) Type {
-    return .{
-        .tag = switch (ref) {
-            .i8_ty => .i8,
-            .u8_ty => .u8,
-            .i16_ty => .i16,
-            .u16_ty => .u16,
-            .i32_ty => .i32,
-            .u32_ty => .u32,
-            .i64_ty => .i64,
-            .u64_ty => .u64,
-            .f32_ty => .f32,
-            .f64_ty => .f64,
-            .bool_ty => .u1,
-            else => unreachable,
-        }
-    };
-}
-
 pub fn walkToplevel(mg: *MirGen) !void {
     const toplevel = mg.hir.insts.items(.data)[mg.hir.insts.len - 1];
     const toplevel_pl = toplevel.pl_node.pl;
-    const data = mg.hir.extraData(toplevel_pl, hir.Inst.Toplevel);
+    const data = mg.hir.extraData(toplevel_pl, Hir.Inst.Toplevel);
 
     const scratch_top = mg.scratch.items.len;
     defer mg.scratch.shrinkRetainingCapacity(scratch_top);
@@ -133,10 +112,10 @@ pub fn walkToplevel(mg: *MirGen) !void {
             },
             .validate_ty => {
                 const pl = mg.hir.insts.items(.data)[hir_index].pl_node.pl;
-                const validate_ty = mg.hir.extraData(pl, hir.Inst.ValidateTy);
+                const validate_ty = mg.hir.extraData(pl, Hir.Inst.ValidateTy);
                 const ref = mg.map.resolveRef(validate_ty.ref);
                 const found_ty = try mg.resolveTy(ref);
-                const expected_ty = mg.getTy(validate_ty.ty);
+                const expected_ty = validate_ty.ty.toType();
 
                 if (found_ty.tag == expected_ty.tag) {
                     mg.map.putAssumeCapacity(hir_index, ref);
@@ -165,7 +144,7 @@ pub fn walkToplevel(mg: *MirGen) !void {
             },
             .fn_decl => {
                 const pl = mg.hir.insts.items(.data)[hir_index].pl_node.pl;
-                const fn_decl = mg.hir.extraData(pl, hir.Inst.FnDecl);
+                const fn_decl = mg.hir.extraData(pl, Hir.Inst.FnDecl);
 
                 var analyzer = Analyzer {
                     .mg = mg,
@@ -206,7 +185,7 @@ pub fn walkToplevel(mg: *MirGen) !void {
     _ = module;
 }
     //
-    // fn call(mg: *MirGen, inst: hir.Inst) !Mir.Ref {
+    // fn call(mg: *MirGen, inst: Hir.Inst) !Mir.Ref {
     //     const hir_pl = inst.data.pl_node.pl;
     //     const hir_call = mg.hir.extraData(hir_pl, Hir.Inst.Call);
     //
@@ -227,7 +206,7 @@ pub fn walkToplevel(mg: *MirGen) !void {
     //     });
     // }
     //
-    // fn binary(mg: *MirGen, inst: hir.Inst) !Mir.Ref {
+    // fn binary(mg: *MirGen, inst: Hir.Inst) !Mir.Ref {
     //     const hir_pl = inst.data.pl.pl_node;
     //     const hir_bin = mg.hir.extraData(hir_pl, Hir.Inst.Binary);
     //     const lref = mg.resolveInst(hir_bin.lref);
@@ -330,18 +309,5 @@ pub fn walkToplevel(mg: *MirGen) !void {
     //             },
     //             else => return Error.TypeError,
     //         }
-    //     }
-    // }
-    //
-    // fn validate_ty(mg: *MirGen, inst: hir.Inst) !Mir.Ref {
-    //     const data = mg.hir.extraData(inst.data.pl_node.pl, hir.Inst.ValidateTy);
-    //     const ref = mg.resolveInst(data.ref);
-    //     const expected = mg.getTy(data.ty);
-    //     const found = mg.resolveTy(ref);
-    //
-    //     if (expected == found) {
-    //         return ref;
-    //     } else {
-    //         return Error.TypeError;
     //     }
     // }

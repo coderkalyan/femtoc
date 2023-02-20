@@ -6,6 +6,12 @@ const Type = @import("typing.zig").Type;
 
 const Node = Ast.Node;
 pub const Error = error { InvalidRef };
+pub const Hir = @This();
+
+insts: std.MultiArrayList(Inst).Slice,
+extra_data: []const u32,
+interner: Interner,
+resolution_map: std.AutoHashMap(Node.Index, Hir.Ref),
 
 pub const Inst = struct {
     tag: Tag,
@@ -86,64 +92,21 @@ pub const Inst = struct {
         },
     };
 
-    pub const Index = u32;
-    pub const NodeIndex = u32;
-    pub const ExtraIndex = u32;
-
     pub const Extra = union {
         index: u32,
         ref: Ref,
     };
 
-    pub fn indexToRef(index: Inst.Index) Inst.Ref {
-        const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
-        return @intToEnum(Inst.Ref, ref_len + index);
+    pub fn indexToRef(index: Hir.Index) Hir.Ref {
+        const ref_len = @intCast(u32, @typeInfo(Hir.Ref).Enum.fields.len);
+        return @intToEnum(Hir.Ref, ref_len + index);
     }
 
-    pub fn refToIndex(ref: Inst.Ref) ?Inst.Index {
-        const ref_len = @intCast(u32, @typeInfo(Inst.Ref).Enum.fields.len);
+    pub fn refToIndex(ref: Hir.Ref) ?Hir.Index {
+        const ref_len = @intCast(u32, @typeInfo(Hir.Ref).Enum.fields.len);
         const index = @enumToInt(ref);
         return if (index >= ref_len) index - ref_len else null;
     }
-
-    pub fn refToType(ref: Inst.Ref) ?Type {
-        return switch (ref) {
-            .u1_ty => Type.initTag(.u1),
-            .u8_ty => Type.initTag(.u8),
-            .i8_ty => Type.initTag(.i8),
-            .u16_ty => Type.initTag(.u16),
-            .i16_ty => Type.initTag(.i16),
-            .u32_ty => Type.initTag(.u32),
-            .i32_ty => Type.initTag(.i32),
-            .u64_ty => Type.initTag(.u64),
-            .i64_ty => Type.initTag(.i64),
-            .bool_ty => Type.initTag(.u8),
-            else => null,
-        };
-    }
-
-    pub const Ref = enum(u32) {
-        u8_ty,
-        u16_ty,
-        u32_ty,
-        u64_ty,
-        i8_ty,
-        i16_ty,
-        i32_ty,
-        i64_ty,
-        f32_ty,
-        f64_ty,
-        bool_ty,
-        void_ty,
-
-        zero_val,
-        one_val,
-        btrue_val,
-        bfalse_val,
-
-        void_val,
-        _,
-    };
 
     pub const Call = struct {
         addr: Ref,
@@ -181,9 +144,6 @@ pub const Inst = struct {
         ref: Ref,
         ty: Ref,
     };
-    // pub const Arg = struct {
-    //     val: Ref,
-    // };
 
     pub const BranchSingle = struct {
         condition: Ref,
@@ -198,35 +158,71 @@ pub const Inst = struct {
 
     pub const Block = struct {
         len: u32,
-        // insts_start: ExtraIndex,
-        // insts_end: ExtraIndex,
     };
 
     pub const Toplevel = struct {
         len: u32,
-        // insts_start: ExtraIndex,
-        // insts_end: ExtraIndex,
     };
 };
 
-pub const Hir = struct {
-    insts: std.MultiArrayList(Inst).Slice,
-    extra_data: []const u32,
-    interner: Interner,
-    resolution_map: std.AutoHashMap(Node.Index, Inst.Ref),
+pub const Index = u32;
+pub const NodeIndex = u32;
+pub const ExtraIndex = u32;
+pub const Ref = enum(u32) {
+    u8_ty,
+    u16_ty,
+    u32_ty,
+    u64_ty,
+    i8_ty,
+    i16_ty,
+    i32_ty,
+    i64_ty,
+    f32_ty,
+    f64_ty,
+    bool_ty,
+    void_ty,
 
-    pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
-        const fields = std.meta.fields(T);
-        var result: T = undefined;
-        inline for (fields) |field, i| {
-            if (field.field_type == Inst.ExtraIndex) {
-                @field(result, field.name) = hir.extra_data[index + i];
-            } else if (field.field_type == Inst.Ref) {
-                @field(result, field.name) = @intToEnum(Inst.Ref, hir.extra_data[index + i]);
-            } else {
-                unreachable;
-            }
-        }
-        return result;
+    zero_val,
+    one_val,
+    btrue_val,
+    bfalse_val,
+
+    void_val,
+    _,
+
+    pub fn toType(ref: Hir.Ref) Type {
+        return switch (ref) {
+            .i8_ty => Type.initTag(.i8),
+            .u8_ty => Type.initTag(.u8),
+            .i16_ty => Type.initTag(.i16),
+            .u16_ty => Type.initTag(.u16),
+            .i32_ty => Type.initTag(.i32),
+            .u32_ty => Type.initTag(.u32),
+            .i64_ty => Type.initTag(.i64),
+            .u64_ty => Type.initTag(.u64),
+            .f32_ty => Type.initTag(.f32),
+            .f64_ty => Type.initTag(.f64),
+            .bool_ty => Type.initTag(.u1),
+            .void_ty => Type.initTag(.void),
+            .zero_val, .one_val,
+            .btrue_val, .bfalse_val,
+            .void_val => unreachable,
+            _ => unreachable,
+        };
     }
 };
+
+pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
+    const fields = std.meta.fields(T);
+    var result: T = undefined;
+    inline for (fields) |field, i| {
+        if (field.field_type == ExtraIndex) {
+            @field(result, field.name) = hir.extra_data[index + i];
+        } else if (field.field_type == Hir.Ref) {
+            @field(result, field.name) = @intToEnum(Hir.Ref, hir.extra_data[index + i]);
+        } else {
+            unreachable;
+        }
+    }
+    return result;
+}

@@ -1,5 +1,5 @@
 const std = @import("std");
-const hir = @import ("hir.zig");
+const Hir = @import ("Hir.zig");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const parse = @import("parse.zig");
@@ -9,9 +9,8 @@ const Scope = @import("scope.zig").Scope;
 const Interner = @import("interner.zig").Interner;
 
 const Allocator = std.mem.Allocator;
-const Hir = hir.Hir;
-const Inst = hir.Inst;
-const Ref = Inst.Ref;
+const Inst = Hir.Inst;
+const Ref = Hir.Ref;
 const Node = Ast.Node;
 const Token = lex.Token;
 const indexToRef = Inst.indexToRef;
@@ -35,10 +34,10 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .arena = arena.allocator(),
         .tree = tree,
         .insts = std.MultiArrayList(Inst){},
-        .extra_data = std.ArrayList(Inst.Index).init(gpa),
-        .scratch = std.ArrayList(Inst.Index).init(arena.allocator()),
+        .extra_data = std.ArrayList(Hir.Index).init(gpa),
+        .scratch = std.ArrayList(Hir.Index).init(arena.allocator()),
         .interner = Interner.init(gpa),
-        .resolution_map = std.AutoHashMap(Node.Index, Inst.Ref).init(gpa),
+        .resolution_map = std.AutoHashMap(Node.Index, Hir.Ref).init(gpa),
     };
 
     const ref = try hirgen.toplevel(@intCast(u32, tree.nodes.len - 1));
@@ -52,7 +51,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     };
 }
 
-const builtin_types = std.ComptimeStringMap(Inst.Ref, .{
+const builtin_types = std.ComptimeStringMap(Hir.Ref, .{
     .{ "u8", .u8_ty },
     .{ "u16", .u16_ty },
     .{ "u32", .u32_ty },
@@ -73,10 +72,10 @@ pub const HirGen = struct {
 
     tree: *const Ast,
     insts: std.MultiArrayList(Inst),
-    extra_data: std.ArrayList(Inst.Index),
-    scratch: std.ArrayList(Inst.Index),
+    extra_data: std.ArrayList(Hir.Index),
+    scratch: std.ArrayList(Hir.Index),
     interner: Interner,
-    resolution_map: std.AutoHashMap(Node.Index, Inst.Ref),
+    resolution_map: std.AutoHashMap(Node.Index, Hir.Ref),
 
     fn parseIntToken(hg: *HirGen, index: Ast.TokenIndex) !u64 {
         const int_str = hg.tree.tokenString(index);
@@ -104,21 +103,20 @@ pub const HirGen = struct {
         };
     }
 
-    fn addInst(hg: *HirGen, inst: Inst) !Inst.Index {
-        const result = @intCast(Inst.Index, hg.insts.len);
-        // std.debug.print("{}\n", .{inst});
+    fn addInst(hg: *HirGen, inst: Inst) !Hir.Index {
+        const result = @intCast(Hir.Index, hg.insts.len);
         try hg.insts.append(hg.gpa, inst);
         return result;
     }
 
-    fn addExtra(hg: *HirGen, extra: anytype) !Inst.ExtraIndex {
+    fn addExtra(hg: *HirGen, extra: anytype) !Hir.ExtraIndex {
         const fields = std.meta.fields(@TypeOf(extra));
         try hg.extra_data.ensureUnusedCapacity(fields.len);
         const len = @intCast(u32, hg.extra_data.items.len);
         inline for (fields) |field| {
-            if (field.field_type == Inst.ExtraIndex) {
+            if (field.field_type == Hir.ExtraIndex) {
                 hg.extra_data.appendAssumeCapacity(@field(extra, field.name));
-            } else if (field.field_type == Inst.Ref) {
+            } else if (field.field_type == Hir.Ref) {
                 hg.extra_data.appendAssumeCapacity(@enumToInt(@field(extra, field.name)));
             } else {
                 unreachable;
@@ -199,7 +197,7 @@ pub const HirGen = struct {
     }
 
     // TODO: cleanup and finish
-    fn ty(hg: *HirGen, scope: *Scope, index: Node.Index) !Inst.Ref {
+    fn ty(hg: *HirGen, scope: *Scope, index: Node.Index) !Hir.Ref {
         const nodes = hg.tree.nodes;
         const ident_index = nodes.items(.main_token)[index];
         const ident_str = hg.tree.tokenString(ident_index);
@@ -210,7 +208,7 @@ pub const HirGen = struct {
         // return Scope.resolveVar(scope, uniq) orelse GenError.InvalidIdentifier;
     }
 
-    fn call(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Inst.Index {
+    fn call(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const ref = try hg.identifier(gh, scope, node);
         const call_expr = hg.tree.data(node).call_expr;
 
@@ -238,7 +236,7 @@ pub const HirGen = struct {
         return index;
     }
 
-    fn binary(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Inst.Index {
+    fn binary(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const binary_expr = hg.tree.data(node).binary_expr;
 
         const lref = try hg.expr(gh, scope, binary_expr.left);
@@ -269,7 +267,7 @@ pub const HirGen = struct {
         return index;
     }
 
-    fn fnDecl(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Inst.Index {
+    fn fnDecl(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const fn_decl = hg.tree.data(node).fn_decl;
         const signature = hg.tree.extraData(fn_decl.signature, Node.FnSignature);
         var arena = std.heap.ArenaAllocator.init(hg.arena);
@@ -340,7 +338,7 @@ pub const HirGen = struct {
         };
     }
 
-    fn block(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Inst.Index {
+    fn block(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) Error!Hir.Index {
         // std.debug.print("{}\n", .{scope.tag});
         const data = hg.tree.data(node).block;
         std.debug.assert(scope.tag == .block);
@@ -537,7 +535,7 @@ pub const HirGen = struct {
         }
     }
 
-    // fn globalVarDecl(hg: *HirGen, b: *Scope.Block, s: *Scope, node: Node.Index) !Inst.Ref {
+    // fn globalVarDecl(hg: *HirGen, b: *Scope.Block, s: *Scope, node: Node.Index) !Hir.Ref {
     //     // "initializes" global mutable variables
     //     // unlike constant declarations, mutable variables are stored in "memory"
     //     // so we have to create alloc instructions in addition to computing the value
@@ -615,7 +613,7 @@ pub const HirGen = struct {
     //     }
     // }
 
-    fn assignSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Inst.Index {
+    fn assignSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const assign = hg.tree.data(node).assign_simple;
 
         const ident_index = hg.tree.mainToken(node);
@@ -634,7 +632,7 @@ pub const HirGen = struct {
         });
     }
 
-    fn ifSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Inst.Index {
+    fn ifSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const if_simple = hg.tree.data(node).if_simple;
 
         const condition_ref = try hg.expr(gh, scope, if_simple.condition);
@@ -652,7 +650,7 @@ pub const HirGen = struct {
         });
     }
 
-    fn ifElse(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Inst.Index {
+    fn ifElse(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const if_else = hg.tree.data(node).if_else;
 
         const condition_ref = try hg.expr(gh, scope, if_else.condition);
@@ -673,7 +671,7 @@ pub const HirGen = struct {
         });
     }
 
-    fn ifChain(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Inst.Index {
+    fn ifChain(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const if_chain = hg.tree.data(node).if_chain;
 
         const condition_ref = try hg.expr(gh, scope, if_chain.condition);
@@ -698,7 +696,7 @@ pub const HirGen = struct {
         });
     }
 
-    fn returnStmt(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Inst.Index {
+    fn returnStmt(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const return_val = hg.tree.data(node).return_val;
 
         const ref = if (return_val.val == 0) Ref.void_val else try hg.expr(gh, scope, return_val.val);
@@ -708,7 +706,7 @@ pub const HirGen = struct {
         });
     }
 
-    fn toplevel(hg: *HirGen, node: Node.Index) !Inst.Index {
+    fn toplevel(hg: *HirGen, node: Node.Index) !Hir.Index {
         const data = hg.tree.data(node).toplevel;
         var toplevel_scope = Scope.Toplevel {};
         var arena = std.heap.ArenaAllocator.init(hg.arena);

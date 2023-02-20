@@ -35,7 +35,7 @@ pub const Type = extern union {
             structure,
         };
 
-        pub fn cast(base: *const Payload, comptime T: type) ?*const T {
+        pub inline fn cast(base: *const Payload, comptime T: type) ?*const T {
             return @fieldParentPtr(T, "base", base);
         }
 

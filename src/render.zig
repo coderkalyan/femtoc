@@ -1,15 +1,13 @@
 const std = @import("std");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
-const hir = @import("hir.zig");
+const Hir = @import("Hir.zig");
 const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
 
 const io = std.io;
 
 const Node = Ast.Node;
-const Hir = hir.Hir;
-const HirRef = hir.Inst.Ref;
 
 pub fn AstRenderer(comptime width: u32, comptime WriterType: anytype) type {
     return struct {
@@ -238,7 +236,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
         pub fn render(r: *Self) !void {
             const toplevel = r.hir.insts.items(.data)[r.hir.insts.len - 1];
-            const data = r.hir.extraData(toplevel.pl_node.pl, hir.Inst.Toplevel);
+            const data = r.hir.extraData(toplevel.pl_node.pl, Hir.Inst.Toplevel);
 
             var extra_index: u32 = 0;
             while (extra_index < data.len) : (extra_index += 1) {
@@ -275,14 +273,14 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     });
 
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const bin = ir.extraData(pl, hir.Inst.Binary);
+                    const bin = ir.extraData(pl, Hir.Inst.Binary);
                     try self.formatRef(bin.lref, &lbuf);
                     try self.formatRef(bin.rref, &rbuf);
                     try writer.print("({s}, {s})", .{lbuf, rbuf});
                 },
                 .validate_ty => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const validate_ty = ir.extraData(pl, hir.Inst.ValidateTy);
+                    const validate_ty = ir.extraData(pl, Hir.Inst.ValidateTy);
                     try self.formatRef(validate_ty.ty, &lbuf);
                     try self.formatRef(validate_ty.ref, &rbuf);
                     try writer.print("validate_ty({s}, {s})", .{lbuf, rbuf});
@@ -293,7 +291,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .store => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const store = ir.extraData(pl, hir.Inst.Store);
+                    const store = ir.extraData(pl, Hir.Inst.Store);
                     try self.formatIndex(store.addr, &lbuf);
                     try self.formatRef(store.val, &rbuf);
                     try writer.print("store({s}, {s})", .{lbuf, rbuf});
@@ -312,7 +310,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .fn_decl => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const fn_decl = ir.extraData(pl, hir.Inst.FnDecl);
+                    const fn_decl = ir.extraData(pl, Hir.Inst.FnDecl);
 
                     try self.formatRef(fn_decl.return_ty, &lbuf);
                     try writer.print("func(ret_ty={s}, body={{", .{lbuf});
@@ -324,7 +322,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .block => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const block = ir.extraData(pl, hir.Inst.Block);
+                    const block = ir.extraData(pl, Hir.Inst.Block);
 
                     try writer.print("block({{", .{});
                     self.stream.indent();
@@ -341,7 +339,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .branch_double => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const branch_double = ir.extraData(pl, hir.Inst.BranchDouble);
+                    const branch_double = ir.extraData(pl, Hir.Inst.BranchDouble);
 
                     try self.formatRef(branch_double.condition, &lbuf);
                     try writer.print("branch_double({s},", .{lbuf});
@@ -372,14 +370,14 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .call => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const call = ir.extraData(pl, hir.Inst.Call);
+                    const call = ir.extraData(pl, Hir.Inst.Call);
                     try self.formatRef(call.addr, &lbuf);
                     try writer.print("call({s}", .{lbuf});
                     
                     var extra_index: u32 = 0;
                     while (extra_index < call.args_len) : (extra_index += 1) {
                         const arg = ir.extra_data[pl + 2 + extra_index];
-                        try self.formatRef(@intToEnum(hir.Inst.Ref, arg), &rbuf);
+                        try self.formatRef(@intToEnum(Hir.Ref, arg), &rbuf);
                         try writer.print(", {s}", .{rbuf});
                     }
                     
@@ -391,8 +389,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             try self.stream.newline();
         }
 
-        fn formatRef(_: *Self, ref: HirRef, buf: []u8) !void {
-            if (hir.Inst.refToIndex(ref)) |index| {
+        fn formatRef(_: *Self, ref: Hir.Ref, buf: []u8) !void {
+            if (Hir.Inst.refToIndex(ref)) |index| {
                 _ = try std.fmt.bufPrint(buf, "%{}", .{index});
             } else {
                 _ = try std.fmt.bufPrint(buf, "@Ref.{s}", .{switch (ref) {
@@ -418,7 +416,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             }
         }
 
-        fn formatIndex(_: *Self, index: hir.Inst.Index, buf: []u8) !void {
+        fn formatIndex(_: *Self, index: Hir.Index, buf: []u8) !void {
             _ = try std.fmt.bufPrint(buf, "%{}", .{index});
         }
     };
@@ -488,7 +486,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 //     });
                 //
                 //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const bin = ir.extraData(pl, hir.Inst.Binary);
+                //     const bin = ir.extraData(pl, Hir.Inst.Binary);
                 //     try self.formatRef(bin.lref, &lbuf);
                 //     try self.formatRef(bin.rref, &rbuf);
                 //     try writer.print("({s}, {s})", .{lbuf, rbuf});
@@ -527,7 +525,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 // .block => {
                 //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const block = ir.extraData(pl, hir.Inst.Block);
+                //     const block = ir.extraData(pl, Hir.Inst.Block);
                 //
                 //     try writer.print("block({{", .{});
                 //     self.stream.indent();
@@ -544,7 +542,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 // },
                 // .branch_double => {
                 //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const branch_double = ir.extraData(pl, hir.Inst.BranchDouble);
+                //     const branch_double = ir.extraData(pl, Hir.Inst.BranchDouble);
                 //
                 //     try self.formatRef(branch_double.condition, &lbuf);
                 //     try writer.print("branch_double({s},", .{lbuf});
@@ -575,14 +573,14 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 // },
                 // .call => {
                 //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const call = ir.extraData(pl, hir.Inst.Call);
+                //     const call = ir.extraData(pl, Hir.Inst.Call);
                 //     try self.formatRef(call.addr, &lbuf);
                 //     try writer.print("call({s}", .{lbuf});
                 //     
                 //     var extra_index: u32 = 0;
                 //     while (extra_index < call.args_len) : (extra_index += 1) {
                 //         const arg = ir.extra_data[pl + 2 + extra_index];
-                //         try self.formatRef(@intToEnum(hir.Inst.Ref, arg), &rbuf);
+                //         try self.formatRef(@intToEnum(Hir.Ref, arg), &rbuf);
                 //         try writer.print(", {s}", .{rbuf});
                 //     }
                 //     

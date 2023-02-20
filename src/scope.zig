@@ -1,10 +1,10 @@
 const std = @import("std");
-const hir = @import("hir.zig");
+const Hir = @import("Hir.zig");
 const Ast = @import("Ast.zig");
 const Interner = @import("interner.zig").Interner;
 
 const Node = Ast.Node;
-const Inst = hir.Inst;
+const Inst = Hir.Inst;
 pub const IdentifierError = error { Invalid, Shadowed };
 
 pub const Scope = struct {
@@ -78,7 +78,7 @@ pub const Scope = struct {
 
         parent: *Scope,
         arena: std.mem.Allocator,
-        scratch: std.ArrayList(Inst.Index),
+        scratch: std.ArrayList(Hir.Index),
 
         pub const Self = @This();
 
@@ -86,11 +86,11 @@ pub const Scope = struct {
             return Self {
                 .parent = s,
                 .arena = arena,
-                .scratch = std.ArrayList(Inst.Index).init(arena),
+                .scratch = std.ArrayList(Hir.Index).init(arena),
             };
         }
 
-        pub fn addInst(gh: *Self, index: Inst.Index) !void {
+        pub fn addInst(gh: *Self, index: Hir.Index) !void {
             try gh.scratch.append(index);
         }
     };

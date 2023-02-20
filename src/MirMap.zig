@@ -1,5 +1,5 @@
 const std = @import("std");
-const hir = @import("hir.zig");
+const Hir = @import("Hir.zig");
 const Mir = @import("Mir.zig");
 
 const Allocator = std.mem.Allocator;
@@ -15,7 +15,7 @@ const MirMap = @This();
 // index 0 in the table maps to the lowest instruction index, and provides
 // the required size
 parent: ?*MirMap,
-start: hir.Inst.Index,
+start: Hir.Index,
 map: []?Mir.Ref,
 
 pub fn init(parent: ?*MirMap) MirMap {
@@ -35,7 +35,7 @@ pub fn deinit(m: *MirMap, a: Allocator) void {
 // (not populated or deleted) are removed
 // providing an empty instructions slice will shrink the map to fit the
 // the existing valid entries as tightly as possible
-pub fn ensureSliceCapacity(m: *MirMap, a: Allocator, insts: []const hir.Inst.Index) !void {
+pub fn ensureSliceCapacity(m: *MirMap, a: Allocator, insts: []const Hir.Index) !void {
     var better_start = m.start;
     var found_start: bool = false;
     var max: u32 = 0;
@@ -49,8 +49,8 @@ pub fn ensureSliceCapacity(m: *MirMap, a: Allocator, insts: []const hir.Inst.Ind
         }
     }
     if (m.map.len == 0) {
-        better_start = std.mem.min(hir.Inst.Index, insts);
-        max = std.mem.max(hir.Inst.Index, insts);
+        better_start = std.mem.min(Hir.Index, insts);
+        max = std.mem.max(Hir.Index, insts);
     } else {
         for (insts) |inst| {
             better_start = @min(better_start, inst);
@@ -71,17 +71,17 @@ pub fn ensureSliceCapacity(m: *MirMap, a: Allocator, insts: []const hir.Inst.Ind
     m.start = better_start;
 }
 
-pub fn putAssumeCapacity(m: *MirMap, inst: hir.Inst.Index, ref: Mir.Ref) void {
+pub fn putAssumeCapacity(m: *MirMap, inst: Hir.Index, ref: Mir.Ref) void {
     m.map[inst - m.start] = ref;
 }
 
-pub fn putAssumeCapacityNoClobber(m: *MirMap, inst: hir.Inst.Index, ref: Mir.Ref) void {
+pub fn putAssumeCapacityNoClobber(m: *MirMap, inst: Hir.Index, ref: Mir.Ref) void {
     std.debug.assert(inst - m.start < m.map.len);
     std.debug.assert(m.map[inst - m.start] == null);
     m.map[inst - m.start] = ref;
 }
 
-pub fn get(m: *MirMap, inst: hir.Inst.Index) ?Mir.Ref {
+pub fn get(m: *MirMap, inst: Hir.Index) ?Mir.Ref {
     if (inst < m.start) return null;
     if (inst - m.start < m.map.len) {
         return m.map[inst - m.start];
@@ -90,12 +90,12 @@ pub fn get(m: *MirMap, inst: hir.Inst.Index) ?Mir.Ref {
     }
 }
 
-pub fn remove(m: *MirMap, inst: hir.Inst.Index) void {
+pub fn remove(m: *MirMap, inst: Hir.Index) void {
     std.debug.assert(inst - m.start < m.map.len);
     m.map[inst - m.start] = null;
 }
 
-pub fn resolveRef(m: *MirMap, ref: hir.Inst.Ref) Mir.Ref {
+pub fn resolveRef(m: *MirMap, ref: Hir.Ref) Mir.Ref {
     return switch (ref) {
         .zero_val => .zero_val,
         .one_val => .one_val,
@@ -103,7 +103,7 @@ pub fn resolveRef(m: *MirMap, ref: hir.Inst.Ref) Mir.Ref {
         .btrue_val => .one_val,
         .bfalse_val => .zero_val,
         else => {
-            if (m.get(hir.Inst.refToIndex(ref).?)) |mapping| {
+            if (m.get(Hir.Inst.refToIndex(ref).?)) |mapping| {
                 return mapping;
             } else {
                 if (m.parent) |parent| {
@@ -121,7 +121,7 @@ test "mirmap" {
     var m = MirMap.init();
     defer m.deinit(std.testing.allocator);
 
-    try m.ensureSliceCapacity(std.testing.allocator, &[_]hir.Inst.Index{3, 4, 5, 8, 9, 10});
+    try m.ensureSliceCapacity(std.testing.allocator, &[_]Hir.Index{3, 4, 5, 8, 9, 10});
     try std.testing.expectEqual(m.start, 3);
     try std.testing.expectEqual(m.map.len, 8);
 
@@ -145,7 +145,7 @@ test "mirmap" {
     try std.testing.expectEqual(m.get(9).?, @intToEnum(Mir.Ref, 103));
     try std.testing.expectEqual(m.get(10).?, @intToEnum(Mir.Ref, 104));
 
-    try m.ensureSliceCapacity(std.testing.allocator, &[_]hir.Inst.Index{11, 12, 13});
+    try m.ensureSliceCapacity(std.testing.allocator, &[_]Hir.Index{11, 12, 13});
     try std.testing.expectEqual(m.start, 9);
     try std.testing.expectEqual(m.map.len, 5);
 
