@@ -1,0 +1,19 @@
+let main = fn () void {
+    let cond = true;
+    let dummy = 123;
+    if (cond) {
+        let a: i32 = 1;
+        let b: i32 = 2;
+        let c = a + b;
+    }
+
+    if (cond) {
+        let a: i32 = 3;
+        let b: i32 = 4;
+        let c = a + b;
+    } else {
+        let a: i32 = 5;
+    }
+
+    return;
+}

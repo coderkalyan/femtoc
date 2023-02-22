@@ -53,15 +53,17 @@ pub fn main() anyerror!void {
 
     var ast_renderer = render.AstRenderer(4, @TypeOf(writer)).init(writer, &ast);
     _ = ast_renderer;
-
-    var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, &hir);
-    try hir_renderer.render();
-    try buf.flush();
     // try ast_renderer.render();
     // try buf.flush();
 
+    var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, &hir);
+    // _ = hir_renderer;
+    try hir_renderer.render();
+    try buf.flush();
+
     for (module.function_mir) |mir| {
         var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
+        // _ = mir_renderer;
         try mir_renderer.render();
         try buf.flush();
     }

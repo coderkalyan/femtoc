@@ -6,7 +6,7 @@ export fn factorial(n: i32) i32 {
     }
 }
 
-pub fn main() void {
-    const fact = factorial(10);
-    _ = fact;
-}
+// pub fn main() void {
+//     const fact = factorial(10);
+//     _ = fact;
+// }

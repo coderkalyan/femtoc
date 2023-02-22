@@ -180,14 +180,13 @@ pub fn walkModule(mg: *MirGen) !Module {
                     .extra = .{},
                     .values = .{},
                     .scratch = .{},
+                    .blocks = .{},
+                    .insert_block = undefined, // yes this is dangerous
+                    .prev_rewrite = .{},
                 };
 
                 const mir = try analyzer.analyzeBody(fn_decl.body);
                 try function_mir.append(mg.gpa, mir);
-                // std.debug.print("{any}\n", .{mir.insts.items(.tag)});
-                // try analyzer.analyzeBody(fn_decl.body);
-                // try mg.scratch.append(mg.arena, index);
-                // mg.map.putAssumeCapacity(hir_index, Mir.indexToRef(index));
             },
             .alloc => {
                 const op = mg.hir.insts.items(.data)[hir_index].un_node.operand;

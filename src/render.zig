@@ -336,6 +336,22 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     self.stream.dedent();
                     try writer.print("}})", .{});
                 },
+                .branch_single => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const branch_single = ir.extraData(pl, Hir.Inst.BranchSingle);
+
+                    try self.formatRef(branch_single.condition, &lbuf);
+                    try writer.print("branch_single({s},", .{lbuf});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try writer.print("exec_true = {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(branch_single.exec_true);
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
+                    self.stream.dedent();
+                },
                 .branch_double => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
                     const branch_double = ir.extraData(pl, Hir.Inst.BranchDouble);
@@ -433,10 +449,13 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         }
 
         pub fn render(r: *Self) !void {
-            var index: u32 = 0;
-            while (index < r.mir.insts.len) : (index += 1) {
-                try r.renderInst(index);
+            for (r.mir.blocks) |block| {
+                try r.renderBlock(block);
             }
+            // var index: u32 = 0;
+            // while (index < r.mir.insts.len) : (index += 1) {
+            //     try r.renderInst(index);
+            // }
             // const module = r.mir.insts.items(.data)[r.mir.insts.len - 1];
             // const data = r.mir.extraData(module.pl, Mir.Module);
             //
@@ -445,6 +464,22 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             //     const index = r.mir.extra[module.pl + 1 + extra_index];
             //     try r.renderInst(index);
             // }
+        }
+
+        pub fn renderBlock(r: *Self, b: u32) !void {
+            const writer = r.stream.writer();
+            try writer.print(".{}:", .{b});
+            r.stream.indent();
+            try r.stream.newline();
+
+            // const len = r.mir.extra[b];
+            // std.debug.print("render block: {any}\n", .{r.mir.extra[b + 1..b + 1 + len]});
+            var index: u32 = 0;
+            while (index < r.mir.extra[b]) : (index += 1) {
+                const inst = r.mir.extra[b + 1 + index];
+                try r.renderInst(inst);
+            }
+            r.stream.dedent();
         }
 
         pub fn renderInst(self: *Self, index: u32) !void {
@@ -525,44 +560,19 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     self.stream.dedent();
                     try writer.print("}})", .{});
                 },
-                // .block => {
-                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const block = ir.extraData(pl, Hir.Inst.Block);
-                //
-                //     try writer.print("block({{", .{});
-                //     self.stream.indent();
-                //     try self.stream.newline();
-                //
-                //     var extra_index: u32 = 0;
-                //     while (extra_index < block.len) : (extra_index += 1) {
-                //         const inst = self.hir.extra_data[pl + 1 + extra_index];
-                //         try self.renderInst(inst);
-                //     }
-                //
-                //     self.stream.dedent();
-                //     try writer.print("}})", .{});
-                // },
-                // .branch_double => {
-                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const branch_double = ir.extraData(pl, Hir.Inst.BranchDouble);
-                //
-                //     try self.formatRef(branch_double.condition, &lbuf);
-                //     try writer.print("branch_double({s},", .{lbuf});
-                //     self.stream.indent();
-                //     try self.stream.newline();
-                //     try writer.print("exec_true = {{", .{});
-                //     self.stream.indent();
-                //     try self.stream.newline();
-                //     try self.renderInst(branch_double.exec_true);
-                //     self.stream.dedent();
-                //     try writer.print("}}, exec_false = {{", .{});
-                //     self.stream.indent();
-                //     try self.stream.newline();
-                //     try self.renderInst(branch_double.exec_false);
-                //     self.stream.dedent();
-                //     try writer.print("}})", .{});
-                //     self.stream.dedent();
-                // },
+                .br => {
+                    const pl = ir.insts.items(.data)[index].pl;
+                    try writer.print("br(.{})", .{pl});
+                },
+                .condbr => {
+                    const condition = ir.insts.items(.data)[index].op_pl.op;
+                    const pl = ir.insts.items(.data)[index].op_pl.pl;
+                    const data = self.mir.extraData(pl, Mir.Inst.CondBr);
+                    try self.formatRef(condition, &lbuf);
+                    const exec_true = data.exec_true;
+                    const exec_false = data.exec_false;
+                    try writer.print("condbr({s}, .{}, .{})", .{lbuf, exec_true, exec_false});
+                },
                 // .ret_implicit => {
                 //     const operand = ir.insts.items(.data)[index].un_node.operand;
                 //     try self.formatRef(operand, &lbuf);

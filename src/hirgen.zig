@@ -571,9 +571,11 @@ pub const HirGen = struct {
 
     fn ifSimple(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const if_simple = hg.tree.data(node).if_simple;
+        var block_scope = Scope.Block.init(scope, .function);
+        const s = &block_scope.base;
 
-        const condition_ref = try hg.expr(gh, scope, if_simple.condition);
-        const exec_ref = try hg.block(gh, scope, if_simple.exec_true);
+        const condition_ref = try hg.expr(gh, s, if_simple.condition);
+        const exec_ref = try hg.block(gh, s, if_simple.exec_true);
         const branch = try hg.addExtra(Inst.BranchSingle {
             .condition = condition_ref,
             .exec_true = exec_ref,
@@ -587,11 +589,13 @@ pub const HirGen = struct {
 
     fn ifElse(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const if_else = hg.tree.data(node).if_else;
+        var block_scope = Scope.Block.init(scope, .function);
+        const s = &block_scope.base;
 
-        const condition_ref = try hg.expr(gh, scope, if_else.condition);
+        const condition_ref = try hg.expr(gh, s, if_else.condition);
         const exec = hg.tree.extraData(if_else.exec, Node.IfElse);
-        const exec_true = try hg.block(gh, scope, exec.exec_true);
-        const exec_false = try hg.block(gh, scope, exec.exec_false);
+        const exec_true = try hg.block(gh, s, exec.exec_true);
+        const exec_false = try hg.block(gh, s, exec.exec_false);
         const branch = try hg.addExtra(Inst.BranchDouble {
             .condition = condition_ref,
             .exec_true = exec_true,
@@ -606,13 +610,15 @@ pub const HirGen = struct {
 
     fn ifChain(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         const if_chain = hg.tree.data(node).if_chain;
+        var block_scope = Scope.Block.init(scope, .function);
+        const s = &block_scope.base;
 
-        const condition_ref = try hg.expr(gh, scope, if_chain.condition);
+        const condition_ref = try hg.expr(gh, s, if_chain.condition);
         const chain = hg.tree.extraData(if_chain.chain, Node.IfChain);
-        const exec_true = try hg.block(gh, scope, chain.exec_true);
+        const exec_true = try hg.block(gh, s, chain.exec_true);
         const next = switch (hg.tree.data(chain.next)) {
-            .if_simple => try hg.ifSimple(gh, scope, chain.next),
-            .if_else => try hg.ifElse(gh, scope, chain.next),
+            .if_simple => try hg.ifSimple(gh, s, chain.next),
+            .if_else => try hg.ifElse(gh, s, chain.next),
             else => unreachable,
         };
 
