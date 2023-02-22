@@ -45,8 +45,8 @@ pub fn ensureSliceCapacity(m: *MirMap, a: Allocator, insts: []const Hir.Index) !
                 better_start = @max(better_start, m.start + @intCast(u32, i));
                 found_start = true;
             }
-            max = @max(max, m.start + @intCast(u32, i));
         }
+        max = @max(max, m.start + @intCast(u32, i));
     }
     if (m.map.len == 0) {
         better_start = std.mem.min(Hir.Index, insts);
@@ -118,7 +118,7 @@ pub fn resolveRef(m: *MirMap, ref: Hir.Ref) Mir.Ref {
 }
 
 test "mirmap" {
-    var m = MirMap.init();
+    var m = MirMap.init(null);
     defer m.deinit(std.testing.allocator);
 
     try m.ensureSliceCapacity(std.testing.allocator, &[_]Hir.Index{3, 4, 5, 8, 9, 10});
@@ -163,4 +163,11 @@ test "mirmap" {
     try std.testing.expectEqual(m.get(11).?, @intToEnum(Mir.Ref, 105));
     try std.testing.expectEqual(m.get(12).?, @intToEnum(Mir.Ref, 106));
     try std.testing.expectEqual(m.get(13).?, @intToEnum(Mir.Ref, 107));
+
+    try m.ensureSliceCapacity(std.testing.allocator, &[_]Hir.Index{14, 15});
+    try std.testing.expectEqual(m.get(14), null);
+    try std.testing.expectEqual(m.get(15), null);
+    try m.ensureSliceCapacity(std.testing.allocator, &[_]Hir.Index{});
+    try std.testing.expectEqual(m.get(14), null);
+    try std.testing.expectEqual(m.get(15), null);
 }

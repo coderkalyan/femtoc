@@ -16,6 +16,7 @@ pub const Inst = struct {
     pub const Tag = enum(u8) {
         module,
         function,
+        block,
 
         constant, // data contains type
 
@@ -78,6 +79,15 @@ pub const Inst = struct {
 
     pub const Call = struct {
         args_len: u32,
+    };
+
+    pub const CondBr = struct {
+        exec_true: u32,
+        exec_false: u32,
+    };
+
+    pub const Block = struct {
+        insts_len: u32,
     };
 };
 

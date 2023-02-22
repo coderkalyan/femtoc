@@ -10,6 +10,13 @@ const Allocator = std.mem.Allocator;
 const Analyzer = @This();
 const Value = Mir.Value;
 
+const Error = Allocator.Error || Mir.Error || error {
+    InvalidRef,
+    TypeError,
+    TypeMismatch,
+    InvalidOperation,
+};
+
 mg: *MirGen,
 map: MirMap,
 hir: *const Hir,
@@ -43,8 +50,13 @@ const Block = struct {
             try analyzer.extra.ensureUnusedCapacity(analyzer.gpa, fields.len);
             const len = @intCast(u32, analyzer.extra.items.len);
             inline for (fields) |field| {
-                comptime std.debug.assert(field.field_type == u32);
-                analyzer.extra.appendAssumeCapacity(@field(extra, field.name));
+                if (field.field_type == u32) {
+                    analyzer.extra.appendAssumeCapacity(@field(extra, field.name));
+                } else if (field.field_type == Mir.Ref) {
+                    analyzer.extra.appendAssumeCapacity(@enumToInt(@field(extra, field.name)));
+                } else {
+                    unreachable;
+                }
             }
             return len;
         }
@@ -73,14 +85,26 @@ const Block = struct {
 };
 
 pub fn analyzeBody(analyzer: *Analyzer, inst: Hir.Index) !Mir {
-    const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
-    const block_data = analyzer.hir.extraData(pl, Hir.Inst.Block);
-
-    const block = &Block {
+    var block = Block {
         .parent = null,
         .analyzer = analyzer,
         .instructions = .{},
     };
+    _ = try analyzer.analyzeBlock(&block, inst);
+
+    return Mir {
+        .insts = analyzer.instructions.toOwnedSlice(),
+        .extra = analyzer.extra.toOwnedSlice(analyzer.gpa),
+        .values = analyzer.values.toOwnedSlice(analyzer.gpa),
+    };
+}
+
+pub fn analyzeBlock(analyzer: *Analyzer, block: *Block, inst: Hir.Index) !u32 {
+    const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
+    const block_data = analyzer.hir.extraData(pl, Hir.Inst.Block);
+
+    const scratch_top = analyzer.scratch.items.len;
+    defer analyzer.scratch.shrinkRetainingCapacity(scratch_top);
 
     const hir_insts = analyzer.hir.extra_data[pl + 1..pl + 1 + block_data.len];
     try analyzer.map.ensureSliceCapacity(analyzer.arena, hir_insts);
@@ -94,16 +118,29 @@ pub fn analyzeBody(analyzer: *Analyzer, inst: Hir.Index) !Mir {
             .store => try analyzer.store(block, index),
             .validate_ty => try analyzer.validateTy(block, index),
             .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
+            .ret_node => try analyzer.retNode(block, index),
+            .ret_implicit => try analyzer.retImplicit(block, index),
+            .branch_single => try analyzer.branchSingle(block, index),
+            // .branch_double => try analyzer.branchDouble(block, index),
             else => Mir.indexToRef(0),
         };
         analyzer.map.putAssumeCapacity(index, ref);
+        std.debug.print("{}\n", .{ref});
+        if (Mir.refToIndex(ref)) |mir_index| try analyzer.scratch.append(analyzer.gpa, mir_index);
     }
+    for (hir_insts) |index| analyzer.map.remove(index);
 
-    return Mir {
-        .insts = analyzer.instructions.toOwnedSlice(),
-        .extra = analyzer.extra.toOwnedSlice(analyzer.gpa),
-        .values = analyzer.values.toOwnedSlice(analyzer.gpa),
-    };
+    const insts = analyzer.scratch.items[scratch_top..];
+    const index = try block.addInst(.{
+        .tag = .block,
+        .data = .{
+            .pl = try block.addExtra(Mir.Inst.Block { .insts_len = @intCast(u32, insts.len) })
+        },
+    });
+    try analyzer.extra.appendSlice(analyzer.gpa, insts);
+    std.debug.print("{any}\n", .{insts});
+
+    return index;
 }
 
 pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
@@ -394,18 +431,51 @@ fn intConstantValue(analyzer: *Analyzer, ref: Mir.Ref) u64 {
     const index = Mir.refToIndex(ref).?;
     const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
     return analyzer.values.items[pl].int;
-    // } else {
-    //     return switch (ref) {
-    //         .zero_val => return Mir.Ref.zero_val,
-    //         .one_val => return Mir.Ref.one_val,
-    //         else => unreachable,
-    //     };
-    // }
 }
 
 fn floatConstantValue(analyzer: *Analyzer, ref: Mir.Ref) f64 {
     const index = Mir.refToIndex(ref).?;
-    // std.debug.print("{}\n", .{analyzer.instructions.items(.tag)[index]});
     const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
     return analyzer.values.items[pl].float;
+}
+
+fn retNode(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const ref = analyzer.map.resolveRef(data.un_node.operand);
+    const index = try b.addInst(.{
+        .tag = .ret,
+        .data = .{ .un_op = ref },
+    });
+    return Mir.indexToRef(index);
+}
+
+fn retImplicit(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const ref = analyzer.map.resolveRef(data.un_tok.operand);
+    const index = try b.addInst(.{
+        .tag = .ret,
+        .data = .{ .un_op = ref },
+    });
+    return Mir.indexToRef(index);
+}
+
+fn branchSingle(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const branch_single = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.BranchSingle);
+    const condition = analyzer.map.resolveRef(branch_single.condition);
+    const exec_true = try analyzer.analyzeBlock(b, branch_single.exec_true);
+    const exec_false = try b.addInst(.{
+        .tag = .block,
+        .data = .{ .pl = try b.addExtra(Mir.Inst.Block { .insts_len = 0 }) },
+    });
+    const condbr = try b.addExtra(Mir.Inst.CondBr {
+        .exec_true = exec_true,
+        .exec_false = exec_false,
+    });
+
+    const index = try b.addInst(.{
+        .tag = .condbr,
+        .data = .{ .op_pl = .{ .op = condition, .pl = condbr } },
+    });
+    return Mir.indexToRef(index);
 }
