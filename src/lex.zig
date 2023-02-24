@@ -783,6 +783,10 @@ pub const Lexer = struct {
                         result.loc.start = self.index + 1;
                         state = .start;
                     },
+                    0 => {
+                        state = .start;
+                        break;
+                    },
                     else => {},
                 },
             }
@@ -972,7 +976,6 @@ test "keywords" {
     try testLex("use", &.{.k_use});
     try testLex("as", &.{.k_as});
     try testLex("fn", &.{.k_fn});
-    try testLex("assoc", &.{.k_assoc});
     try testLex("return", &.{.k_return});
     try testLex("let", &.{.k_let});
     try testLex("mut", &.{.k_mut});
@@ -991,6 +994,10 @@ test "annotations" {
     try testLex("@inline", &.{.a_inline});
     try testLex("@import", &.{.a_import});
     try testLex("@export", &.{.a_export});
+}
+
+test "line comments" {
+    try testLex("//test", &.{});
 }
 
 test "arith.fm" {
