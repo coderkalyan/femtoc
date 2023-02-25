@@ -13,7 +13,10 @@ pub const Error = struct {
     token: TokenIndex,
 
     pub const Tag = enum {
-        
+        missing_colon,
+        missing_type_annotation,
+        missing_return_type,
+        missing_identifier,
     };
 };
 

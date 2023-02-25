@@ -8,7 +8,8 @@ const Lexer = lex.Lexer;
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
 
-pub const Error = error { UnexpectedToken } || Allocator.Error;
+pub const Error = error { UnexpectedToken } || error { HandledUserError } || Allocator.Error;
+
 const null_node: Node.Index = 0;
 
 // parses a string of source characters into an abstract syntax tree
@@ -61,7 +62,7 @@ const Parser = struct {
     nodes: std.MultiArrayList(Node),
     extra: std.ArrayListUnmanaged(Node.Index),
     scratch: std.ArrayList(Node.Index),
-    // errors: std.ArrayListUnmanaged(Ast.Error),
+    errors: std.ArrayList(Ast.Error),
 
     pub fn init(gpa: Allocator, source: []const u8, tokens: *Ast.TokenList) Parser {
         return .{
@@ -73,6 +74,7 @@ const Parser = struct {
             .nodes = .{},
             .extra = .{},
             .scratch = std.ArrayList(Node.Index).init(gpa),
+            .errors = std.ArrayList(Ast.Error).init(gpa),
         };
     }
 
@@ -152,16 +154,38 @@ const Parser = struct {
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
+            std.debug.print("HI IM AT {}, idx={}\n", .{p.token_tags[p.index], p.index});
+
             const node = switch (p.token_tags[p.index]) {
                 .eof => break,
-                .k_let => try p.parseDecl(),
+                .k_let => p.parseDecl() catch |err| {
+                    if (err == Error.HandledUserError)
+                    {
+                        while (true)
+                        {
+                            std.debug.print("CURRENTLY CHECKING {}, idx={}\n", .{p.token_tags[p.index], p.index});
+                            switch (p.token_tags[p.index])
+                            {
+                                .eof, .k_let => {
+                                    std.debug.print("STOPPING AT {}, idx={}\n", .{p.token_tags[p.index], p.index});
+                                    break;
+                                },
+                                else => {std.debug.print("SKIPPED PAST ctoken {}, idx={}\n", .{p.token_tags[p.index], p.index});}   
+                            }
+                            p.index += 1;
+                        }
+                        continue;
+                    }
+                    else return err;
+                    return;
+                },
                 else => {
                     std.debug.print("{}\n", .{p.token_tags[p.index]});
                     unreachable;
                 },
             };
-            try p.scratch.append(node);
 
+            try p.scratch.append(node);
             _ = p.eatToken(.semi);
         }
 
@@ -335,22 +359,45 @@ const Parser = struct {
     fn expectFnDecl(p: *Parser) !Node.Index {
         const fn_token = try p.expectToken(.k_fn);
         const params = try p.expectParamList();
-        const return_ty = try p.expectType();
-        const body = try p.expectBlock();
+        // const return_ty = try p.expectType();
+        if (p.expectType()) |return_ty|
+        {
+            const body = try p.expectBlock();
 
-        return p.addNode(.{
-            .main_token = fn_token,
-            .data = .{
-                .fn_decl = .{
-                    .signature = try p.addExtra(Node.FnSignature {
-                        .params_start = params.start,
-                        .params_end = params.end,
-                        .return_ty = return_ty,
-                    }),
-                    .body = body,
-                }
-            },
-        });
+            return p.addNode(.{
+                .main_token = fn_token,
+                .data = .{
+                    .fn_decl = .{
+                        .signature = try p.addExtra(Node.FnSignature {
+                            .params_start = params.start,
+                            .params_end = params.end,
+                            .return_ty = return_ty,
+                        }),
+                        .body = body,
+                    }
+                },
+            });
+        }
+        else |err|
+        {
+            switch (err)
+            {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_return_type, .token=p.index});
+
+                    // consume leftover block
+                    if (p.expectBlock()) |_| {} else |block_err| {
+                        switch(block_err){
+                            Error.UnexpectedToken => {},
+                            else => return block_err,
+                        }
+                    }
+
+                    return Error.HandledUserError;
+                },
+                else => return err,
+            }
+        }
     }
 
     fn expectParamList(p: *Parser) !Node.ExtraRange {
@@ -365,12 +412,35 @@ const Parser = struct {
 
         while (true) {
             if (p.eatToken(.r_paren)) |_| break;
-            const param_node = try p.expectParam();
-            try p.scratch.append(param_node);
-            switch (p.token_tags[p.index]) {
-                .comma => _ = p.eatToken(.comma),
-                .r_paren => {},
-                else => return Error.UnexpectedToken,
+
+            if (p.expectParam()) |param_node| {
+                try p.scratch.append(param_node);
+                switch (p.token_tags[p.index]) {
+                    .comma => _ = p.eatToken(.comma),
+                    .r_paren => {},
+                    else => return Error.UnexpectedToken,
+                }
+            }
+            else |err| {
+                switch (err) {
+                    Error.HandledUserError => { 
+                        // eat until we're just left with an closing parenthesis or another comma to try and parse that arg
+                        while (true)
+                        {
+                            switch (p.token_tags[p.index]) {
+                                .comma => {
+                                    _ = p.eatToken(.comma);
+                                    break;
+                                },
+                                .r_paren => break,
+                                else => return Error.UnexpectedToken,
+                            }
+                            p.index += 1;
+                        }
+                        continue; 
+                    },
+                    else => return err,
+                }
             }
         }
 
@@ -384,18 +454,76 @@ const Parser = struct {
     }
 
     fn expectParam(p: *Parser) !Node.Index {
-        const ident_token = try p.expectToken(.ident);
-        _ = try p.expectToken(.colon);
-        
-        const type_node = try p.expectType();
-        return p.addNode(.{
-            .main_token = ident_token,
-            .data = .{
-                .param = .{
-                    .ty = type_node,
+        // const ident_token = try p.expectToken(.ident);
+
+        if (p.expectToken(.ident)) |ident_token| {
+            if (p.expectToken(.colon)) |_| {} else {
+                // We're missing a colon flag it
+                try p.errors.append(.{
+                    .tag = Ast.Error.Tag.missing_colon, 
+                    .token = p.index
+                });
+            }
+
+            if (p.expectType()) |type_node| {
+                return p.addNode(.{
+                    .main_token = ident_token,
+                    .data = .{
+                        .param = .{
+                            .ty = type_node,
+                        },
+                    },
+                });
+            } else |err| {
+                switch (err)
+                {
+                    Error.UnexpectedToken => {
+                        // missing the type annotation which means we can't generate the node!
+                        try p.errors.append(.{
+                            .tag = Ast.Error.Tag.missing_type_annotation,
+                            .token = p.index
+                        });
+                        return Error.HandledUserError;
+                    },
+                    else => {
+                        return err;
+                    }
+                }
+
+                return err;
+            }
+        } else |err| {
+            switch (err)
+            {
+                Error.UnexpectedToken => {
+                    // We're missing an identifier flag it
+                    try p.errors.append(.{
+                        .tag = Ast.Error.Tag.missing_identifier, 
+                        .token = p.index
+                    });
+
+                    if (p.expectToken(.colon)) |_| {} else {
+                        // We're missing a colon flag it
+                        try p.errors.append(.{
+                            .tag = Ast.Error.Tag.missing_colon, 
+                            .token = p.index
+                        });
+                    }
+
+                    if (p.expectType()) |_| {} else {
+                        // We're missing a type annotation
+                        try p.errors.append(.{
+                            .tag = Ast.Error.Tag.missing_type_annotation, 
+                            .token = p.index
+                        });
+                    }
+
+                    return Error.HandledUserError;
                 },
-            },
-        });
+                else => return err,
+            }
+        }
+
     }
 
     fn parseTypeDecl(self: *Parser) !Node.Index {
@@ -524,7 +652,20 @@ const Parser = struct {
                 .data = .{ .var_decl = .{ .ty = ty, .val = val } },
             });
         } else {
-            _ = try p.expectToken(.ident);
+            // _ = try p.expectToken(.ident);
+            if (p.expectToken(.ident)) |_| {} else |err| {
+                switch (err)
+                {
+                    Error.UnexpectedToken => {
+                        try p.errors.append(.{
+                            .tag = .missing_type_annotation,
+                            .token = p.index
+                        });
+                        // return Error.HandledUserError;
+                    },
+                    else => return err,
+                }
+            }
 
             const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
             _ = try p.expectToken(.equal);
