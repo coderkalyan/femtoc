@@ -231,6 +231,9 @@ pub const Node = struct {
             body: Index,
         },
 
+        // "break" statement to exit a loop early
+        loop_break: void,
+
         // body = body block node
         module: struct {
             stmts_start: ExtraIndex,

@@ -462,6 +462,7 @@ const Parser = struct {
                 .r_angle_r_angle_equal => p.parseAssignment(),
                 else => return Error.UnexpectedToken,
             },
+            .k_break => p.expectBreak(),
             else => {
                 std.debug.print("{}\n", .{p.token_tags[p.index]});
                 return Error.UnexpectedToken;
@@ -670,6 +671,14 @@ const Parser = struct {
                 }
             });
         }
+    }
+
+    fn expectBreak(p: *Parser) !Node.Index {
+        const break_token = try p.expectToken(.k_break);
+        return p.addNode(.{
+            .main_token = break_token,
+            .data = .{ .loop_break = {} },
+        });
     }
 };
 

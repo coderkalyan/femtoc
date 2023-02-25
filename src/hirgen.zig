@@ -399,6 +399,18 @@ pub const HirGen = struct {
                     const ref = try hg.returnStmt(gh, s, stmt);
                     try gh.addInst(ref);
                 },
+                .loop_forever => {
+                    const ref = try hg.loopForever(gh, s, stmt);
+                    try gh.addInst(ref);
+                },
+                .loop_conditional => {
+                    const ref = try hg.loopConditional(gh, s, stmt);
+                    try gh.addInst(ref);
+                },
+                .loop_break => {
+                    const ref = try hg.loopBreak(gh, s, stmt);
+                    try gh.addInst(ref);
+                },
                 else => {
                     std.debug.print("Unexpected node: {}\n", .{hg.tree.data(stmt)});
                     return GenError.NotImplemented;
@@ -406,27 +418,12 @@ pub const HirGen = struct {
             }
         }
 
-        // const ret_implicit = try hg.addInst(.{
-        //     .tag = .ret_implicit,
-        //     .data = .{ .un_node = .{ .node = node, .operand = Ref.void_val, } },
-        // });
-        // try gh.addInst(ret_implicit);
-
         const insts = gh.scratch.items[scratch_top..];
-        // std.debug.print("{any}\n", .{insts});
-        // std.debug.print("{any}\n", .{insts});
-        // const insts = block_scope.insts.items;
-        // std.debug.print("block insts: {any}\n", .{insts});
         const ref = try hg.addExtra(Inst.Block {
             .len = @intCast(u32, insts.len),
         });
-        // const insts_base = hg.extra_data.items.len;
         try hg.extra_data.appendSlice(insts);
 
-        // const ref = try hg.addExtra(Inst.Block {
-        //     .insts_start = @intCast(u32, insts_base),
-        //     .insts_end = @intCast(u32, hg.extra_data.items.len),
-        // });
         return hg.addInst(.{
             .tag = .block,
             .data = .{ .pl_node = .{ .node = node, .pl = ref, } },
@@ -471,11 +468,6 @@ pub const HirGen = struct {
         // unlike constant declarations, mutable variables are stored in "memory"
         // so we have to create alloc instructions in addition to computing the value
         // otherwise, this function operates like constDecl
-        // this doesn't actually create any instructions for declaring the constant
-        // instead, the value to set the constant to is computed, and the resulting
-        // instruction return value is stored in the scope such that future
-        // code that needs to access this constant can simply look up the identifier
-        // and refer to the associated value instruction
         const var_decl = hg.tree.data(node).var_decl;
         if (var_decl.ty == 0) {
             // untyped (inferred) declaration
@@ -641,6 +633,91 @@ pub const HirGen = struct {
             .tag = .ret_node,
             .data = .{ .un_node = .{ .node = node, .operand = ref, } },
         });
+    }
+
+    fn loopForever(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
+        const loop_forever = hg.tree.data(node).loop_forever;
+        var loop_scope = Scope.Block.init(scope, .loop);
+        const body = try hg.block(gh, &loop_scope.base, loop_forever.body);
+
+        return hg.addInst(.{
+            .tag = .loop,
+            .data = .{ .pl_node = .{ .node = node, .pl = body } },
+        });
+    }
+
+    fn loopConditional(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
+        const loop_conditional = hg.tree.data(node).loop_conditional;
+
+        // we have a block (loop outer body) that contains the conditional and break
+        // and then an inner nested block that contains the user loop body
+        var loop_scope = Scope.Block.init(scope, .loop);
+        const body = try hg.block(gh, &loop_scope.base, loop_conditional.body);
+
+        const scratch_top = gh.scratch.items.len;
+        defer gh.scratch.shrinkRetainingCapacity(scratch_top);
+
+        const condition = try hg.expr(gh, scope, loop_conditional.condition);
+
+        // inner break block (exec_false)
+        const loop_break = try hg.addInst(.{
+            .tag = .loop_break,
+            .data = .{ .node = node },
+        });
+
+        const exec_false_data = try hg.addExtra(Inst.Block {
+            .len = 1,
+        });
+        try hg.extra_data.append(loop_break);
+        const exec_false = try hg.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = node, .pl = exec_false_data } },
+        });
+
+        const branch_data = try hg.addExtra(Inst.BranchDouble {
+            .condition = condition,
+            .exec_true = body,
+            .exec_false = exec_false,
+        });
+        const branch = try hg.addInst(.{
+            .tag = .branch_double,
+            .data = .{ .pl_node = .{ .node = node, .pl = branch_data } },
+        });
+        try gh.addInst(branch);
+
+        const insts = gh.scratch.items[scratch_top..];
+        const loop_block_data = try hg.addExtra(Inst.Block {
+            .len = @intCast(u32, insts.len),
+        });
+        try hg.extra_data.appendSlice(insts);
+        const loop_block = try hg.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = node, .pl = loop_block_data } },
+        });
+
+        return hg.addInst(.{
+            .tag = .loop,
+            .data = .{ .pl_node = .{ .node = node, .pl = loop_block } },
+        });
+    }
+
+    // fn loopRange(hg: *HirGen. gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
+    //     const loop_range = hg.tree.data(node).loop_range;
+    //     var loop_scope = Scope.Block.init(scope, .loop);
+    //
+    //     const condition = try hg.expr(gh, &loop_scope.base, )
+    // }
+
+    fn loopBreak(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
+        if (scope.resolveLoop()) |_| {
+            _ = gh;
+            return hg.addInst(.{
+                .tag = .loop_break,
+                .data = .{ .node = node },
+            });
+        } else {
+            unreachable;
+        }
     }
 
     fn module(hg: *HirGen, node: Node.Index) !Hir.Index {

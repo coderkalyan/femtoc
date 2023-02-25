@@ -66,6 +66,9 @@ pub const Scope = struct {
         pub const Kind = enum {
             toplevel,
             function,
+            loop,
+            conditional,
+            // loop_conditional,
         };
 
         pub fn init(s: *Scope, k: Kind) Self {
@@ -83,6 +86,7 @@ pub const Scope = struct {
         parent: *Scope,
         arena: std.mem.Allocator,
         scratch: std.ArrayList(Hir.Index),
+        // loop: ?*Scope,
 
         pub const Self = @This();
 
@@ -259,6 +263,28 @@ pub const Scope = struct {
         }
 
         return found;
+    }
+
+    pub fn resolveLoop(inner: *Scope) ?*Scope {
+        var s: *Scope = inner;
+
+        while (true) {
+            switch (s.tag) {
+                .module => break,
+                .namespace => s = s.cast(Namespace).?.parent,
+                .gen_hir => s = s.cast(GenHir).?.parent,
+                .block => {
+                    const block = s.cast(Block).?;
+                    if (block.k == .loop) return s;
+                    s = block.parent;
+                },
+                .local_val => s = s.cast(LocalVal).?.parent,
+                .local_ptr => s = s.cast(LocalPtr).?.parent,
+                .local_type => s = s.cast(LocalPtr).?.parent,
+            }
+        }
+
+        return null;
     }
 };
 

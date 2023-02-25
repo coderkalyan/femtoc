@@ -45,6 +45,8 @@ pub const Inst = struct {
         jump,
         branch_single,
         branch_double,
+        loop,
+        loop_break,
         // returns control flow to the function's callee
         // includes an operand as the return value
         // includes the instruction
@@ -64,6 +66,7 @@ pub const Inst = struct {
             l: Ref,
             r: Ref,
         },
+        node: NodeIndex,
         // used for unary operations (single operand) linking to the source node
         un_node: struct {
             // reference to the node creating this instruction
@@ -154,6 +157,11 @@ pub const Inst = struct {
         condition: Ref,
         exec_true: Index,
         exec_false: Index,
+    };
+
+    pub const LoopConditional = struct {
+        condition: Ref,
+        body: Index,
     };
 
     pub const Block = struct {

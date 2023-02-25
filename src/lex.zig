@@ -103,6 +103,7 @@ pub const Token = struct {
         k_variant,
         k_defer,
         k_for,
+        k_break,
         k_or,
         k_and,
         k_not,
@@ -132,6 +133,7 @@ pub const Token = struct {
         .{ "variant", .k_variant },
         .{ "defer", .k_defer },
         .{ "for", .k_for },
+        .{ "break", .k_break },
         .{ "or", .k_or },
         .{ "and", .k_and },
         .{ "not", .k_not },
@@ -988,6 +990,7 @@ test "keywords" {
     try testLex("variant", &.{.k_variant});
     try testLex("defer", &.{.k_defer});
     try testLex("for", &.{.k_for});
+    try testLex("break", &.{.k_break});
 }
 
 test "annotations" {

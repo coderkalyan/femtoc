@@ -383,6 +383,19 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(operand, &lbuf);
                     try writer.print("ret_node({s})", .{lbuf});
                 },
+                .loop => {
+                    const body = ir.insts.items(.data)[index].pl_node.pl;
+
+                    try writer.print("loop({{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(body);
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
+                },
+                .loop_break => {
+                    try writer.print("break()", .{});
+                },
                 .call => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
                     const call = ir.extraData(pl, Hir.Inst.Call);
@@ -468,7 +481,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
         pub fn renderBlock(r: *Self, b: u32) !void {
             const writer = r.stream.writer();
-            try writer.print(".{}:", .{b});
+            try writer.print("{}:", .{b});
             r.stream.indent();
             try r.stream.newline();
 
@@ -562,16 +575,15 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .br => {
                     const pl = ir.insts.items(.data)[index].pl;
-                    try writer.print("br(.{})", .{pl});
+                    try writer.print("br(label {})", .{pl});
                 },
                 .condbr => {
                     const condition = ir.insts.items(.data)[index].op_pl.op;
                     const pl = ir.insts.items(.data)[index].op_pl.pl;
                     const data = self.mir.extraData(pl, Mir.Inst.CondBr);
                     try self.formatRef(condition, &lbuf);
-                    const exec_true = data.exec_true;
-                    const exec_false = data.exec_false;
-                    try writer.print("condbr({s}, .{}, .{})", .{lbuf, exec_true, exec_false});
+                    try writer.print("condbr({s}, label {}, label {})",
+                                     .{lbuf, data.exec_true, data.exec_false});
                 },
                 // .ret_implicit => {
                 //     const operand = ir.insts.items(.data)[index].un_node.operand;
