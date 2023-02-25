@@ -407,6 +407,10 @@ pub const HirGen = struct {
                     const ref = try hg.loopConditional(gh, s, stmt);
                     try gh.addInst(ref);
                 },
+                .loop_range => {
+                    const ref = try hg.loopRange(gh, s, stmt);
+                    try gh.addInst(ref);
+                },
                 .loop_break => {
                     const ref = try hg.loopBreak(gh, s, stmt);
                     try gh.addInst(ref);
@@ -701,12 +705,73 @@ pub const HirGen = struct {
         });
     }
 
-    // fn loopRange(hg: *HirGen. gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
-    //     const loop_range = hg.tree.data(node).loop_range;
-    //     var loop_scope = Scope.Block.init(scope, .loop);
-    //
-    //     const condition = try hg.expr(gh, &loop_scope.base, )
-    // }
+    fn loopRange(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
+        const loop_range = hg.tree.data(node).loop_range;
+        const signature = hg.tree.extraData(loop_range.signature, Node.RangeSignature);
+
+        // we have a block (loop outer body) that contains the conditional and break
+        // and then an inner nested block that contains the user loop body
+
+        const ref = try hg.varDecl(gh, scope, signature.binding);
+        const ident = hg.tree.tokenString(hg.tree.mainToken(signature.binding) + 2);
+        const id = try hg.interner.intern(ident);
+        var var_scope = Scope.LocalPtr.init(scope, id, ref);
+        var s = &var_scope.base;
+
+        var loop_scope = Scope.Block.init(s, .loop);
+        s = &loop_scope.base;
+
+        const body = try hg.block(gh, s, loop_range.body);
+
+        const scratch_top = gh.scratch.items.len;
+        defer gh.scratch.shrinkRetainingCapacity(scratch_top);
+
+        const condition = try hg.expr(gh, s, signature.condition);
+
+        // inner break block (exec_false)
+        const loop_break = try hg.addInst(.{
+            .tag = .loop_break,
+            .data = .{ .node = node },
+        });
+
+        const exec_false_data = try hg.addExtra(Inst.Block {
+            .len = 1,
+        });
+        try hg.extra_data.append(loop_break);
+        const exec_false = try hg.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = node, .pl = exec_false_data } },
+        });
+
+        const branch_data = try hg.addExtra(Inst.BranchDouble {
+            .condition = condition,
+            .exec_true = body,
+            .exec_false = exec_false,
+        });
+        const branch = try hg.addInst(.{
+            .tag = .branch_double,
+            .data = .{ .pl_node = .{ .node = node, .pl = branch_data } },
+        });
+        try gh.addInst(branch);
+
+        const afterthought = try hg.assignSimple(gh, s, signature.afterthought);
+        try gh.addInst(afterthought);
+
+        const insts = gh.scratch.items[scratch_top..];
+        const loop_block_data = try hg.addExtra(Inst.Block {
+            .len = @intCast(u32, insts.len),
+        });
+        try hg.extra_data.appendSlice(insts);
+        const loop_block = try hg.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = node, .pl = loop_block_data } },
+        });
+
+        return hg.addInst(.{
+            .tag = .loop,
+            .data = .{ .pl_node = .{ .node = node, .pl = loop_block } },
+        });
+    }
 
     fn loopBreak(hg: *HirGen, gh: *Scope.GenHir, scope: *Scope, node: Node.Index) !Hir.Index {
         if (scope.resolveLoop()) |_| {
