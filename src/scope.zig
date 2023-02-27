@@ -5,6 +5,8 @@ const Interner = @import("interner.zig").Interner;
 
 const Node = Ast.Node;
 const Inst = Hir.Inst;
+const Allocator = std.mem.Allocator;
+const indexToRef = Inst.indexToRef;
 // pub const IdentifierError = error { Invalid, Shadowed };
 
 pub const Scope = struct {
@@ -27,7 +29,6 @@ pub const Scope = struct {
 
     const Tag = enum {
         module,
-        gen_hir,
         namespace,
         block,
         local_val,
@@ -45,12 +46,14 @@ pub const Scope = struct {
         base: Scope = .{ .tag = base_tag },
 
         parent: *Scope,
-        decls: std.AutoHashMap(u32, Node.Index),
+        decls: std.AutoHashMapUnmanaged(u32, Node.Index),
+        types: std.AutoHashMapUnmanaged(u32, Node.Index),
 
-        pub fn init(a: std.mem.Allocator, s: *Scope) @This() {
-            return @This() {
+        pub fn init(s: *Scope) @This() {
+            return .{
                 .parent = s,
-                .decls = std.AutoHashMap(u32, Node.Index).init(a),
+                .decls = .{},
+                .types = .{},
             };
         }
     };
@@ -60,46 +63,18 @@ pub const Scope = struct {
         base: Scope = .{ .tag = base_tag },
 
         parent: *Scope,
-        k: Kind,
+        instructions: std.ArrayListUnmanaged(u32),
 
-        pub const Self = @This();
-        pub const Kind = enum {
-            toplevel,
-            function,
-            loop,
-            conditional,
-            // loop_conditional,
-        };
+        force_comptime: bool,
 
-        pub fn init(s: *Scope, k: Kind) Self {
-            return Self {
-                .parent = s,
-                .k = k,
-            };
-        }
-    };
+        pub fn addInst(b: *Block, inst: *Inst) !Hir.Index {
+            const index = @intCast(Hir.Index, b.hg.instructions.len);
+            try b.hg.instructions.ensureUnusedCapacity(1);
+            try b.instructions.ensureUnusedCapacity(1);
 
-    pub const GenHir = struct {
-        const base_tag: Tag = .gen_hir;
-        base: Scope = .{ .tag = base_tag },
-
-        parent: *Scope,
-        arena: std.mem.Allocator,
-        scratch: std.ArrayList(Hir.Index),
-        // loop: ?*Scope,
-
-        pub const Self = @This();
-
-        pub fn init(arena: std.mem.Allocator, s: *Scope) Self {
-            return Self {
-                .parent = s,
-                .arena = arena,
-                .scratch = std.ArrayList(Hir.Index).init(arena),
-            };
-        }
-
-        pub fn addInst(gh: *Self, index: Hir.Index) !void {
-            try gh.scratch.append(index);
+            b.hg.instructions.appendAssumeCapacity(inst);
+            b.instructions.appendAssumeCapacity(index);
+            return index;
         }
     };
 
@@ -112,7 +87,7 @@ pub const Scope = struct {
         ref: Hir.Ref,
 
         pub fn init(s: *Scope, ident: u32, ref: Hir.Ref) @This() {
-            return @This() {
+            return .{
                 .parent = s,
                 .ident = ident,
                 .ref = ref,
@@ -129,7 +104,7 @@ pub const Scope = struct {
         ptr: Hir.Ref,
 
         pub fn init(s: *Scope, ident: u32, ptr: Hir.Ref) @This() {
-            return @This() {
+            return .{
                 .parent = s,
                 .ident = ident,
                 .ptr = ptr,
@@ -143,13 +118,13 @@ pub const Scope = struct {
 
         parent: *Scope,
         ident: u32,
-        node: Node.Index,
+        ref: Hir.Ref,
 
-        pub fn init(s: *Scope, ident: u32, node: Node.Index) @This() {
-            return @This() {
+        pub fn init(s: *Scope, ident: u32, ref: Hir.Ref) @This() {
+            return .{
                 .parent = s,
                 .ident = ident,
-                .node = node,
+                .ref = ref,
             };
         }
     };
@@ -173,10 +148,6 @@ pub const Scope = struct {
                     }
 
                     s = namespace.parent;
-                },
-                .gen_hir => {
-                    const genhir = s.cast(GenHir).?;
-                    s = genhir.parent;
                 },
                 .block => {
                     const block = s.cast(Block).?;
@@ -225,7 +196,7 @@ pub const Scope = struct {
                 .module => break,
                 .namespace => {
                     const namespace = s.cast(Namespace).?;
-                    if (namespace.decls.get(ident)) |node| {
+                    if (namespace.types.get(ident)) |node| {
                         if (found) |_| {
                             return error.IdentifierShadowed;
                         } else {
@@ -234,10 +205,6 @@ pub const Scope = struct {
                     }
 
                     s = namespace.parent;
-                },
-                .gen_hir => {
-                    const genhir = s.cast(GenHir).?;
-                    s = genhir.parent;
                 },
                 .block => {
                     const block = s.cast(Block).?;
@@ -272,7 +239,6 @@ pub const Scope = struct {
             switch (s.tag) {
                 .module => break,
                 .namespace => s = s.cast(Namespace).?.parent,
-                .gen_hir => s = s.cast(GenHir).?.parent,
                 .block => {
                     const block = s.cast(Block).?;
                     if (block.k == .loop) return s;
@@ -291,10 +257,11 @@ pub const Scope = struct {
 test "namespace member" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+    var allocator = arena.allocator();
 
-    var interner = Interner.init(arena.allocator());
+    var interner = Interner.init(allocator);
     var module = Scope.Module {};
-    var namespace = Scope.Namespace.init(arena.allocator(), &module.base);
+    var namespace = Scope.Namespace.init(&module.base);
 
     const apple = try interner.intern("apple");
     const banana = try interner.intern("banana");
@@ -304,64 +271,72 @@ test "namespace member" {
     try std.testing.expectEqual(try namespace.base.resolveVar(banana), null);
     try std.testing.expectEqual(try namespace.base.resolveVar(cherry), null);
 
-    try namespace.decls.putNoClobber(apple, 0);
-    try namespace.decls.putNoClobber(banana, 1);
-    try namespace.decls.putNoClobber(cherry, 2);
+    try namespace.decls.putNoClobber(allocator, apple, 0);
+    try namespace.decls.putNoClobber(allocator, banana, 1);
+    try namespace.decls.putNoClobber(allocator, cherry, 2);
 
-    try std.testing.expectEqual((try namespace.base.resolveVar(apple)).?, 0);
-    try std.testing.expectEqual((try namespace.base.resolveVar(banana)).?, 1);
-    try std.testing.expectEqual((try namespace.base.resolveVar(cherry)).?, 2);
+    try std.testing.expectEqual((try namespace.base.resolveVar(apple)).?, &namespace.base);
+    try std.testing.expectEqual((try namespace.base.resolveVar(banana)).?, &namespace.base);
+    try std.testing.expectEqual((try namespace.base.resolveVar(cherry)).?, &namespace.base);
 }
 
 test "local var" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+    var allocator = arena.allocator();
 
-    var interner = Interner.init(arena.allocator());
+    var interner = Interner.init(allocator);
     var module = Scope.Module {};
-    var namespace = Scope.Namespace.init(arena.allocator(), &module.base);
+    var namespace = Scope.Namespace.init(&module.base);
 
     const apple = try interner.intern("apple");
     const banana = try interner.intern("banana");
     const cherry = try interner.intern("cherry");
 
-    try namespace.decls.putNoClobber(apple, 0);
-    var banana_var = Scope.LocalVar.init(&namespace.base, banana, 1);
-    var cherry_var = Scope.LocalVar.init(&banana_var.base, cherry, 2);
+    const b = indexToRef(1);
+    const c = indexToRef(2);
 
-    try std.testing.expectEqual(namespace.base.resolveVar(apple).?, 0);
-    try std.testing.expectEqual(namespace.base.resolveVar(banana), null);
-    try std.testing.expectEqual(namespace.base.resolveVar(cherry), null);
+    try namespace.decls.putNoClobber(allocator, apple, 0);
+    var banana_var = Scope.LocalVal.init(&namespace.base, banana, b);
+    var cherry_var = Scope.LocalVal.init(&banana_var.base, cherry, c);
 
-    try std.testing.expectEqual(banana_var.base.resolveVar(apple).?, 0);
-    try std.testing.expectEqual(banana_var.base.resolveVar(banana).?, 1);
-    try std.testing.expectEqual(banana_var.base.resolveVar(cherry), null);
+    try std.testing.expectEqual((try namespace.base.resolveVar(apple)).?, &namespace.base);
+    try std.testing.expectEqual((try namespace.base.resolveVar(banana)), null);
+    try std.testing.expectEqual((try namespace.base.resolveVar(cherry)), null);
 
-    try std.testing.expectEqual(cherry_var.base.resolveVar(apple).?, 0);
-    try std.testing.expectEqual(cherry_var.base.resolveVar(banana).?, 1);
-    try std.testing.expectEqual(cherry_var.base.resolveVar(cherry).?, 2);
+    try std.testing.expectEqual((try banana_var.base.resolveVar(apple)).?, &namespace.base);
+    try std.testing.expectEqual((try banana_var.base.resolveVar(banana)).?, &banana_var.base);
+    try std.testing.expectEqual((try banana_var.base.resolveVar(cherry)), null);
+
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(apple)).?, &namespace.base);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(banana)).?, &banana_var.base);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(cherry)).?, &cherry_var.base);
 }
 
 test "namespace shadowing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+    var allocator = arena.allocator();
 
-    var interner = Interner.init(arena.allocator());
+    var interner = Interner.init(allocator);
     var module = Scope.Module {};
-    var namespace = Scope.Namespace.init(arena.allocator(), &module.base);
+    var namespace = Scope.Namespace.init(&module.base);
 
     const apple = try interner.intern("apple");
     const banana = try interner.intern("banana");
     const cherry = try interner.intern("cherry");
 
-    try namespace.decls.putNoClobber(apple, 0);
-    try namespace.decls.putNoClobber(banana, 1);
-    var cherry_var = Scope.LocalVar.init(&namespace.base, cherry, 2);
-    var illegal_var = Scope.LocalVar.init(&cherry_var.base, apple, 3);
+    const c = indexToRef(2);
+    const d = indexToRef(3);
 
-    try std.testing.expectEqual(cherry_var.base.resolveVar(apple).?, 0);
-    try std.testing.expectEqual(cherry_var.base.resolveVar(banana).?, 1);
-    try std.testing.expectEqual(cherry_var.base.resolveVar(cherry).?, 2);
+    try namespace.decls.putNoClobber(allocator, apple, 0);
+    try namespace.decls.putNoClobber(allocator, banana, 1);
+    var cherry_var = Scope.LocalVal.init(&namespace.base, cherry, c);
+    var illegal_var = Scope.LocalVal.init(&cherry_var.base, apple, d);
+
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(apple)).?, &namespace.base);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(banana)).?, &namespace.base);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(cherry)).?, &cherry_var.base);
 
     try std.testing.expectError(error.IdentifierShadowed, illegal_var.base.resolveVar(apple));
 }
@@ -369,31 +344,43 @@ test "namespace shadowing" {
 test "block shadowing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+    var allocator = arena.allocator();
 
-    var interner = Interner.init(arena.allocator());
+    var interner = Interner.init(allocator);
     var module = Scope.Module {};
-    var outer = Scope.Block.init(arena.allocator(), &module.base);
-    defer outer.deinit();
+    var outer = Scope.Block {
+        .parent = &module.base,
+        .instructions = .{},
+        .force_comptime = true,
+    };
 
     const apple = try interner.intern("apple");
     const banana = try interner.intern("banana");
     const cherry = try interner.intern("cherry");
 
-    var apple_var = Scope.LocalVar.init(&outer.base, apple, 0);
-    var banana_var = Scope.LocalVar.init(&apple_var.base, banana, 1);
-    var inner_arena = std.heap.ArenaAllocator.init(arena.allocator());
-    var inner = Scope.Block.init(inner_arena.allocator(), &banana_var.base);
-    defer inner.deinit();
-    var cherry_var = Scope.LocalVar.init(&inner.base, cherry, 2);
+    const a = indexToRef(0);
+    const b = indexToRef(1);
+    const c = indexToRef(2);
+    const d = indexToRef(3);
+    const e = indexToRef(4);
 
-    try std.testing.expectEqual(try cherry_var.base.resolveVar(apple), 0);
-    try std.testing.expectEqual(try cherry_var.base.resolveVar(banana), 1);
-    try std.testing.expectEqual(try cherry_var.base.resolveVar(cherry), 2);
+    var apple_var = Scope.LocalVal.init(&outer.base, apple, a);
+    var banana_var = Scope.LocalVal.init(&apple_var.base, banana, b);
+    var inner = Scope.Block {
+        .parent = &banana_var.base,
+        .instructions = .{},
+        .force_comptime = false,
+    };
+    var cherry_var = Scope.LocalVal.init(&inner.base, cherry, c);
 
-    var cherry_new_var = Scope.LocalVar.init(&cherry_var.base, cherry, 3);
-    try std.testing.expectEqual(try cherry_new_var.base.resolveVar(cherry), 3);
-    try std.testing.expectEqual(try cherry_var.base.resolveVar(cherry), 2);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(apple)).?, &apple_var.base);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(banana)).?, &banana_var.base);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(cherry)).?, &cherry_var.base);
 
-    var apple_new_var = Scope.LocalVar.init(&cherry_new_var.base, apple, 4);
+    var cherry_new_var = Scope.LocalVal.init(&cherry_var.base, cherry, d);
+    try std.testing.expectEqual((try cherry_new_var.base.resolveVar(cherry)).?, &cherry_new_var.base);
+    try std.testing.expectEqual((try cherry_var.base.resolveVar(cherry)).?, &cherry_var.base);
+
+    var apple_new_var = Scope.LocalVal.init(&cherry_new_var.base, apple, e);
     try std.testing.expectError(error.IdentifierShadowed, apple_new_var.base.resolveVar(apple));
 }
