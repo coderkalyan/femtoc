@@ -1,9 +1,25 @@
 const std = @import("std");
 const Type = @import("typing.zig").Type;
+const NodeIndex = @import("Ast.zig").Node.Index;
 
 // const Interner = @import("interner.zig").Interner;
 const Mir = @This();
 pub const Error = error { NotImplemented };
+pub const UserError = struct {
+    node: NodeIndex,
+    tag: Tag,
+
+    pub const Tag = enum {
+        uint_overflow,
+        uint_sign_cast_overflow,
+        sint_underflow,
+        sint_flip_overflow,
+        divisor_zero,
+        coerce_unsigned_signed,
+        coerce_overflow,
+        coerce_underflow,
+    };
+};
 
 insts: std.MultiArrayList(Inst).Slice,
 extra: []const u32,
@@ -135,7 +151,8 @@ pub const Module = struct {
 };
 
 pub const Value = union {
-    int: u64,
+    uint: u64, // used for *positive* values
+    sint: i64, // used for *negative* values even though it can represent positive
     float: f64,
     payload: *Payload,
 

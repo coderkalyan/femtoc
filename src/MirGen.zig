@@ -83,7 +83,7 @@ pub fn resolveTy(mg: *MirGen, ref: Mir.Ref) !Type {
         };
     } else {
         return switch (ref) {
-            .zero_val, .one_val => .{ .tag = .comptime_int },
+            .zero_val, .one_val => .{ .tag = .comptime_uint },
             .void_val => .{ .tag = .void },
             else => Error.NotImplemented,
         };
@@ -105,12 +105,12 @@ pub fn walkModule(mg: *MirGen) !Module {
         const hir_index = mg.hir.extra_data[module_pl + 1 + extra_index];
         switch (mg.hir.insts.items(.tag)[hir_index]) {
             .int => {
-                const value = try mg.addValue(.{ .int = mg.hir.insts.items(.data)[hir_index].int });
+                const value = try mg.addValue(.{ .uint = mg.hir.insts.items(.data)[hir_index].int });
                 const index = try mg.addInst(.{
                     .tag = .constant,
                     .data = .{
                         .ty_pl = .{
-                            .ty = .{ .tag = .comptime_int },
+                            .ty = .{ .tag = .comptime_uint },
                             .pl = value,
                         }
                     }
@@ -145,10 +145,10 @@ pub fn walkModule(mg: *MirGen) !Module {
                     mg.map.putAssumeCapacity(hir_index, ref);
                 } else {
                     const coerce_ref = switch (found_ty.tag) {
-                        .comptime_int => ref: {
+                        .comptime_uint => ref: {
                             const value_index = Mir.refToIndex(ref).?;
                             const int_value = mg.hir.insts.items(.data)[value_index].int;
-                            const value = try mg.addValue(.{ .int = int_value });
+                            const value = try mg.addValue(.{ .uint = int_value });
                             const index = try mg.addInst(.{
                                 .tag = .constant,
                                 .data = .{
@@ -181,6 +181,7 @@ pub fn walkModule(mg: *MirGen) !Module {
                     .values = .{},
                     .scratch = .{},
                     .blocks = .{},
+                    .errors = .{},
                     .insert_block = undefined, // yes this is dangerous
                     .prev_rewrite = .{},
                 };

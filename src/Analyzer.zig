@@ -15,6 +15,8 @@ const Error = Allocator.Error || Mir.Error || error {
     TypeError,
     TypeMismatch,
     InvalidOperation,
+    CodeError,
+    Overflow,
 };
 
 mg: *MirGen,
@@ -25,6 +27,7 @@ extra: std.ArrayListUnmanaged(u32),
 values: std.ArrayListUnmanaged(Value),
 scratch: std.ArrayListUnmanaged(u32),
 blocks: std.ArrayListUnmanaged(u32),
+errors: std.MultiArrayList(Mir.UserError),
 gpa: Allocator,
 arena: Allocator,
 insert_block: *Block,
@@ -185,7 +188,7 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
         };
     } else {
         return switch (ref) {
-            .zero_val, .one_val => .{ .tag = .comptime_int },
+            .zero_val, .one_val => .{ .tag = .comptime_uint },
             .void_val => .{ .tag = .void },
             else => error.NotImplemented,
         };
@@ -195,7 +198,7 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
 pub fn integer(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     const b = analyzer.insert_block;
     const data = analyzer.hir.insts.items(.data)[inst];
-    const index = try b.addConstant(Type.initTag(.comptime_int), .{ .int = data.int });
+    const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .uint = data.int });
     return Mir.indexToRef(index);
 }
 
@@ -259,16 +262,28 @@ fn validateTy(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
         return ref;
     } else {
         switch (found_ty.tag) {
-            .comptime_int => {
+            .comptime_uint => {
                 const int_value: u64 = if (Mir.refToIndex(ref)) |value_index| val: {
                     const pl = analyzer.instructions.items(.data)[value_index].ty_pl.pl;
-                    break :val analyzer.values.items[pl].int;
+                    break :val analyzer.values.items[pl].uint;
                 } else switch (ref) {
                     .zero_val => return Mir.Ref.zero_val,
                     .one_val => return Mir.Ref.one_val,
                     else => return error.InvalidRef,
                 };
-                const index = try b.addConstant(expected_ty, .{ .int = int_value });
+                const index = try b.addConstant(expected_ty, .{ .uint = int_value });
+                return Mir.indexToRef(index);
+            },
+            .comptime_sint => {
+                const int_value: i64 = if (Mir.refToIndex(ref)) |value_index| val: {
+                    const pl = analyzer.instructions.items(.data)[value_index].ty_pl.pl;
+                    break :val analyzer.values.items[pl].sint;
+                } else switch (ref) {
+                    .zero_val => return Mir.Ref.zero_val,
+                    .one_val => return Mir.Ref.one_val,
+                    else => return error.InvalidRef,
+                };
+                const index = try b.addConstant(expected_ty, .{ .sint = int_value });
                 return Mir.indexToRef(index);
             },
             .comptime_float => {
@@ -295,43 +310,17 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
 
+    if (lty.compareTag(.comptime_uint) or lty.compareTag(.comptime_sint)) {
+        if (rty.compareTag(.comptime_uint) or rty.compareTag(.comptime_sint)) {
+            return analyzer.analyzeComptimeArithmetic(inst);
+        }
+    }
+
     switch (lty.tag) {
-        .comptime_int => {
+        .comptime_uint => {
             switch (rty.tag) {
-                .comptime_int => {
-                    const lval: u64 = switch (lref) {
-                        .zero_val => 0,
-                        .one_val => 1,
-                        else => analyzer.intConstantValue(lref),
-                    };
-                    const rval: u64 = switch (rref) {
-                        .zero_val => 0,
-                        .one_val => 1,
-                        else => analyzer.intConstantValue(rref),
-                    };
-                    const val = .{
-                        .int = switch (analyzer.hir.insts.items(.tag)[inst]) {
-                            .add => lval + rval,
-                            .sub => lval - rval,
-                            .mul => lval * rval,
-                            .div => lval / rval,
-                            .mod => lval % rval,
-                            else => unreachable,
-                        }
-                    };
-                    const index = try b.addConstant(Type.initTag(.comptime_int), val);
-                    return Mir.indexToRef(index);
-                },
                 .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
-                    const lval: Mir.Ref = switch (lref) {
-                        .zero_val => .zero_val,
-                        .one_val => .one_val,
-                        else => ref: {
-                            const int = analyzer.intConstantValue(lref);
-                            const index = try b.addConstant(rty, .{ .int = int });
-                            break :ref Mir.indexToRef(index);
-                        },
-                    };
+                    const lval = try analyzer.coerceUnsignedInt(data.pl_node.pl, rty, lref);
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
                             .add => .add,
@@ -339,7 +328,27 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                             .mul => .mul,
                             .div => .div,
                             .mod => .mod,
-                            else => unreachable,
+                            else => return error.NotImplemented,
+                        },
+                        .data = .{ .bin_op = .{ .lref = lval, .rref = rref } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                else => return error.TypeMismatch,
+            }
+        },
+        .comptime_sint => {
+            switch (rty.tag) {
+                .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
+                    const lval = try analyzer.coerceSignedInt(data.pl_node.pl, rty, lref);
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => .mod,
+                            else => return error.NotImplemented,
                         },
                         .data = .{ .bin_op = .{ .lref = lval, .rref = rref } },
                     });
@@ -350,16 +359,23 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
         },
         .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
             switch (rty.tag) {
-                .comptime_int => {
-                    const rval: Mir.Ref = switch (rref) {
-                        .zero_val => .zero_val,
-                        .one_val => .one_val,
-                        else => ref: {
-                            const int = analyzer.intConstantValue(rref);
-                            const index = try b.addConstant(lty, .{ .int = int });
-                            break :ref Mir.indexToRef(index);
+                .comptime_uint => {
+                    const rval = try analyzer.coerceUnsignedInt(data.pl_node.pl, lty, rref);
+                    const index = try b.addInst(.{
+                        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+                            .add => .add,
+                            .sub => .sub,
+                            .mul => .mul,
+                            .div => .div,
+                            .mod => .mod,
+                            else => unreachable,
                         },
-                    };
+                        .data = .{ .bin_op = .{ .lref = lref, .rref = rval } },
+                    });
+                    return Mir.indexToRef(index);
+                },
+                .comptime_sint => {
+                    const rval = try analyzer.coerceSignedInt(data.pl_node.pl, lty, rref);
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
                             .add => .add,
@@ -393,8 +409,8 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
         .comptime_float => {
             switch (rty.tag) {
                 .comptime_float => {
-                    const lval = analyzer.floatConstantValue(lref);
-                    const rval = analyzer.floatConstantValue(rref);
+                    const lval = analyzer.refToFloat(lref);
+                    const rval = analyzer.refToFloat(rref);
                     const val = .{
                         .float = switch (analyzer.hir.insts.items(.tag)[inst]) {
                             .add => lval + rval,
@@ -409,7 +425,7 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                     return Mir.indexToRef(index);
                 },
                 .f32, .f64 => {
-                    const lval = analyzer.floatConstantValue(lref);
+                    const lval = analyzer.refToFloat(lref);
                     const value = try b.addConstant(rty, .{ .float = lval });
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
@@ -430,7 +446,7 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
         .f32, .f64 => {
             switch (rty.tag) {
                 .comptime_float => {
-                    const rval = analyzer.floatConstantValue(rref);
+                    const rval = analyzer.refToFloat(rref);
                     const value = try b.addConstant(lty, .{ .float = rval });
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
@@ -466,16 +482,347 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     }
 }
 
-fn intConstantValue(analyzer: *Analyzer, ref: Mir.Ref) u64 {
-    const index = Mir.refToIndex(ref).?;
-    const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
-    return analyzer.values.items[pl].int;
+fn refToUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref) u64 {
+    switch (ref) {
+        .zero_val => return 0,
+        .one_val => return 1,
+        else => {
+            const index = Mir.refToIndex(ref).?;
+            const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
+            return analyzer.values.items[pl].uint;
+        },
+    }
 }
 
-fn floatConstantValue(analyzer: *Analyzer, ref: Mir.Ref) f64 {
+fn refToSignedInt(analyzer: *Analyzer, ref: Mir.Ref) i64 {
+    const index = Mir.refToIndex(ref).?;
+    const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
+    return analyzer.values.items[pl].sint;
+}
+
+fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
     const index = Mir.refToIndex(ref).?;
     const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
     return analyzer.values.items[pl].float;
+}
+
+// this function attempts to catch the majority of compile time
+// arithmetic undefined behaviors (overflows, underflows, truncations)
+// during the simple "constant folding" style comptime_int simplification
+// eventually, this will be replaced with architecture-specific ALU emulation
+fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
+    const b = analyzer.insert_block;
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
+    const lref = analyzer.map.resolveRef(binary.lref);
+    const rref = analyzer.map.resolveRef(binary.rref);
+    const lty = try analyzer.resolveTy(b, lref);
+    const rty = try analyzer.resolveTy(b, rref);
+
+    std.debug.assert(lty.isTag());
+    std.debug.assert(rty.isTag());
+
+    switch (analyzer.hir.insts.items(.tag)[inst]) {
+        .add => {
+            if ((lty.tag == .comptime_uint) and (rty.tag == .comptime_uint)) {
+                const lval = analyzer.refToUnsignedInt(lref);
+                const rval = analyzer.refToUnsignedInt(rref);
+                if (std.math.maxInt(u64) - lval < rval) {
+                    try analyzer.emitUserError(data.pl_node.pl, .uint_overflow);
+                    unreachable;
+                } else {
+                    const result: u64 = lval + rval;
+                    return analyzer.unsignedIntToRef(result);
+                }
+            } else if ((lty.tag == .comptime_sint) and (rty.tag == .comptime_sint)) {
+                const lval = analyzer.refToSignedInt(lref);
+                const rval = analyzer.refToSignedInt(rref);
+                if (lval < std.math.minInt(i64) - rval) {
+                    try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
+                    unreachable;
+                } else {
+                    const result: i64 = lval + rval;
+                    return analyzer.signedIntToRef(result);
+                }
+            } else {
+                const lval = try analyzer.demoteMaybeUnsignedInt(lref, data.pl_node.pl);
+                const rval = try analyzer.demoteMaybeUnsignedInt(rref, data.pl_node.pl);
+                const result: i64 = lval + rval;
+                return analyzer.signedIntToRef(result);
+            }
+        },
+        .sub => {
+            if ((lty.tag == .comptime_uint) and (rty.tag == .comptime_sint)) {
+                const lval = analyzer.refToUnsignedInt(lref);
+                const rval: u64 = @intCast(u64, try std.math.absInt(analyzer.refToSignedInt(rref)));
+                if (lval > std.math.maxInt(u64) + rval) {
+                    try analyzer.emitUserError(data.pl_node.pl, .uint_overflow);
+                    unreachable;
+                } else {
+                    const result: u64 = lval + rval;
+                    return analyzer.unsignedIntToRef(result);
+                }
+            } else if ((lty.tag == .comptime_sint) and (rty.tag == .comptime_uint)) {
+                const lval = analyzer.refToSignedInt(lref);
+                const rval = try analyzer.demoteUnsignedInt(rref, data.pl_node.pl);
+                if (lval < std.math.minInt(i64) + rval) {
+                    try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
+                    unreachable;
+                } else {
+                    const result: i64 = lval - rval;
+                    return analyzer.signedIntToRef(result);
+                }
+            } else {
+                const lval = try analyzer.demoteMaybeUnsignedInt(lref, data.pl_node.pl);
+                const rval = try analyzer.demoteMaybeUnsignedInt(rref, data.pl_node.pl);
+                const result: i64 = lval - rval;
+                return analyzer.signedIntToRef(result);
+            }
+        },
+        .mul => {
+            switch (lty.tag) {
+                .comptime_uint => {
+                    switch (rty.tag) {
+                        .comptime_uint => {
+                            const lval = analyzer.refToUnsignedInt(lref);
+                            const rval = analyzer.refToUnsignedInt(rref);
+                            if ((rval != 0) and (lval > std.math.maxInt(u64) / rval)) {
+                                try analyzer.emitUserError(data.pl_node.pl, .uint_overflow);
+                                unreachable;
+                            }
+                            const result = lval * rval;
+                            return analyzer.unsignedIntToRef(result);
+                        },
+                        .comptime_sint => {
+                            const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
+                            const rval = analyzer.refToSignedInt(rref);
+                            if ((rval != 0) and (lval < std.math.minInt(u64) / rval)) {
+                                try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
+                                unreachable;
+                            }
+                            const result = lval * rval;
+                            return analyzer.signedIntToRef(result);
+                        },
+                        else => unreachable,
+                    }
+                },
+                .comptime_sint => {
+                    switch (rty.tag) {
+                        .comptime_uint => {
+                            const lval = analyzer.refToSignedInt(lref);
+                            const rval = try analyzer.demoteUnsignedInt(rref, data.pl_node.pl);
+                            if ((rval != 0) and (lval < std.math.minInt(u64) / rval)) {
+                                try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
+                                unreachable;
+                            }
+                            const result = lval * rval;
+                            return analyzer.signedIntToRef(result);
+                        },
+                        .comptime_sint => {
+                            const lval = analyzer.refToSignedInt(lref);
+                            const rval = analyzer.refToSignedInt(rref);
+                            if ((lval == -1) and (rval == std.math.minInt(i64))) {
+                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
+                                unreachable;
+                            }
+                            if ((rval == -1) and (lval == std.math.minInt(i64))) {
+                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
+                                unreachable;
+                            }
+                            const result = lval * rval;
+                            return analyzer.signedIntToRef(result);
+                        },
+                        else => unreachable,
+                    }
+                },
+                else => unreachable,
+            }
+        },
+        .div => {
+            switch (lty.tag) {
+                .comptime_uint => {
+                    switch (rty.tag) {
+                        .comptime_uint => {
+                            const lval = analyzer.refToUnsignedInt(lref);
+                            const rval = analyzer.refToUnsignedInt(rref);
+                            if (rval == 0) {
+                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
+                                unreachable;
+                            }
+                            return analyzer.unsignedIntToRef(lval / rval);
+                        },
+                        .comptime_sint => {
+                            const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
+                            const rval = analyzer.refToSignedInt(rref);
+                            return analyzer.signedIntToRef(@divTrunc(lval, rval));
+                        },
+                        else => unreachable,
+                    }
+                },
+                .comptime_sint => {
+                    switch (rty.tag) {
+                        .comptime_uint => {
+                            const lval = analyzer.refToSignedInt(lref);
+                            const rval = try analyzer.demoteUnsignedInt(rref, data.pl_node.pl);
+                            if (rval == 0) {
+                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
+                                unreachable;
+                            }
+                            return analyzer.signedIntToRef(@divTrunc(lval, rval));
+                        },
+                        .comptime_sint => {
+                            const lval = analyzer.refToSignedInt(lref);
+                            const rval = analyzer.refToSignedInt(rref);
+                            if ((lval == -1) and (rval == std.math.minInt(i64))) {
+                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
+                                unreachable;
+                            }
+                            if ((rval == -1) and (lval == std.math.minInt(i64))) {
+                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
+                                unreachable;
+                            }
+                            return analyzer.signedIntToRef(@divTrunc(lval, rval));
+                        },
+                        else => unreachable,
+                    }
+                },
+                else => unreachable,
+            }
+        },
+        .mod => {
+            switch (lty.tag) {
+                .comptime_uint => {
+                    switch (rty.tag) {
+                        .comptime_uint => {
+                            const lval = analyzer.refToUnsignedInt(lref);
+                            const rval = analyzer.refToUnsignedInt(rref);
+
+                            if (analyzer.refToUnsignedInt(rref) == 0) {
+                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
+                                unreachable;
+                            }
+
+                            const result = lval % rval;
+                            return analyzer.unsignedIntToRef(result);
+                        },
+                        .comptime_sint => {
+                            const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
+                            const rval = analyzer.refToSignedInt(rref);
+                            const result = @mod(lval, rval);
+                            return analyzer.signedIntToRef(result);
+                        },
+                        else => unreachable,
+                    }
+                },
+                .comptime_sint => {
+                    switch (rty.tag) {
+                        .comptime_uint => {
+                            const rval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
+
+                            if (analyzer.refToUnsignedInt(rref) == 0) {
+                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
+                                unreachable;
+                            }
+
+                            const lval = analyzer.refToSignedInt(rref);
+                            const result = @mod(lval, rval);
+                            return analyzer.signedIntToRef(result);
+                        },
+                        .comptime_sint => {
+                            const lval = analyzer.refToSignedInt(lref);
+                            const rval = analyzer.refToSignedInt(rref);
+                            const result = @mod(lval, rval);
+                            return analyzer.signedIntToRef(result);
+                        },
+                        else => unreachable,
+                    }
+                },
+                else => unreachable,
+            }
+        },
+        .lsl, .lsr, .asl, .asr => return error.NotImplemented,
+        else => unreachable,
+    }
+}
+
+fn emitUserError(analyzer: *Analyzer, node: u32, tag: Mir.UserError.Tag) !void {
+    try analyzer.errors.append(analyzer.gpa, .{
+        .node = node,
+        .tag = tag,
+    });
+    return error.CodeError;
+}
+
+fn demoteUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref, node: u32) !i64 {
+    const uint = analyzer.refToUnsignedInt(ref);
+    if (uint > std.math.maxInt(i64)) {
+        try analyzer.emitUserError(node, .uint_sign_cast_overflow);
+        unreachable;
+    } else {
+        return @intCast(i64, uint);
+    }
+}
+
+fn demoteMaybeUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref, node: u32) !i64 {
+    const b = analyzer.insert_block;
+    const ty = try analyzer.resolveTy(b, ref);
+    return if (ty.tag == .comptime_uint) analyzer.demoteUnsignedInt(ref, node)
+           else analyzer.refToSignedInt(ref);
+}
+
+fn signedIntToRef(analyzer: *Analyzer, sint: i64) !Mir.Ref {
+    const b = analyzer.insert_block;
+    switch (sint) {
+        0 => return .zero_val,
+        1 => return .one_val,
+        else => {
+            if (sint > 0) {
+                const uint = @intCast(u64, sint);
+                const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .uint = uint });
+                return Mir.indexToRef(index);
+            } else {
+                const index = try b.addConstant(Type.initTag(.comptime_sint), .{ .sint = sint });
+                return Mir.indexToRef(index);
+            }
+        }
+    }
+}
+
+fn unsignedIntToRef(analyzer: *Analyzer, uint: u64) !Mir.Ref {
+    const b = analyzer.insert_block;
+    switch (uint) {
+        0 => return .zero_val,
+        1 => return .one_val,
+        else => {
+            const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .uint = uint });
+            return Mir.indexToRef(index);
+        }
+    }
+}
+
+fn coerceUnsignedInt(analyzer: *Analyzer, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
+    const val = analyzer.refToUnsignedInt(ref);
+    if ((val >= 0) and (val <= ty.intMaxValue())) {
+        const index = try analyzer.insert_block.addConstant(ty, .{ .uint = val });
+        return Mir.indexToRef(index);
+    } else {
+        try analyzer.emitUserError(node, .coerce_overflow);
+        unreachable;
+    }
+}
+
+fn coerceSignedInt(analyzer: *Analyzer, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
+    const val = analyzer.refToSignedInt(ref);
+    if (val < ty.intMinValue()) {
+        try analyzer.emitUserError(node, .coerce_underflow);
+        unreachable;
+    } else if (val > ty.intMaxValue()) {
+        try analyzer.emitUserError(node, .coerce_overflow);
+        unreachable;
+    } else {
+        const index = try analyzer.insert_block.addConstant(ty, .{ .sint = val });
+        return Mir.indexToRef(index);
+    }
 }
 
 fn retNode(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
@@ -605,3 +952,11 @@ fn branchDouble(analyzer: *Analyzer, inst: Hir.Index) Error!Mir.Ref {
 
     return Mir.indexToRef(index);
 }
+
+// fn comptime_unsigned(val: u64) !Mir.Ref {
+//     switch (val) 
+// }
+//
+// test "comptime addition" {
+//
+// }

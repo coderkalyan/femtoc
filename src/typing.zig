@@ -1,4 +1,5 @@
 const std = @import("std");
+const math = std.math;
 
 pub const Error = error { UnspecificType };
 
@@ -11,7 +12,8 @@ pub const Type = extern union {
     pub const Tag = enum(u64) {
         void,
 
-        comptime_int,
+        comptime_uint,
+        comptime_sint,
         u1,
         i8,
         u8,
@@ -108,6 +110,10 @@ pub const Type = extern union {
         return @ptrToInt(ty.payload) < tagged_length;
     }
 
+    pub inline fn compareTag(ty: Type, tag: Tag) bool {
+        return isTag(ty) and ty.tag == tag;
+    }
+
     pub fn size(t: *const Type) !usize {
         if (@enumToInt(t.tag) < tagged_length) {
             return switch (t.tag) {
@@ -140,6 +146,56 @@ pub const Type = extern union {
             };
         } else {
             return t.payload.alignment();
+        }
+    }
+
+    pub fn toZigInt(t: Type) type {
+        switch (t.tag) {
+            .u1 => u1,
+            .i8 => i8,
+            .u8 => u8,
+            .i16 => i16,
+            .u16 => u16,
+            .i32 => i32,
+            .u32 => u32,
+            .i64 => i64,
+            .u64 => u64,
+            else => unreachable,
+        }
+    }
+
+    pub fn intMaxValue(t: Type) u64 {
+        if (t.isTag()) {
+            return switch (t.tag) {
+                .u1 => 1,
+                .i8 => comptime (math.pow(u64, 2, 7) - 1),
+                .u8 => comptime (math.pow(u64, 2, 8) - 1),
+                .i16 => comptime (math.pow(u64, 2, 15) - 1),
+                .u16 => comptime (math.pow(u64, 2, 16) - 1),
+                .i32 => comptime (math.pow(u64, 2, 31) - 1),
+                .u32 => comptime (math.pow(u64, 2, 32) - 1),
+                .i64 => comptime (math.pow(u64, 2, 63) - 1),
+                .u64 => 18446744073709551615,
+                else => unreachable,
+            };
+        } else {
+            return 0;
+        }
+    }
+
+    pub fn intMinValue(t: Type) i64 {
+        if (t.isTag()) {
+            return switch (t.tag) {
+                .u1 => 0,
+                .u8, .u16, .u32, .u64 => 0,
+                .i8 => comptime (-math.pow(i64, 2, 7)),
+                .i16 => comptime (-math.pow(i64, 2, 15)),
+                .i32 => comptime (-math.pow(i64, 2, 31)),
+                .i64 => -9223372036854775808,
+                else => unreachable,
+            };
+        } else {
+            return 0;
         }
     }
 };

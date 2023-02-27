@@ -32,6 +32,10 @@ pub const Inst = struct {
         geq,
         lt,
         gt,
+        lsl,
+        lsr,
+        asl,
+        asr,
 
         validate_ty,
         load_inline,

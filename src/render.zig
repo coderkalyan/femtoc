@@ -508,9 +508,11 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const value = ir.values[data.ty_pl.pl];
                     try self.formatTy(data.ty_pl.ty, &lbuf);
                     switch (data.ty_pl.ty.tag) {
-                        .comptime_int,
-                        .u1, .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
-                            try writer.print("constant({s}, {})", .{lbuf, value.int});
+                        .comptime_uint, .u1, .u8, .u16, .u32, .u64 => {
+                            try writer.print("constant({s}, {})", .{lbuf, value.uint});
+                        },
+                        .comptime_sint, .i8, .i16, .i32, .i64 => {
+                            try writer.print("constant({s}, {})", .{lbuf, value.sint});
                         },
                         .comptime_float, .f32, .f64 => {
                             try writer.print("constant({s}, {})", .{lbuf, value.float});
@@ -637,7 +639,8 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             if (ty.isTag()) {
                 _ = try std.fmt.bufPrint(buf, "{s}", .{switch (ty.tag) {
                     .void => "void",
-                    .comptime_int => "comptime_int",
+                    .comptime_uint => "comptime_uint",
+                    .comptime_sint => "comptime_sint",
                     .u1 => "u1",
                     .u8 => "u8",
                     .i8 => "i8",
