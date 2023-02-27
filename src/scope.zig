@@ -1,5 +1,6 @@
 const std = @import("std");
 const Hir = @import("Hir.zig");
+const HirGen = @import("HirGen.zig");
 const Ast = @import("Ast.zig");
 const Interner = @import("interner.zig").Interner;
 
@@ -64,13 +65,31 @@ pub const Scope = struct {
 
         parent: *Scope,
         instructions: std.ArrayListUnmanaged(u32),
+        scratch: std.ArrayListUnmanaged(u32),
+        hg: *HirGen,
 
         force_comptime: bool,
 
-        pub fn addInst(b: *Block, inst: *Inst) !Hir.Index {
+        pub fn init(b: *Block, s: *Scope) Block {
+            return .{
+                .parent = s,
+                .instructions = .{},
+                .scratch = .{},
+                .hg = b.hg,
+                .force_comptime = b.force_comptime,
+            };
+        }
+
+        pub fn deinit(b: *Block) void {
+            b.instructions.deinit(b.hg.arena);
+        }
+
+        pub fn addInst(b: *Block, inst: Inst) !Hir.Index {
+            const gpa = b.hg.gpa;
+            const arena = b.hg.arena;
             const index = @intCast(Hir.Index, b.hg.instructions.len);
-            try b.hg.instructions.ensureUnusedCapacity(1);
-            try b.instructions.ensureUnusedCapacity(1);
+            try b.hg.instructions.ensureUnusedCapacity(gpa, 1);
+            try b.instructions.ensureUnusedCapacity(arena, 1);
 
             b.hg.instructions.appendAssumeCapacity(inst);
             b.instructions.appendAssumeCapacity(index);
@@ -86,7 +105,7 @@ pub const Scope = struct {
         ident: u32,
         ref: Hir.Ref,
 
-        pub fn init(s: *Scope, ident: u32, ref: Hir.Ref) @This() {
+        pub fn init(s: *Scope, ident: u32, ref: Hir.Ref) LocalVal {
             return .{
                 .parent = s,
                 .ident = ident,
@@ -103,7 +122,7 @@ pub const Scope = struct {
         ident: u32,
         ptr: Hir.Ref,
 
-        pub fn init(s: *Scope, ident: u32, ptr: Hir.Ref) @This() {
+        pub fn init(s: *Scope, ident: u32, ptr: Hir.Ref) LocalPtr {
             return .{
                 .parent = s,
                 .ident = ident,
@@ -186,7 +205,7 @@ pub const Scope = struct {
         return found;
     }
 
-    pub fn resolveType(inner: *Scope, ident: u32) ?*Scope {
+    pub fn resolveType(inner: *Scope, ident: u32) !?*Scope {
         var found: ?*Scope = null;
         var shadows_scope: bool = false;
         var s: *Scope = inner;
@@ -196,11 +215,11 @@ pub const Scope = struct {
                 .module => break,
                 .namespace => {
                     const namespace = s.cast(Namespace).?;
-                    if (namespace.types.get(ident)) |node| {
+                    if (namespace.types.get(ident)) |_| {
                         if (found) |_| {
                             return error.IdentifierShadowed;
                         } else {
-                            found = node;
+                            found = s;
                         }
                     }
 
@@ -218,7 +237,7 @@ pub const Scope = struct {
                     const local_type = s.cast(LocalPtr).?;
                     if (local_type.ident == ident) {
                         if (found != null) {
-                            if (shadows_scope) error.IdentifierShadowed;
+                            if (shadows_scope) return error.IdentifierShadowed;
                         } else {
                             found = s;
                         }
@@ -351,6 +370,8 @@ test "block shadowing" {
     var outer = Scope.Block {
         .parent = &module.base,
         .instructions = .{},
+        .hg = undefined,
+        .scratch = .{},
         .force_comptime = true,
     };
 
@@ -368,7 +389,9 @@ test "block shadowing" {
     var banana_var = Scope.LocalVal.init(&apple_var.base, banana, b);
     var inner = Scope.Block {
         .parent = &banana_var.base,
+        .hg = undefined,
         .instructions = .{},
+        .scratch = .{},
         .force_comptime = false,
     };
     var cherry_var = Scope.LocalVal.init(&inner.base, cherry, c);

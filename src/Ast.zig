@@ -68,6 +68,7 @@ pub const Node = struct {
     //
     // extra data indices represent only the "start" of the
     // unpacked extra data struct in the extra_data array
+    // TODO: remove enum
     pub const Data = union(enum) {
         placeholder: void,
         // types

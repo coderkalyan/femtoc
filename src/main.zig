@@ -1,6 +1,6 @@
 const std = @import("std");
 const parse = @import("parse.zig");
-const hirgen = @import("hirgen.zig");
+const HirGen = @import("HirGen.zig");
 const MirGen = @import("MirGen.zig");
 const MirMap = @import("MirMap.zig");
 const Mir = @import("Mir.zig");
@@ -38,10 +38,10 @@ pub fn main() anyerror!void {
     const ast = try parse.parse(allocator, source);
     const ast_time = timer.lap() / 1000;
 
-    const hir = try hirgen.generate(allocator, &ast);
+    const hir = try HirGen.generate(allocator, &ast);
     const hirgen_time = timer.lap() / 1000;
 
-    const module = try MirGen.generate(allocator, &hir);
+    // const module = try MirGen.generate(allocator, &hir);
     // _ = mir;
     const mirgen_time = timer.lap() / 1000;
 
@@ -61,10 +61,10 @@ pub fn main() anyerror!void {
     try hir_renderer.render();
     try buf.flush();
 
-    for (module.function_mir) |mir| {
-        var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
-        // _ = mir_renderer;
-        try mir_renderer.render();
-        try buf.flush();
-    }
+    // for (module.function_mir) |mir| {
+    //     var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
+    //     // _ = mir_renderer;
+    //     try mir_renderer.render();
+    //     try buf.flush();
+    // }
 }

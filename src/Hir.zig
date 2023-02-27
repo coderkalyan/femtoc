@@ -44,6 +44,7 @@ pub const Inst = struct {
         store,
 
         fn_decl,
+        param,
 
         block,
         jump,
@@ -57,7 +58,7 @@ pub const Inst = struct {
         ret_implicit,
         ret_node,
 
-        toplevel,
+        module,
     };
 
     pub const Data = union {

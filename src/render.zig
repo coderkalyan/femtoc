@@ -235,12 +235,14 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         }
 
         pub fn render(r: *Self) !void {
-            const toplevel = r.hir.insts.items(.data)[r.hir.insts.len - 1];
-            const data = r.hir.extraData(toplevel.pl_node.pl, Hir.Inst.Module);
+            const module_index = r.hir.insts.len - 1;
+            const module = r.hir.insts.items(.data)[module_index];
+            std.debug.print("{} {}\n", .{r.hir.insts.items(.tag)[module_index], module});
+            const data = r.hir.extraData(module.pl_node.pl, Hir.Inst.Module);
 
             var extra_index: u32 = 0;
             while (extra_index < data.len) : (extra_index += 1) {
-                const index = r.hir.extra_data[toplevel.pl_node.pl + 1 + extra_index];
+                const index = r.hir.extra_data[module.pl_node.pl + 1 + extra_index];
                 try r.renderInst(index);
             }
         }
