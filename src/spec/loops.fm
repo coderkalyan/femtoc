@@ -1,0 +1,20 @@
+let main = fn () void {
+    let mut count: u32 = 0;
+    for {
+        count = count + 1;
+        if count >= 100 {
+            break;
+        }
+    }
+
+    count = 0;
+    for count < 100 {
+        count = count + 1;
+    }
+
+    let n = 10;
+    let mut fact: u32 = 1;
+    for let mut i: u32 = 1; i <= n; i = i + 1 {
+        fact = fact * i;
+    }
+};

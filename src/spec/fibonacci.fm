@@ -15,6 +15,6 @@ let fibonacci = fn (n: i32) i32 {
     }
 };
 
-let main = fn() void {
+let main = fn () void {
     let fib = fibonacci(5);
 };

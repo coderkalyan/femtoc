@@ -1,7 +1,7 @@
 let CONSTANT: i32 = 123;
 let mut global: i32 = 456;
 
-let main = fn() void {
+let main = fn () void {
     // variables can be type annotated
     let logical: bool = true;
 

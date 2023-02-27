@@ -1,0 +1,5 @@
+let greeting = "Hello, world!";
+
+let main = fn () void {
+
+}
