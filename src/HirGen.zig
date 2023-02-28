@@ -345,6 +345,13 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const return_ty = try ty(&block_scope, s, signature.return_ty);
     const body = try block(&block_scope, s, fn_decl.body);
 
+    // unwind and free scope objects
+    while (s != scope) {
+        const parent = s.parent().?;
+        hg.arena.destroy(s);
+        s = parent;
+    }
+
     const decl = try hg.addExtra(Inst.FnDecl {
         .params_start = @intCast(u32, param_base),
         .params_end = @intCast(u32, param_top),
@@ -430,6 +437,13 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         .len = @intCast(u32, b.instructions.items.len),
     });
     try hg.extra.appendSlice(hg.gpa, b.instructions.items);
+
+    // unwind and free scope objects
+    while (s != scope) {
+        const parent = s.parent().?;
+        hg.arena.destroy(s);
+        s = parent;
+    }
 
     return b.addInst(.{
         .tag = .block,
