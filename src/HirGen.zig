@@ -373,6 +373,29 @@ fn expr(b: *Block, scope: *Scope, node: Node.Index) !Ref {
     };
 }
 
+fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
+    const data = b.hg.tree.data(node);
+    _ = try switch (data) {
+        .const_decl => return try constDecl(b, scope, node),
+        .var_decl => return try varDecl(b, scope, node),
+        .assign_simple => assignSimple(b, scope, node),
+        .if_simple => ifSimple(b, scope, node),
+        .if_else => ifElse(b, scope, node),
+        .if_chain => ifChain(b, scope, node),
+        .return_val => returnStmt(b, scope, node),
+        .loop_forever => loopForever(b, scope, node),
+        .loop_conditional => loopConditional(b, scope, node),
+        .loop_range => loopRange(b, scope, node),
+        .loop_break => loopBreak(b, scope, node),
+        else => {
+            std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+            return GenError.NotImplemented;
+        },
+    };
+
+    return null;
+}
+
 fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const data = hg.tree.data(node).block;
@@ -382,54 +405,23 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     try b.scratch.ensureUnusedCapacity(hg.arena, data.stmts_end - data.stmts_start);
     while (extra_index < data.stmts_end) : (extra_index += 1) {
         const stmt = hg.tree.extra_data[extra_index];
+        const ref = try statement(b, s, stmt);
         switch (hg.tree.data(stmt)) {
             .const_decl => {
-                const ref = try constDecl(b, s, stmt);
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
                 const id = try hg.interner.intern(ident);
                 const var_scope = try hg.arena.create(Scope.LocalVal);
-                var_scope.* = Scope.LocalVal.init(s, id, ref);
+                var_scope.* = Scope.LocalVal.init(s, id, ref.?);
                 s = &var_scope.base;
             },
             .var_decl => {
-                const ref = try varDecl(b, s, stmt);
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 2);
                 const id = try hg.interner.intern(ident);
                 const var_scope = try hg.arena.create(Scope.LocalPtr);
-                var_scope.* = Scope.LocalPtr.init(s, id, ref);
+                var_scope.* = Scope.LocalPtr.init(s, id, ref.?);
                 s = &var_scope.base;
             },
-            .assign_simple => {
-                _ = try assignSimple(b, s, stmt);
-            },
-            .if_simple => {
-                _ = try ifSimple(b, s, stmt);
-            },
-            .if_else => {
-                _ = try ifElse(b, s, stmt);
-            },
-            .if_chain => {
-                _ = try ifChain(b, s, stmt);
-            },
-            .return_val => {
-                _ = try returnStmt(b, s, stmt);
-            },
-            .loop_forever => {
-                _ = try loopForever(b, s, stmt);
-            },
-            .loop_conditional => {
-                _ = try loopConditional(b, s, stmt);
-            },
-            .loop_range => {
-                _ = try loopRange(b, s, stmt);
-            },
-            .loop_break => {
-                _ = try loopBreak(b, s, stmt);
-            },
-            else => {
-                std.debug.print("Unexpected node: {}\n", .{hg.tree.data(stmt)});
-                return GenError.NotImplemented;
-            },
+            else => {},
         }
     }
 
@@ -725,11 +717,12 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const signature = hg.tree.extraData(loop_range.signature, Node.RangeSignature);
 
     // TODO: different types of statements
-    const ref = try varDecl(b, scope, signature.binding);
-    const ident = hg.tree.tokenString(hg.tree.mainToken(signature.binding) + 2);
-    const id = try hg.interner.intern(ident);
-    var var_scope = Scope.LocalPtr.init(scope, id, ref);
-    var s = &var_scope.base;
+    var s: *Scope = if (try statement(b, scope, signature.binding)) |ref| var_scope: {
+        const ident = hg.tree.tokenString(hg.tree.mainToken(signature.binding) + 2);
+        const id = try hg.interner.intern(ident);
+        var var_scope = Scope.LocalPtr.init(scope, id, ref);
+        break :var_scope &var_scope.base;
+    } else scope;
     var loop_scope = Scope.Block.init(b, s);
     const condition = try expr(&loop_scope, s, signature.condition);
 
@@ -824,8 +817,8 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
                 try namespace.decls.put(hg.arena, id, stmt);
             },
             else => {
-                std.debug.print("Unexpected node: {}\n", .{hg.tree.data(stmt)});
-                return Error.NotImplemented;
+                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                return GenError.NotImplemented;
             },
         }
     }
@@ -835,19 +828,11 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
     extra_index = data.stmts_start;
     while (extra_index < data.stmts_end) : (extra_index += 1) {
         var stmt = hg.tree.extra_data[extra_index];
+        var ref = try statement(b, &namespace.base, stmt);
         switch (hg.tree.data(stmt)) {
-            .const_decl => {
-                const ref = try constDecl(b, &namespace.base, stmt);
-                try hg.forward_map.put(hg.gpa, stmt, ref);
-            },
-            .var_decl => {
-                const ref = try varDecl(b, &namespace.base, stmt);
-                try hg.forward_map.put(hg.gpa, stmt, ref);
-            },
-            else => {
-                std.debug.print("Unexpected node: {}\n", .{hg.tree.data(stmt)});
-                return Error.NotImplemented;
-            },
+            .const_decl => try hg.forward_map.put(hg.gpa, stmt, ref.?),
+            .var_decl => try hg.forward_map.put(hg.gpa, stmt, ref.?),
+            else => {},
         }
     }
 
