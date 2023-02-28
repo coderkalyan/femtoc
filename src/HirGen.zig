@@ -25,6 +25,7 @@ pub const GenError = error {
     InvalidRef,
     IdentifierShadowed,
     ConstAssign,
+    AfterthoughtDecl,
 };
 
 const Error = GenError || @import("interner.zig").Error || Allocator.Error || @import("integerLiteral.zig").ParseError;
@@ -716,7 +717,6 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const loop_range = hg.tree.data(node).loop_range;
     const signature = hg.tree.extraData(loop_range.signature, Node.RangeSignature);
 
-    // TODO: different types of statements
     var s: *Scope = if (try statement(b, scope, signature.binding)) |ref| var_scope: {
         const ident = hg.tree.tokenString(hg.tree.mainToken(signature.binding) + 2);
         const id = try hg.interner.intern(ident);
@@ -767,7 +767,9 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         .data = .{ .pl_node = .{ .node = node, .pl = branch_data } },
     });
 
-    _ = try assignSimple(&loop_scope, s, signature.afterthought);
+    if (try statement(&loop_scope, s, signature.afterthought)) |_| {
+        return error.AfterthoughtDecl;
+    }
 
     const loop_block_data = try b.hg.addExtra(Inst.Block {
         .len = @intCast(u32, loop_scope.instructions.items.len),
