@@ -57,6 +57,8 @@ pub const Inst = struct {
         // includes the instruction
         ret_implicit,
         ret_node,
+        yield_implicit,
+        yield_node,
 
         module,
     };
@@ -164,8 +166,8 @@ pub const Inst = struct {
         exec_false: Index,
     };
 
-    pub const LoopConditional = struct {
-        condition: Ref,
+    pub const Loop = struct {
+        condition: Index,
         body: Index,
     };
 

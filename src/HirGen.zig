@@ -656,39 +656,15 @@ fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const loop_forever = b.hg.tree.data(node).loop_forever;
     var loop_scope = Scope.Block.init(b, scope);
+    defer loop_scope.deinit();
     const body = try block(&loop_scope, &loop_scope.base, loop_forever.body);
 
-    return b.addInst(.{
-        .tag = .loop,
-        .data = .{ .pl_node = .{ .node = node, .pl = body } },
-    });
-}
-
-fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
-    const loop_conditional = b.hg.tree.data(node).loop_conditional;
-
-    var loop_scope = Scope.Block.init(b, scope);
-    const condition = try expr(&loop_scope, scope, loop_conditional.condition);
-
-    // we have a block (loop outer body) that contains the conditional and break
-    // and then an inner nested block that contains the user loop body
-    const exec_true = block: {
-        var block_scope = Scope.Block.init(&loop_scope, &loop_scope.base);
-        defer block_scope.deinit();
-        {
-            var body_scope = Scope.Block.init(&block_scope, &block_scope.base);
-            defer body_scope.deinit();
-            break :block try block(&body_scope, &body_scope.base, loop_conditional.body);
-        }
-    };
-
-    // inner break block
-    const exec_false = block: {
-        var block_scope = Scope.Block.init(&loop_scope, &loop_scope.base);
+    const condition = block: {
+        var block_scope = Scope.Block.init(b, scope);
         defer block_scope.deinit();
         _ = try block_scope.addInst(.{
-            .tag = .loop_break,
-            .data = .{ .node = node },
+            .tag = .yield_implicit,
+            .data = .{ .un_node = .{ .node = node, .operand = Ref.btrue_val } },
         });
 
         const data = try block_scope.hg.addExtra(Inst.Block {
@@ -701,28 +677,49 @@ fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         });
     };
 
-    const branch_data = try loop_scope.hg.addExtra(Inst.BranchDouble {
+    const data = try b.hg.addExtra(Inst.Loop {
         .condition = condition,
-        .exec_true = exec_true,
-        .exec_false = exec_false,
+        .body = body,
     });
-    _ = try loop_scope.addInst(.{
-        .tag = .branch_double,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch_data } },
-    });
-
-    const loop_block_data = try b.hg.addExtra(Inst.Block {
-        .len = @intCast(u32, loop_scope.instructions.items.len),
-    });
-    try b.hg.extra.appendSlice(b.hg.gpa, loop_scope.instructions.items);
-    const loop_block = try loop_scope.addInst(.{
-        .tag = .block,
-        .data = .{ .pl_node = .{ .node = node, .pl = loop_block_data } },
-    });
-
     return b.addInst(.{
         .tag = .loop,
-        .data = .{ .pl_node = .{ .node = node, .pl = loop_block } },
+        .data = .{ .pl_node = .{ .node = node, .pl = data } },
+    });
+}
+
+fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+    const loop_conditional = b.hg.tree.data(node).loop_conditional;
+
+    const condition = block: {
+        var block_scope = Scope.Block.init(b, scope);
+        defer block_scope.deinit();
+        const condition = try expr(&block_scope, &block_scope.base, loop_conditional.condition);
+        _ = try block_scope.addInst(.{
+            .tag = .yield_implicit,
+            .data = .{ .un_node = .{ .node = node, .operand = condition } },
+        });
+
+        const data = try block_scope.hg.addExtra(Inst.Block {
+            .len = @intCast(u32, block_scope.instructions.items.len),
+        });
+        try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
+        break :block try block_scope.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = node, .pl = data } },
+        });
+    };
+
+    var loop_scope = Scope.Block.init(b, scope);
+    defer loop_scope.deinit();
+    const body = try block(&loop_scope, &loop_scope.base, loop_conditional.body);
+
+    const data = try b.hg.addExtra(Inst.Loop {
+        .condition = condition,
+        .body = body,
+    });
+    return b.addInst(.{
+        .tag = .loop,
+        .data = .{ .pl_node = .{ .node = node, .pl = data } },
     });
 }
 
@@ -737,28 +734,14 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         var var_scope = Scope.LocalPtr.init(scope, id, ref);
         break :var_scope &var_scope.base;
     } else scope;
-    var loop_scope = Scope.Block.init(b, s);
-    const condition = try expr(&loop_scope, s, signature.condition);
 
-    // we have a block (loop outer body) that contains the conditional and break
-    // and then an inner nested block that contains the user loop body
-    const exec_true = block: {
-        var block_scope = Scope.Block.init(&loop_scope, &loop_scope.base);
+    const condition = block: {
+        var block_scope = Scope.Block.init(b, s);
         defer block_scope.deinit();
-        {
-            var body_scope = Scope.Block.init(&block_scope, &block_scope.base);
-            defer body_scope.deinit();
-            break :block try block(&body_scope, &body_scope.base, loop_range.body);
-        }
-    };
-
-    // inner break block
-    const exec_false = block: {
-        var block_scope = Scope.Block.init(&loop_scope, &loop_scope.base);
-        defer block_scope.deinit();
+        const condition = try expr(&block_scope, &block_scope.base, signature.condition);
         _ = try block_scope.addInst(.{
-            .tag = .loop_break,
-            .data = .{ .node = node },
+            .tag = .yield_implicit,
+            .data = .{ .un_node = .{ .node = node, .operand = condition } },
         });
 
         const data = try block_scope.hg.addExtra(Inst.Block {
@@ -771,32 +754,38 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         });
     };
 
-    const branch_data = try loop_scope.hg.addExtra(Inst.BranchDouble {
+    // we have a block (loop outer body) that contains the afterthought
+    // and then an inner nested block that contains the user loop body
+    const body = body: {
+        var block_scope = Scope.Block.init(b, s);
+        defer block_scope.deinit();
+        {
+            var body_scope = Scope.Block.init(&block_scope, &block_scope.base);
+            defer body_scope.deinit();
+            _ = try block(&body_scope, &body_scope.base, loop_range.body);
+        }
+
+        if (try statement(&block_scope, &block_scope.base, signature.afterthought)) |_| {
+            return error.AfterthoughtDecl;
+        }
+
+        const data = try block_scope.hg.addExtra(Inst.Block {
+            .len = @intCast(u32, block_scope.instructions.items.len),
+        });
+        try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
+        break :body try block_scope.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = node, .pl = data } },
+        });
+    };
+
+    const data = try b.hg.addExtra(Inst.Loop {
         .condition = condition,
-        .exec_true = exec_true,
-        .exec_false = exec_false,
+        .body = body,
     });
-    _ = try loop_scope.addInst(.{
-        .tag = .branch_double,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch_data } },
-    });
-
-    if (try statement(&loop_scope, s, signature.afterthought)) |_| {
-        return error.AfterthoughtDecl;
-    }
-
-    const loop_block_data = try b.hg.addExtra(Inst.Block {
-        .len = @intCast(u32, loop_scope.instructions.items.len),
-    });
-    try b.hg.extra.appendSlice(b.hg.gpa, loop_scope.instructions.items);
-    const loop_block = try loop_scope.addInst(.{
-        .tag = .block,
-        .data = .{ .pl_node = .{ .node = node, .pl = loop_block_data } },
-    });
-
     return b.addInst(.{
         .tag = .loop,
-        .data = .{ .pl_node = .{ .node = node, .pl = loop_block } },
+        .data = .{ .pl_node = .{ .node = node, .pl = data } },
     });
 }
 

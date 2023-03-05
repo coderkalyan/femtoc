@@ -385,15 +385,34 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(operand, &lbuf);
                     try writer.print("ret_node({s})", .{lbuf});
                 },
+                .yield_implicit => {
+                    const operand = ir.insts.items(.data)[index].un_node.operand;
+                    try self.formatRef(operand, &lbuf);
+                    try writer.print("yield_implicit({s})", .{lbuf});
+                },
+                .yield_node => {
+                    const operand = ir.insts.items(.data)[index].un_node.operand;
+                    try self.formatRef(operand, &lbuf);
+                    try writer.print("yield_node({s})", .{lbuf});
+                },
                 .loop => {
-                    const body = ir.insts.items(.data)[index].pl_node.pl;
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const loop = ir.extraData(pl, Hir.Inst.Loop);
 
-                    try writer.print("loop({{", .{});
+                    try writer.print("loop(", .{});
                     self.stream.indent();
                     try self.stream.newline();
-                    try self.renderInst(body);
+                    try writer.print("condition = {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(loop.condition);
                     self.stream.dedent();
-                    try writer.print("}})", .{});
+                    try writer.print("}}, body = {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(loop.body);
+                    self.stream.dedent();
+                    try writer.print(")", .{});
                 },
                 .loop_break => {
                     try writer.print("break()", .{});
