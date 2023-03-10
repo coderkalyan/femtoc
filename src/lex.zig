@@ -1009,7 +1009,7 @@ test "arith.fm" {
         .k_let, .ident, .equal, .int_lit, .semi,
         .k_let, .ident, .equal, .int_lit, .semi,
         .k_let, .ident, .equal, .ident, .plus, .ident, .semi,
-        .r_brace,
+        .r_brace, .semi,
     });
 }
 
