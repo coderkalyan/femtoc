@@ -1,0 +1,44 @@
+let main = fn() void {
+    // arrays store a contigious list of the same type
+    // the array type is defined by listing the element type
+    // followed by the size in brackets
+    // array initializers use brackets + each element expression
+    let numbers: u32[4] = [1, 2, 3, 4];
+
+    // array elements can be retrieved by *indexing* the array, starting with 0
+    let first = numbers[0];
+    let second = numbers[1];
+    let third = numbers[2];
+    let fourth = numbers[3];
+    // arrays always know their length at compile time
+    let count = numbers.len;
+    // let fifth = numbers[4]; // error - out of bounds
+
+    // the length of an array can be inferred using _ (NOT leaving the length blank)
+    let mut source: u8[_] = [1, 2, 3, 4];
+    // similar to modifying variables, array elements can be modified
+    source[0] = 0; // source => [0, 2, 3, 4]
+    // unlike some other languages, arrays have *value* semantics
+    // that is, assigning an array to another performs a deep copy
+    let mut dest = source;
+    let truth = dest == source;
+    dest[0] = 5; // dest => [5, 2, 3, 4], source => [0, 2, 3, 4]
+    // to reference the underlying memory, get a reference 
+    let mut ref: u32[4]* = &source;
+    let truth = *ref == source;
+    let truth = ref == &source;
+    dest[0] = 1;
+    source[0] = 1;
+    let truth = dest == source;
+    let truth = &dest != &source;
+
+    // use ... to fill in the remaining elements with the last value specified
+    let mut buf: u8[128] = [0...];
+    let slice: u8[] = buf[0..func()];
+    let truth = slice.len == 2;
+
+    // slices 
+    // let memory: void[*];
+    let hello: u8[] = "Hello";
+    let world: u8[:0] = "world";
+};
