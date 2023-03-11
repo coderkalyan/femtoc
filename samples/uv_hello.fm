@@ -1,0 +1,20 @@
+@import_namespace
+include "uv.h";
+
+use std.mem.Allocator;
+use io;
+
+let main = fn () u32 {
+    let allocator = Allocator.init(); // pseudocode
+let a_b = c;
+
+    let loop: *uv.loop_t = allocator.alloc(uv.loop_t);
+    defer allocator.free(loop);
+    uv.loop_init(loop);
+    defer uv.loop_close(loop);
+    
+    io.println("Now quitting.\n");
+    uv.run(loop, uv.UV_RUN_DEFAULT);
+
+    return 0;
+};

@@ -1,0 +1,16 @@
+let spi_write_reg = fn (addr: u8, val: u8) void {
+    let buf: u8[2] = [addr, val];
+    gpio_put(PIN_SPI0_CS, 0);
+    spi_write_blocking(spi0, buf, 2);
+    gpio_put(PIN_SPI0_CS, 1);
+};
+
+let spi_read_reg = fn (addr: u8) u8 {
+    let buf: u8[1] = [addr];
+    let slice: u8[*] = &buf;
+    gpio_put(PIN_SPI0_CS, 0);
+    spi_write_blocking(spi0, buf, 1);
+    spi_read_blocking(spi0, 0, buf, 1);
+    gpio_put(PIN_SPI0_CS, 1);
+    return buf[0];
+};
