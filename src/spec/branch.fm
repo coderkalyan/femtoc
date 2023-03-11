@@ -15,5 +15,8 @@ let main = fn () void {
         let a: i32 = 5;
     }
 
+    // if ({ let val = func(); yield val }) {
+    //
+    // }
     return;
 }
