@@ -664,7 +664,7 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         defer block_scope.deinit();
         _ = try block_scope.addInst(.{
             .tag = .yield_implicit,
-            .data = .{ .un_node = .{ .node = node, .operand = Ref.btrue_val } },
+            .data = .{ .un_tok = .{ .tok = undefined, .operand = Ref.btrue_val } },
         });
 
         const data = try block_scope.hg.addExtra(Inst.Block {
@@ -696,7 +696,7 @@ fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         const condition = try expr(&block_scope, &block_scope.base, loop_conditional.condition);
         _ = try block_scope.addInst(.{
             .tag = .yield_implicit,
-            .data = .{ .un_node = .{ .node = node, .operand = condition } },
+            .data = .{ .un_tok = .{ .tok = undefined, .operand = condition } },
         });
 
         const data = try block_scope.hg.addExtra(Inst.Block {
@@ -741,7 +741,7 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         const condition = try expr(&block_scope, &block_scope.base, signature.condition);
         _ = try block_scope.addInst(.{
             .tag = .yield_implicit,
-            .data = .{ .un_node = .{ .node = node, .operand = condition } },
+            .data = .{ .un_tok = .{ .tok = undefined, .operand = condition } },
         });
 
         const data = try block_scope.hg.addExtra(Inst.Block {
@@ -762,7 +762,8 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         {
             var body_scope = Scope.Block.init(&block_scope, &block_scope.base);
             defer body_scope.deinit();
-            _ = try block(&body_scope, &body_scope.base, loop_range.body);
+            const index = try block(&body_scope, &body_scope.base, loop_range.body);
+            try block_scope.instructions.append(hg.gpa, index);
         }
 
         if (try statement(&block_scope, &block_scope.base, signature.afterthought)) |_| {
