@@ -237,7 +237,6 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         pub fn render(r: *Self) !void {
             const module_index = r.hir.insts.len - 1;
             const module = r.hir.insts.items(.data)[module_index];
-            std.debug.print("{} {}\n", .{r.hir.insts.items(.tag)[module_index], module});
             const data = r.hir.extraData(module.pl_node.pl, Hir.Inst.Module);
 
             var extra_index: u32 = 0;
@@ -376,7 +375,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     self.stream.dedent();
                 },
                 .ret_implicit => {
-                    const operand = ir.insts.items(.data)[index].un_node.operand;
+                    const operand = ir.insts.items(.data)[index].un_tok.operand;
                     try self.formatRef(operand, &lbuf);
                     try writer.print("ret_implicit({s})", .{lbuf});
                 },
@@ -386,7 +385,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("ret_node({s})", .{lbuf});
                 },
                 .yield_implicit => {
-                    const operand = ir.insts.items(.data)[index].un_node.operand;
+                    const operand = ir.insts.items(.data)[index].un_tok.operand;
                     try self.formatRef(operand, &lbuf);
                     try writer.print("yield_implicit({s})", .{lbuf});
                 },
@@ -412,7 +411,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.stream.newline();
                     try self.renderInst(loop.body);
                     self.stream.dedent();
-                    try writer.print(")", .{});
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
                 },
                 .loop_break => {
                     try writer.print("break()", .{});
@@ -483,21 +483,8 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         }
 
         pub fn render(r: *Self) !void {
-            for (r.mir.blocks) |block| {
-                try r.renderBlock(block);
-            }
-            // var index: u32 = 0;
-            // while (index < r.mir.insts.len) : (index += 1) {
-            //     try r.renderInst(index);
-            // }
-            // const module = r.mir.insts.items(.data)[r.mir.insts.len - 1];
-            // const data = r.mir.extraData(module.pl, Mir.Module);
-            //
-            // var extra_index: u32 = 0;
-            // while (extra_index < data.len) : (extra_index += 1) {
-            //     const index = r.mir.extra[module.pl + 1 + extra_index];
-            //     try r.renderInst(index);
-            // }
+            const index = @intCast(u32, r.mir.insts.len - 1);
+            try r.renderInst(index);
         }
 
         pub fn renderBlock(r: *Self, b: u32) !void {
@@ -506,8 +493,6 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             r.stream.indent();
             try r.stream.newline();
 
-            // const len = r.mir.extra[b];
-            // std.debug.print("render block: {any}\n", .{r.mir.extra[b + 1..b + 1 + len]});
             var index: u32 = 0;
             while (index < r.mir.extra[b]) : (index += 1) {
                 const inst = r.mir.extra[b + 1 + index];
@@ -524,6 +509,19 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             var lbuf: [32]u8 = [_]u8{0} ** 32;
             var rbuf: [32]u8 = [_]u8{0} ** 32;
             switch (ir.insts.items(.tag)[index]) {
+                .block => {
+                    const pl = ir.insts.items(.data)[index].pl;
+                    const block = ir.extraData(pl, Mir.Inst.Block);
+                    try writer.print("block({{", .{});
+                    var extra_index: u32 = 0;
+                    self.stream.indent();
+                    try self.stream.newline();
+                    while (extra_index < block.insts_len) : (extra_index += 1) {
+                        try self.renderInst(ir.extra[pl + 1 + extra_index]);
+                    }
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
+                },
                 .constant => {
                     const data = ir.insts.items(.data)[index];
                     const value = ir.values[data.ty_pl.pl];
@@ -539,7 +537,6 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                             try writer.print("constant({s}, {})", .{lbuf, value.float});
                         },
                         else => {},
-                        // else => {std.debug.print("tag = {}\n", .{data.ty_pl.ty.tag});},
                     }
                 },
                 .add, .sub, .mul, .div, .mod,
@@ -608,11 +605,33 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("condbr({s}, label {}, label {})",
                                      .{lbuf, data.exec_true, data.exec_false});
                 },
-                // .ret_implicit => {
-                //     const operand = ir.insts.items(.data)[index].un_node.operand;
-                //     try self.formatRef(operand, &lbuf);
-                //     try writer.print("ret_implicit({s})", .{lbuf});
-                // },
+                .loop => {
+                    const pl = ir.insts.items(.data)[index].pl;
+                    const data = ir.extraData(pl, Mir.Inst.Loop);
+                    try writer.print("loop(", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try writer.print("condition = {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(data.condition);
+                    self.stream.dedent();
+                    try writer.print("}}, body = {{", .{});
+                    try self.stream.newline();
+                    try self.renderInst(data.body);
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
+                },
+                .ret => {
+                    const operand = ir.insts.items(.data)[index].un_op;
+                    try self.formatRef(operand, &lbuf);
+                    try writer.print("return({s})", .{lbuf});
+                },
+                .yield => {
+                    const operand = ir.insts.items(.data)[index].un_op;
+                    try self.formatRef(operand, &lbuf);
+                    try writer.print("yield({s})", .{lbuf});
+                },
                 // .ret_node => {
                 //     const operand = ir.insts.items(.data)[index].un_node.operand;
                 //     try self.formatRef(operand, &lbuf);

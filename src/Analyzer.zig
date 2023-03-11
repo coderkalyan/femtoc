@@ -26,14 +26,33 @@ instructions: std.MultiArrayList(Mir.Inst),
 extra: std.ArrayListUnmanaged(u32),
 values: std.ArrayListUnmanaged(Value),
 scratch: std.ArrayListUnmanaged(u32),
-blocks: std.ArrayListUnmanaged(u32),
 errors: std.MultiArrayList(Mir.UserError),
 gpa: Allocator,
 arena: Allocator,
-insert_block: *Block,
-prev_rewrite: std.ArrayListUnmanaged(u32),
+
+pub fn addExtra(analyzer: *Analyzer, extra: anytype) !u32 {
+    if (@TypeOf(extra) == u32) {
+        analyzer.extra.append(analyzer.gpa, extra);
+        return analyzer.extra.items.len - 1;
+    } else {
+        const fields = std.meta.fields(@TypeOf(extra));
+        try analyzer.extra.ensureUnusedCapacity(analyzer.gpa, fields.len);
+        const len = @intCast(u32, analyzer.extra.items.len);
+        inline for (fields) |field| {
+            if (field.field_type == u32) {
+                analyzer.extra.appendAssumeCapacity(@field(extra, field.name));
+            } else if (field.field_type == Mir.Ref) {
+                analyzer.extra.appendAssumeCapacity(@enumToInt(@field(extra, field.name)));
+            } else {
+                unreachable;
+            }
+        }
+        return len;
+    }
+}
 
 pub const Block = struct {
+    parent: ?*Block,
     analyzer: *Analyzer,
     instructions: std.ArrayListUnmanaged(Mir.Index),
 
@@ -59,28 +78,6 @@ pub const Block = struct {
         analyzer.instructions.set(index, inst);
     }
 
-    pub fn addExtra(b: *Block, extra: anytype) !u32 {
-        const analyzer = b.analyzer;
-        if (@TypeOf(extra) == u32) {
-            analyzer.extra.append(analyzer.gpa, extra);
-            return analyzer.extra.items.len - 1;
-        } else {
-            const fields = std.meta.fields(@TypeOf(extra));
-            try analyzer.extra.ensureUnusedCapacity(analyzer.gpa, fields.len);
-            const len = @intCast(u32, analyzer.extra.items.len);
-            inline for (fields) |field| {
-                if (field.field_type == u32) {
-                    analyzer.extra.appendAssumeCapacity(@field(extra, field.name));
-                } else if (field.field_type == Mir.Ref) {
-                    analyzer.extra.appendAssumeCapacity(@enumToInt(@field(extra, field.name)));
-                } else {
-                    unreachable;
-                }
-            }
-            return len;
-        }
-    }
-
     pub fn addValue(b: *Block, val: Value) !u32 {
         const analyzer = b.analyzer;
         const len = @intCast(u32, analyzer.values.items.len);
@@ -103,76 +100,85 @@ pub const Block = struct {
     }
 };
 
-pub fn addBlock(analyzer: *Analyzer, block: *Block) !u32 {
+pub fn addBlock(parent: *Block, block: *Block) !u32 {
+    const analyzer = parent.analyzer;
     const insts = block.instructions.items;
-    const index = @intCast(u32, analyzer.extra.items.len);
-    try analyzer.extra.append(analyzer.gpa, @intCast(u32, insts.len));
+    const index = try analyzer.addExtra(Mir.Inst.Block {
+        .insts_len = @intCast(u32, insts.len),
+    });
     try analyzer.extra.appendSlice(analyzer.gpa, insts);
-    try analyzer.blocks.append(analyzer.gpa, index);
 
-    for (analyzer.prev_rewrite.items) |rewrite_index| {
-        switch (analyzer.instructions.items(.tag)[rewrite_index]) {
-            .condbr => {
-                const pl = analyzer.instructions.items(.data)[rewrite_index].op_pl.pl;
-                analyzer.extra.items[pl + 1] = index;
-            },
-            .br => analyzer.instructions.items(.data)[rewrite_index].pl = index,
-            else => unreachable,
-        }
-    }
-    analyzer.prev_rewrite.clearRetainingCapacity();
-
-    return index;
+    return block.addInst(.{
+        .tag = .block,
+        .data = .{ .pl = index },
+    });
 }
 
 pub fn analyzeBody(analyzer: *Analyzer, inst: Hir.Index) !Mir {
     var block = try analyzer.arena.create(Block);
     block.* = Block {
+        .parent = null,
         .analyzer = analyzer,
         .instructions = .{},
     };
-    analyzer.insert_block = block;
+    // analyzer.insert_block = block;
 
-    _ = try analyzer.analyzeBlock(inst);
-    const last_block = analyzer.insert_block;
-    if (last_block.instructions.items.len > 0) _ = try analyzer.addBlock(last_block);
-    analyzer.arena.destroy(analyzer.insert_block);
+    _ = try analyzer.analyzeBlock(block, inst);
+    // _ = try block.addInst(.{
+    //     .tag = .block,
+    //     .data = .{ .pl = index },
+    // });
+    // const last_block = analyzer.insert_block;
+    // if (last_block.instructions.items.len > 0) _ = try analyzer.addBlock(last_block);
+    // analyzer.arena.destroy(analyzer.insert_block);
 
-    const entry = 0;
+    // const entry = 0;
     return Mir {
         .insts = analyzer.instructions.toOwnedSlice(),
         .extra = analyzer.extra.toOwnedSlice(analyzer.gpa),
         .values = analyzer.values.toOwnedSlice(analyzer.gpa),
-        .blocks = analyzer.blocks.toOwnedSlice(analyzer.gpa),
-        .entry = entry,
+        // .blocks = analyzer.blocks.toOwnedSlice(analyzer.gpa),
+        // .entry = entry,
     };
 }
 
-pub fn analyzeBlock(analyzer: *Analyzer, inst: Hir.Index) !void {
+pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const block_data = analyzer.hir.extraData(pl, Hir.Inst.Block);
+
+    const block = &Block {
+        .parent = b,
+        .analyzer = analyzer,
+        .instructions = .{},
+    };
 
     const hir_insts = analyzer.hir.extra_data[pl + 1..pl + 1 + block_data.len];
     try analyzer.map.ensureSliceCapacity(analyzer.arena, hir_insts);
     for (hir_insts) |index| {
         const ref = switch (analyzer.hir.insts.items(.tag)[index]) {
-            .int => try analyzer.integer(index),
-            .float => try analyzer.float(index),
-            .alloc => try analyzer.alloc(index),
-            .load => try analyzer.load(index),
+            .int => try analyzer.integer(block, index),
+            .float => try analyzer.float(block, index),
+            .alloc => try analyzer.alloc(block, index),
+            .load => try analyzer.load(block, index),
             .load_inline => try analyzer.loadInline(index),
-            .store => try analyzer.store(index),
-            .validate_ty => try analyzer.validateTy(index),
-            .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(index),
-            .ret_node => try analyzer.retNode(index),
-            .ret_implicit => try analyzer.retImplicit(index),
-            .branch_single => try analyzer.branchSingle(index),
-            .branch_double => try analyzer.branchDouble(index),
+            .store => try analyzer.store(block, index),
+            .validate_ty => try analyzer.validateTy(block, index),
+            .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
+            .ret_node => try analyzer.retNode(block, index),
+            .ret_implicit => try analyzer.retImplicit(block, index),
+            .yield_node => try analyzer.yieldNode(block, index),
+            .yield_implicit => try analyzer.yieldImplicit(block, index),
+            // .branch_single => try analyzer.branchSingle(index),
+            // .branch_double => try analyzer.branchDouble(index),
+            .loop => try analyzer.loop(block, index),
             else => Mir.indexToRef(0),
         };
         analyzer.map.putAssumeCapacity(index, ref);
     }
     for (hir_insts) |index| analyzer.map.remove(index);
+
+    const index = try addBlock(b, block);
+    return index;
 }
 
 pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
@@ -184,6 +190,8 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
             .eq, .neq, .geq,
             .leq, .gt, .lt => analyzer.resolveTy(b, data.bin_op.lref),
             .alloc => data.ty,
+            .load => analyzer.resolveTy(b, data.un_op),
+            .store => analyzer.resolveTy(b, data.un_op),
             else => error.NotImplemented,
         };
     } else {
@@ -195,15 +203,13 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
     }
 }
 
-pub fn integer(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+pub fn integer(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .uint = data.int });
     return Mir.indexToRef(index);
 }
 
-fn float(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn float(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const index = try b.addConstant(Type.initTag(.comptime_float), .{ .float = data.float });
     return Mir.indexToRef(index);
@@ -215,8 +221,7 @@ fn loadInline(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     return analyzer.map.resolveRef(ref);
 }
 
-fn load(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn load(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const index = try b.addInst(.{
         .tag = .load,
@@ -225,8 +230,7 @@ fn load(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     return Mir.indexToRef(index);
 }
 
-fn store(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn store(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const store_data = analyzer.mg.hir.extraData(data.pl_node.pl, Hir.Inst.Store);
     const addr = analyzer.map.resolveRef(Hir.Inst.indexToRef(store_data.addr));
@@ -238,8 +242,7 @@ fn store(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     return Mir.indexToRef(index);
 }
 
-fn alloc(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn alloc(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const ref = analyzer.map.resolveRef(data.un_node.operand);
     const ty = try analyzer.resolveTy(b, ref);
@@ -250,8 +253,7 @@ fn alloc(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     return Mir.indexToRef(index);
 }
 
-fn validateTy(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const validate_ty = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.ValidateTy);
     const ref = analyzer.map.resolveRef(validate_ty.ref);
@@ -266,10 +268,12 @@ fn validateTy(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                 const int_value: u64 = if (Mir.refToIndex(ref)) |value_index| val: {
                     const pl = analyzer.instructions.items(.data)[value_index].ty_pl.pl;
                     break :val analyzer.values.items[pl].uint;
-                } else switch (ref) {
-                    .zero_val => return Mir.Ref.zero_val,
-                    .one_val => return Mir.Ref.one_val,
-                    else => return error.InvalidRef,
+                } else val: {
+                    switch (ref) {
+                        .zero_val => break :val 0,
+                        .one_val => break :val 1,
+                        else => return error.InvalidRef,
+                    }
                 };
                 const index = try b.addConstant(expected_ty, .{ .uint = int_value });
                 return Mir.indexToRef(index);
@@ -301,8 +305,7 @@ fn validateTy(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     }
 }
 
-fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
     const lref = analyzer.map.resolveRef(binary.lref);
@@ -312,7 +315,7 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
 
     if (lty.compareTag(.comptime_uint) or lty.compareTag(.comptime_sint)) {
         if (rty.compareTag(.comptime_uint) or rty.compareTag(.comptime_sint)) {
-            return analyzer.analyzeComptimeArithmetic(inst);
+            return analyzer.analyzeComptimeArithmetic(b, inst);
         }
     }
 
@@ -320,7 +323,7 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
         .comptime_uint => {
             switch (rty.tag) {
                 .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
-                    const lval = try analyzer.coerceUnsignedInt(data.pl_node.pl, rty, lref);
+                    const lval = try analyzer.coerceUnsignedInt(b, data.pl_node.pl, rty, lref);
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
                             .add => .add,
@@ -340,7 +343,7 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
         .comptime_sint => {
             switch (rty.tag) {
                 .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
-                    const lval = try analyzer.coerceSignedInt(data.pl_node.pl, rty, lref);
+                    const lval = try analyzer.coerceSignedInt(b, data.pl_node.pl, rty, lref);
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
                             .add => .add,
@@ -360,7 +363,7 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
         .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
             switch (rty.tag) {
                 .comptime_uint => {
-                    const rval = try analyzer.coerceUnsignedInt(data.pl_node.pl, lty, rref);
+                    const rval = try analyzer.coerceUnsignedInt(b, data.pl_node.pl, lty, rref);
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
                             .add => .add,
@@ -375,7 +378,7 @@ fn binaryArithOp(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                     return Mir.indexToRef(index);
                 },
                 .comptime_sint => {
-                    const rval = try analyzer.coerceSignedInt(data.pl_node.pl, lty, rref);
+                    const rval = try analyzer.coerceSignedInt(b, data.pl_node.pl, lty, rref);
                     const index = try b.addInst(.{
                         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
                             .add => .add,
@@ -510,8 +513,7 @@ fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
 // arithmetic undefined behaviors (overflows, underflows, truncations)
 // during the simple "constant folding" style comptime_int simplification
 // eventually, this will be replaced with architecture-specific ALU emulation
-fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn analyzeComptimeArithmetic(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
     const lref = analyzer.map.resolveRef(binary.lref);
@@ -532,7 +534,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                     unreachable;
                 } else {
                     const result: u64 = lval + rval;
-                    return analyzer.unsignedIntToRef(result);
+                    return analyzer.unsignedIntToRef(b, result);
                 }
             } else if ((lty.tag == .comptime_sint) and (rty.tag == .comptime_sint)) {
                 const lval = analyzer.refToSignedInt(lref);
@@ -542,13 +544,13 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                     unreachable;
                 } else {
                     const result: i64 = lval + rval;
-                    return analyzer.signedIntToRef(result);
+                    return analyzer.signedIntToRef(b, result);
                 }
             } else {
-                const lval = try analyzer.demoteMaybeUnsignedInt(lref, data.pl_node.pl);
-                const rval = try analyzer.demoteMaybeUnsignedInt(rref, data.pl_node.pl);
+                const lval = try analyzer.demoteMaybeUnsignedInt(b, lref, data.pl_node.pl);
+                const rval = try analyzer.demoteMaybeUnsignedInt(b, rref, data.pl_node.pl);
                 const result: i64 = lval + rval;
-                return analyzer.signedIntToRef(result);
+                return analyzer.signedIntToRef(b, result);
             }
         },
         .sub => {
@@ -560,7 +562,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                     unreachable;
                 } else {
                     const result: u64 = lval + rval;
-                    return analyzer.unsignedIntToRef(result);
+                    return analyzer.unsignedIntToRef(b, result);
                 }
             } else if ((lty.tag == .comptime_sint) and (rty.tag == .comptime_uint)) {
                 const lval = analyzer.refToSignedInt(lref);
@@ -570,13 +572,13 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                     unreachable;
                 } else {
                     const result: i64 = lval - rval;
-                    return analyzer.signedIntToRef(result);
+                    return analyzer.signedIntToRef(b, result);
                 }
             } else {
-                const lval = try analyzer.demoteMaybeUnsignedInt(lref, data.pl_node.pl);
-                const rval = try analyzer.demoteMaybeUnsignedInt(rref, data.pl_node.pl);
+                const lval = try analyzer.demoteMaybeUnsignedInt(b, lref, data.pl_node.pl);
+                const rval = try analyzer.demoteMaybeUnsignedInt(b, rref, data.pl_node.pl);
                 const result: i64 = lval - rval;
-                return analyzer.signedIntToRef(result);
+                return analyzer.signedIntToRef(b, result);
             }
         },
         .mul => {
@@ -591,7 +593,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                                 unreachable;
                             }
                             const result = lval * rval;
-                            return analyzer.unsignedIntToRef(result);
+                            return analyzer.unsignedIntToRef(b, result);
                         },
                         .comptime_sint => {
                             const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
@@ -601,7 +603,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                                 unreachable;
                             }
                             const result = lval * rval;
-                            return analyzer.signedIntToRef(result);
+                            return analyzer.signedIntToRef(b, result);
                         },
                         else => unreachable,
                     }
@@ -616,7 +618,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                                 unreachable;
                             }
                             const result = lval * rval;
-                            return analyzer.signedIntToRef(result);
+                            return analyzer.signedIntToRef(b, result);
                         },
                         .comptime_sint => {
                             const lval = analyzer.refToSignedInt(lref);
@@ -630,7 +632,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                                 unreachable;
                             }
                             const result = lval * rval;
-                            return analyzer.signedIntToRef(result);
+                            return analyzer.signedIntToRef(b, result);
                         },
                         else => unreachable,
                     }
@@ -649,12 +651,12 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                                 try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
                                 unreachable;
                             }
-                            return analyzer.unsignedIntToRef(lval / rval);
+                            return analyzer.unsignedIntToRef(b, lval / rval);
                         },
                         .comptime_sint => {
                             const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
                             const rval = analyzer.refToSignedInt(rref);
-                            return analyzer.signedIntToRef(@divTrunc(lval, rval));
+                            return analyzer.signedIntToRef(b, @divTrunc(lval, rval));
                         },
                         else => unreachable,
                     }
@@ -668,7 +670,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                                 try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
                                 unreachable;
                             }
-                            return analyzer.signedIntToRef(@divTrunc(lval, rval));
+                            return analyzer.signedIntToRef(b, @divTrunc(lval, rval));
                         },
                         .comptime_sint => {
                             const lval = analyzer.refToSignedInt(lref);
@@ -681,7 +683,7 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                                 try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
                                 unreachable;
                             }
-                            return analyzer.signedIntToRef(@divTrunc(lval, rval));
+                            return analyzer.signedIntToRef(b, @divTrunc(lval, rval));
                         },
                         else => unreachable,
                     }
@@ -703,13 +705,13 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
                             }
 
                             const result = lval % rval;
-                            return analyzer.unsignedIntToRef(result);
+                            return analyzer.unsignedIntToRef(b, result);
                         },
                         .comptime_sint => {
                             const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
                             const rval = analyzer.refToSignedInt(rref);
                             const result = @mod(lval, rval);
-                            return analyzer.signedIntToRef(result);
+                            return analyzer.signedIntToRef(b, result);
                         },
                         else => unreachable,
                     }
@@ -726,13 +728,13 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
 
                             const lval = analyzer.refToSignedInt(rref);
                             const result = @mod(lval, rval);
-                            return analyzer.signedIntToRef(result);
+                            return analyzer.signedIntToRef(b, result);
                         },
                         .comptime_sint => {
                             const lval = analyzer.refToSignedInt(lref);
                             const rval = analyzer.refToSignedInt(rref);
                             const result = @mod(lval, rval);
-                            return analyzer.signedIntToRef(result);
+                            return analyzer.signedIntToRef(b, result);
                         },
                         else => unreachable,
                     }
@@ -763,15 +765,14 @@ fn demoteUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref, node: u32) !i64 {
     }
 }
 
-fn demoteMaybeUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref, node: u32) !i64 {
-    const b = analyzer.insert_block;
+fn demoteMaybeUnsignedInt(analyzer: *Analyzer, b: *Block, ref: Mir.Ref, node: u32) !i64 {
     const ty = try analyzer.resolveTy(b, ref);
     return if (ty.tag == .comptime_uint) analyzer.demoteUnsignedInt(ref, node)
            else analyzer.refToSignedInt(ref);
 }
 
-fn signedIntToRef(analyzer: *Analyzer, sint: i64) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn signedIntToRef(analyzer: *Analyzer, b: *Block, sint: i64) !Mir.Ref {
+    _ = analyzer;
     switch (sint) {
         0 => return .zero_val,
         1 => return .one_val,
@@ -788,8 +789,8 @@ fn signedIntToRef(analyzer: *Analyzer, sint: i64) !Mir.Ref {
     }
 }
 
-fn unsignedIntToRef(analyzer: *Analyzer, uint: u64) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn unsignedIntToRef(analyzer: *Analyzer, b: *Block, uint: u64) !Mir.Ref {
+    _ = analyzer;
     switch (uint) {
         0 => return .zero_val,
         1 => return .one_val,
@@ -800,10 +801,10 @@ fn unsignedIntToRef(analyzer: *Analyzer, uint: u64) !Mir.Ref {
     }
 }
 
-fn coerceUnsignedInt(analyzer: *Analyzer, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
+fn coerceUnsignedInt(analyzer: *Analyzer, b: *Block, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
     const val = analyzer.refToUnsignedInt(ref);
     if ((val >= 0) and (val <= ty.intMaxValue())) {
-        const index = try analyzer.insert_block.addConstant(ty, .{ .uint = val });
+        const index = try b.addConstant(ty, .{ .uint = val });
         return Mir.indexToRef(index);
     } else {
         try analyzer.emitUserError(node, .coerce_overflow);
@@ -811,7 +812,7 @@ fn coerceUnsignedInt(analyzer: *Analyzer, node: u32, ty: Type, ref: Mir.Ref) !Mi
     }
 }
 
-fn coerceSignedInt(analyzer: *Analyzer, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
+fn coerceSignedInt(analyzer: *Analyzer, b: *Block, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
     const val = analyzer.refToSignedInt(ref);
     if (val < ty.intMinValue()) {
         try analyzer.emitUserError(node, .coerce_underflow);
@@ -820,13 +821,12 @@ fn coerceSignedInt(analyzer: *Analyzer, node: u32, ty: Type, ref: Mir.Ref) !Mir.
         try analyzer.emitUserError(node, .coerce_overflow);
         unreachable;
     } else {
-        const index = try analyzer.insert_block.addConstant(ty, .{ .sint = val });
+        const index = try b.addConstant(ty, .{ .sint = val });
         return Mir.indexToRef(index);
     }
 }
 
-fn retNode(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn retNode(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const ref = analyzer.map.resolveRef(data.un_node.operand);
     const index = try b.addInst(.{
@@ -836,8 +836,7 @@ fn retNode(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     return Mir.indexToRef(index);
 }
 
-fn retImplicit(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
-    const b = analyzer.insert_block;
+fn retImplicit(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const ref = analyzer.map.resolveRef(data.un_tok.operand);
     const index = try b.addInst(.{
@@ -847,7 +846,27 @@ fn retImplicit(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     return Mir.indexToRef(index);
 }
 
-fn branchSingle(analyzer: *Analyzer, inst: Hir.Index) Error!Mir.Ref {
+fn yieldNode(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const ref = analyzer.map.resolveRef(data.un_node.operand);
+    const index = try b.addInst(.{
+        .tag = .yield,
+        .data = .{ .un_op = ref },
+    });
+    return Mir.indexToRef(index);
+}
+
+fn yieldImplicit(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const ref = analyzer.map.resolveRef(data.un_tok.operand);
+    const index = try b.addInst(.{
+        .tag = .yield,
+        .data = .{ .un_op = ref },
+    });
+    return Mir.indexToRef(index);
+}
+
+fn branchSingle(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const branch_single = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.BranchSingle);
     const condition = analyzer.map.resolveRef(branch_single.condition);
@@ -878,7 +897,6 @@ fn branchSingle(analyzer: *Analyzer, inst: Hir.Index) Error!Mir.Ref {
     };
     analyzer.insert_block = exec_false;
 
-    const b = analyzer.insert_block;
     const condbr = try b.addExtra(Mir.Inst.CondBr {
         .exec_true = true_entry,
         .exec_false = undefined,
@@ -953,10 +971,20 @@ fn branchDouble(analyzer: *Analyzer, inst: Hir.Index) Error!Mir.Ref {
     return Mir.indexToRef(index);
 }
 
-// fn comptime_unsigned(val: u64) !Mir.Ref {
-//     switch (val) 
-// }
-//
-// test "comptime addition" {
-//
-// }
+fn loop(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const loop_data = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Loop);
+
+    const condition = try analyzer.analyzeBlock(b, loop_data.condition);
+    const body = try analyzer.analyzeBlock(b, loop_data.body);
+
+    const extra_index = try analyzer.addExtra(Mir.Inst.Loop {
+        .condition = condition,
+        .body = body,
+    });
+    const index = try b.addInst(.{
+        .tag = .loop,
+        .data = .{ .pl = extra_index },
+    });
+    return Mir.indexToRef(index);
+}

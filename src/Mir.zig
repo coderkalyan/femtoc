@@ -24,8 +24,6 @@ pub const UserError = struct {
 insts: std.MultiArrayList(Inst).Slice,
 extra: []const u32,
 values: []const Value,
-blocks: []const u32,
-entry: u32,
 
 pub const Inst = struct {
     tag: Tag,
@@ -60,6 +58,8 @@ pub const Inst = struct {
         br,
         condbr,
         ret,
+        yield,
+        loop,
     };
 
     pub const Data = union {
@@ -104,9 +104,14 @@ pub const Inst = struct {
         exec_false: u32,
     };
 
-    // pub const Block = struct {
-    //     insts_len: u32,
-    // };
+    pub const Loop = struct {
+        condition: u32,
+        body: u32,
+    };
+
+    pub const Block = struct {
+        insts_len: u32,
+    };
 };
 
 pub const Index = u32;

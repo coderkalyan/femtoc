@@ -180,10 +180,10 @@ pub fn walkModule(mg: *MirGen) !Module {
                     .extra = .{},
                     .values = .{},
                     .scratch = .{},
-                    .blocks = .{},
+                    // .blocks = .{},
                     .errors = .{},
-                    .insert_block = undefined, // yes this is dangerous
-                    .prev_rewrite = .{},
+                    // .insert_block = undefined, // yes this is dangerous
+                    // .prev_rewrite = .{},
                 };
 
                 const mir = try analyzer.analyzeBody(fn_decl.body);

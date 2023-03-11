@@ -41,7 +41,7 @@ pub fn main() anyerror!void {
     const hir = try HirGen.generate(allocator, &ast);
     const hirgen_time = timer.lap() / 1000;
 
-    // const module = try MirGen.generate(allocator, &hir);
+    const module = try MirGen.generate(allocator, &hir);
     // _ = mir;
     const mirgen_time = timer.lap() / 1000;
 
@@ -61,10 +61,10 @@ pub fn main() anyerror!void {
     try hir_renderer.render();
     try buf.flush();
 
-    // for (module.function_mir) |mir| {
-    //     var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
-    //     // _ = mir_renderer;
-    //     try mir_renderer.render();
-    //     try buf.flush();
-    // }
+    for (module.function_mir) |mir| {
+        var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
+        // _ = mir_renderer;
+        try mir_renderer.render();
+        try buf.flush();
+    }
 }
