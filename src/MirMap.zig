@@ -36,6 +36,10 @@ pub fn deinit(m: *MirMap, a: Allocator) void {
 // providing an empty instructions slice will shrink the map to fit the
 // the existing valid entries as tightly as possible
 pub fn ensureSliceCapacity(m: *MirMap, a: Allocator, insts: []const Hir.Index) !void {
+    if (insts.len == 0) {
+        return;
+    }
+
     var better_start = m.start;
     var found_start: bool = false;
     var max: u32 = 0;
