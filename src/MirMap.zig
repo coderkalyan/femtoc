@@ -106,6 +106,18 @@ pub fn resolveRef(m: *MirMap, ref: Hir.Ref) Mir.Ref {
         .void_val => .void_val,
         .btrue_val => .one_val,
         .bfalse_val => .zero_val,
+        // .u8_ty => .u8_ty,
+        // .u16_ty => .u16_ty,
+        // .u32_ty => .u32_ty,
+        // .u64_ty => .u64_ty,
+        // .i8_ty => .i8_ty,
+        // .i16_ty => .i16_ty,
+        // .i32_ty => .i32_ty,
+        // .i64_ty => .i64_ty,
+        // .f32_ty => .f32_ty,
+        // .f64_ty => .f64_ty,
+        // .bool_ty => .i1_ty,
+        // .void_ty => .void_ty,
         else => {
             if (m.get(Hir.Inst.refToIndex(ref).?)) |mapping| {
                 return mapping;
