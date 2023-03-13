@@ -458,6 +458,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         }
 
         fn formatRef(_: *Self, ref: Hir.Ref, buf: []u8) !void {
+            std.mem.set(u8, buf, 0);
             if (Hir.Inst.refToIndex(ref)) |index| {
                 _ = try std.fmt.bufPrint(buf, "%{}", .{index});
             } else {
