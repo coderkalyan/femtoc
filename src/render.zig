@@ -313,12 +313,31 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const fn_decl = ir.extraData(pl, Hir.Inst.FnDecl);
 
                     try self.formatRef(fn_decl.return_ty, &lbuf);
-                    try writer.print("func(ret_ty={s}, body={{", .{lbuf});
+                    try writer.print("func(ret_ty={s}, params={{", .{lbuf});
+                    self.stream.indent();
+                    self.stream.indent();
+                    try self.stream.newline();
+                    var extra_index: u32 = fn_decl.params_start;
+                    while (extra_index < fn_decl.params_end) : (extra_index += 1) {
+                        const param = ir.extra_data[extra_index];
+                        try self.renderInst(param);
+                    }
+                    self.stream.dedent();
+                    try writer.print("}}, body={{", .{});
                     self.stream.indent();
                     try self.stream.newline();
                     try self.renderInst(fn_decl.body);
                     self.stream.dedent();
+                    self.stream.dedent();
                     try writer.print("}})", .{});
+                },
+                .param => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const param = ir.extraData(pl, Hir.Inst.Param);
+                    
+                    const param_str = try ir.interner.get(param.name);
+                    try self.formatRef(param.ty, &lbuf);
+                    try writer.print("param(\"{s}\", {s})", .{param_str, lbuf});
                 },
                 .block => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;

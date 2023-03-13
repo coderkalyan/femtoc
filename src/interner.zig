@@ -42,7 +42,7 @@ pub const Interner = struct {
         return id;
     }
 
-    pub fn get(self: *Interner, id: u32) ![]const u8 {
+    pub fn get(self: *const Interner, id: u32) ![]const u8 {
         if (id >= self.list.items.len) return Error.InvalidId;
         const index = self.list.items[id];
         return self.map.keys()[index];

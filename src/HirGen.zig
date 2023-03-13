@@ -323,9 +323,14 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const param_id = try hg.interner.intern(param_str);
 
         const ty_ref = try ty(b, scope, data.ty);
-        const param_inst = try b.addInst(.{
+        const param_data = try hg.addExtra(Hir.Inst.Param {
+            .name = param_id,
+            .ty = ty_ref,
+        });
+        const param_inst = @intCast(u32, hg.instructions.len);
+        try hg.instructions.append(hg.gpa, .{
             .tag = .param,
-            .data = .{ .un_node = .{ .node = param, .operand = ty_ref } },
+            .data = .{ .pl_node = .{ .node = param, .pl = param_data } },
         });
         b.scratch.appendAssumeCapacity(param_inst);
 
