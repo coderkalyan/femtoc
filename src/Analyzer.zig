@@ -116,6 +116,37 @@ pub fn addBlock(block: *Block) !u32 {
     });
 }
 
+pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !void {
+    const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
+    const module = analyzer.hir.extraData(pl, Hir.Inst.Module);
+
+    var block = try analyzer.arena.create(Block);
+    defer analyzer.arena.destroy(block);
+    block.* = Block {
+        .parent = null,
+        .analyzer = analyzer,
+        .instructions = .{},
+    };
+
+    const hir_insts = analyzer.hir.extra_data[pl + 1..pl + 1 + module.len];
+    try analyzer.map.ensureSliceCapacity(analyzer.arena, hir_insts);
+    for (hir_insts) |index| {
+        const ref = switch (analyzer.hir.insts.items(.tag)[index]) {
+            .int => try analyzer.integer(block, index),
+            .float => try analyzer.float(block, index),
+            .alloc => try analyzer.alloc(block, index),
+            .load => try analyzer.load(block, index),
+            .load_inline => try analyzer.loadInline(index),
+            .store => try analyzer.store(block, index),
+            .validate_ty => try analyzer.validateTy(block, index),
+            .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
+            .fn_decl => try analyzer.fnDecl(block, index),
+            else => Mir.indexToRef(0),
+        };
+        analyzer.map.putAssumeCapacity(index, ref);
+    }
+}
+
 pub fn analyzeFunction(analyzer: *Analyzer, inst: Hir.Index) !Mir {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const fn_decl = analyzer.hir.extraData(pl, Hir.Inst.FnDecl);
@@ -148,11 +179,6 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const block_data = analyzer.hir.extraData(pl, Hir.Inst.Block);
 
-    // const block = &Block {
-    //     .parent = b,
-    //     .analyzer = analyzer,
-    //     .instructions = .{},
-    // };
     const block = b;
 
     const hir_insts = analyzer.hir.extra_data[pl + 1..pl + 1 + block_data.len];
@@ -174,6 +200,7 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
             // .branch_single => try analyzer.branchSingle(index),
             // .branch_double => try analyzer.branchDouble(index),
             .loop => try analyzer.loop(block, index),
+            .fn_decl => try analyzer.fnDecl(block, index),
             else => Mir.indexToRef(0),
         };
         analyzer.map.putAssumeCapacity(index, ref);
@@ -1030,4 +1057,31 @@ fn loop(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
         .data = .{ .pl = extra_index },
     });
     return Mir.indexToRef(index);
+}
+
+fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
+    _ = b;
+
+    const mg = parent.mg;
+    var arena = std.heap.ArenaAllocator.init(parent.gpa);
+    defer arena.deinit();
+
+    var analyzer = Analyzer {
+        .mg = mg,
+        .map = MirMap.init(&mg.map),
+        .hir = parent.hir,
+        .gpa = parent.gpa,
+        .arena = arena.allocator(),
+        .instructions = .{},
+        .extra = .{},
+        .values = .{},
+        .scratch = .{},
+        .errors = .{},
+        .interner = parent.interner,
+    };
+
+    const mir = try analyzer.analyzeFunction(inst);
+    try parent.mg.mir.append(parent.gpa, mir);
+
+    return @intToEnum(Mir.Ref, 0); // TODO: change to real function reference
 }
