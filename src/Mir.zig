@@ -1,6 +1,7 @@
 const std = @import("std");
 const Type = @import("typing.zig").Type;
 const NodeIndex = @import("Ast.zig").Node.Index;
+const Interner = @import("interner.zig").Interner;
 
 // const Interner = @import("interner.zig").Interner;
 const Mir = @This();
@@ -24,6 +25,7 @@ pub const UserError = struct {
 insts: std.MultiArrayList(Inst).Slice,
 extra: []const u32,
 values: []const Value,
+interner: *const Interner,
 
 pub const Inst = struct {
     tag: Tag,
@@ -119,6 +121,19 @@ pub const Ref = enum(u32) {
     zero_val,
     one_val,
     void_val,
+
+    u8_ty,
+    u16_ty,
+    u32_ty,
+    u64_ty,
+    i1_ty,
+    i8_ty,
+    i16_ty,
+    i32_ty,
+    i64_ty,
+    f32_ty,
+    f64_ty,
+    void_ty,
 
     _,
 };

@@ -167,8 +167,8 @@ pub fn walkModule(mg: *MirGen) !Module {
                 }
             },
             .fn_decl => {
-                const pl = mg.hir.insts.items(.data)[hir_index].pl_node.pl;
-                const fn_decl = mg.hir.extraData(pl, Hir.Inst.FnDecl);
+                // const pl = mg.hir.insts.items(.data)[hir_index].pl_node.pl;
+                // const fn_decl = mg.hir.extraData(pl, Hir.Inst.FnDecl);
 
                 var analyzer = Analyzer {
                     .mg = mg,
@@ -180,13 +180,12 @@ pub fn walkModule(mg: *MirGen) !Module {
                     .extra = .{},
                     .values = .{},
                     .scratch = .{},
-                    // .blocks = .{},
                     .errors = .{},
-                    // .insert_block = undefined, // yes this is dangerous
-                    // .prev_rewrite = .{},
+                    .interner = &mg.hir.interner,
                 };
 
-                const mir = try analyzer.analyzeBody(fn_decl.body);
+                // const mir = try analyzer.analyzeBody(fn_decl.body);
+                const mir = try analyzer.analyzeFunction(hir_index);
                 try function_mir.append(mg.gpa, mir);
             },
             .alloc => {

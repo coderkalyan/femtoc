@@ -652,6 +652,12 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(operand, &lbuf);
                     try writer.print("yield({s})", .{lbuf});
                 },
+                .param => {
+                    const data = ir.insts.items(.data)[index];
+                    const param_str = try ir.interner.get(data.ty_pl.pl);
+                    try self.formatTy(data.ty_pl.ty, &lbuf);
+                    try writer.print("param(\"{s}\", {s})", .{param_str, lbuf});
+                },
                 // .ret_node => {
                 //     const operand = ir.insts.items(.data)[index].un_node.operand;
                 //     try self.formatRef(operand, &lbuf);

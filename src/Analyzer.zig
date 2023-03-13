@@ -5,6 +5,7 @@ const Type = @import("typing.zig").Type;
 const TypedValue = @import("typing.zig").TypedValue;
 const MirGen = @import("MirGen.zig");
 const MirMap = @import("MirMap.zig");
+const Interner = @import("interner.zig").Interner;
 
 const Allocator = std.mem.Allocator;
 const Analyzer = @This();
@@ -27,6 +28,7 @@ extra: std.ArrayListUnmanaged(u32),
 values: std.ArrayListUnmanaged(Value),
 scratch: std.ArrayListUnmanaged(u32),
 errors: std.MultiArrayList(Mir.UserError),
+interner: *const Interner,
 gpa: Allocator,
 arena: Allocator,
 
@@ -100,8 +102,8 @@ pub const Block = struct {
     }
 };
 
-pub fn addBlock(parent: *Block, block: *Block) !u32 {
-    const analyzer = parent.analyzer;
+pub fn addBlock(block: *Block) !u32 {
+    const analyzer = block.analyzer;
     const insts = block.instructions.items;
     const index = try analyzer.addExtra(Mir.Inst.Block {
         .insts_len = @intCast(u32, insts.len),
@@ -114,31 +116,31 @@ pub fn addBlock(parent: *Block, block: *Block) !u32 {
     });
 }
 
-pub fn analyzeBody(analyzer: *Analyzer, inst: Hir.Index) !Mir {
+pub fn analyzeFunction(analyzer: *Analyzer, inst: Hir.Index) !Mir {
+    const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
+    const fn_decl = analyzer.hir.extraData(pl, Hir.Inst.FnDecl);
+
     var block = try analyzer.arena.create(Block);
     block.* = Block {
         .parent = null,
         .analyzer = analyzer,
         .instructions = .{},
     };
-    // analyzer.insert_block = block;
 
-    _ = try analyzer.analyzeBlock(block, inst);
-    // _ = try block.addInst(.{
-    //     .tag = .block,
-    //     .data = .{ .pl = index },
-    // });
-    // const last_block = analyzer.insert_block;
-    // if (last_block.instructions.items.len > 0) _ = try analyzer.addBlock(last_block);
-    // analyzer.arena.destroy(analyzer.insert_block);
+    var extra_index = fn_decl.params_start;
+    while (extra_index < fn_decl.params_end) : (extra_index += 1) {
+        const param_index = analyzer.hir.extra_data[extra_index];
+        const ref = try analyzer.param(block, param_index);
+        try analyzer.map.ensureSliceCapacity(analyzer.arena, &.{param_index});
+        analyzer.map.putAssumeCapacity(param_index, ref);
+    }
+    _ = try analyzer.analyzeBlock(block, fn_decl.body);
 
-    // const entry = 0;
     return Mir {
         .insts = analyzer.instructions.toOwnedSlice(),
         .extra = analyzer.extra.toOwnedSlice(analyzer.gpa),
         .values = analyzer.values.toOwnedSlice(analyzer.gpa),
-        // .blocks = analyzer.blocks.toOwnedSlice(analyzer.gpa),
-        // .entry = entry,
+        .interner = analyzer.interner,
     };
 }
 
@@ -146,11 +148,12 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const block_data = analyzer.hir.extraData(pl, Hir.Inst.Block);
 
-    const block = &Block {
-        .parent = b,
-        .analyzer = analyzer,
-        .instructions = .{},
-    };
+    // const block = &Block {
+    //     .parent = b,
+    //     .analyzer = analyzer,
+    //     .instructions = .{},
+    // };
+    const block = b;
 
     const hir_insts = analyzer.hir.extra_data[pl + 1..pl + 1 + block_data.len];
     try analyzer.map.ensureSliceCapacity(analyzer.arena, hir_insts);
@@ -177,7 +180,7 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
     }
     for (hir_insts) |index| analyzer.map.remove(index);
 
-    const index = try addBlock(b, block);
+    const index = try addBlock(block);
     return index;
 }
 
@@ -192,6 +195,7 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
             .alloc => data.ty,
             .load => analyzer.resolveTy(b, data.un_op),
             .store => analyzer.resolveTy(b, data.un_op),
+            .param => data.ty_pl.ty,
             else => error.NotImplemented,
         };
     } else {
@@ -201,6 +205,31 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
             else => error.NotImplemented,
         };
     }
+}
+
+pub fn param(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
+    const data = analyzer.hir.extraData(pl, Hir.Inst.Param);
+    // TODO: proper ref to type
+    // const ty = switch (analyzer.map.resolveRef(data.ty)) {
+
+    // };
+    const ty = switch (data.ty) {
+        .i8_ty => Type.initTag(.i8),
+        .u8_ty => Type.initTag(.u8),
+        .i16_ty => Type.initTag(.i16),
+        .u16_ty => Type.initTag(.u16),
+        .i32_ty => Type.initTag(.i32),
+        .u32_ty => Type.initTag(.u32),
+        .i64_ty => Type.initTag(.i64),
+        .u64_ty => Type.initTag(.u64),
+        else => return error.TypeError,
+    };
+    const index = try b.addInst(.{
+        .tag = .param,
+        .data = .{ .ty_pl = .{ .ty = ty, .pl = data.name } },
+    });
+    return Mir.indexToRef(index);
 }
 
 pub fn integer(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
