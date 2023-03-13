@@ -1003,9 +1003,23 @@ fn branchDouble(analyzer: *Analyzer, inst: Hir.Index) Error!Mir.Ref {
 fn loop(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const loop_data = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Loop);
+    const condition = block: {
+        const block = &Block {
+            .parent = b,
+            .analyzer = analyzer,
+            .instructions = .{},
+        };
+        break :block try analyzer.analyzeBlock(block, loop_data.condition);
+    };
 
-    const condition = try analyzer.analyzeBlock(b, loop_data.condition);
-    const body = try analyzer.analyzeBlock(b, loop_data.body);
+    const body = block: {
+        const block = &Block {
+            .parent = b,
+            .analyzer = analyzer,
+            .instructions = .{},
+        };
+        break :block try analyzer.analyzeBlock(block, loop_data.body);
+    };
 
     const extra_index = try analyzer.addExtra(Mir.Inst.Loop {
         .condition = condition,
