@@ -15,12 +15,17 @@ pub fn main() anyerror!void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
+    const out = std.io.getStdOut();
+    var buf = std.io.bufferedWriter(out.writer());
+    var writer = buf.writer();
+
     var args = try std.process.argsWithAllocator(allocator);
     _ = args.skip();
 
     var timer = try time.Timer.start();
 
-    var file = try std.fs.cwd().openFile(args.next().?, .{});
+    var filename = args.next().?;
+    var file = try std.fs.cwd().openFile(filename, .{});
     defer file.close();
     const stat = try file.stat();
     if (stat.size > max_file_size) {
@@ -38,18 +43,22 @@ pub fn main() anyerror!void {
     const ast = try parse.parse(allocator, source);
     const ast_time = timer.lap() / 1000;
 
+    if (ast.errors.len > 0) {
+        var ast_error_renderer = render.AstErrorRenderer(2, @TypeOf(writer)).init(writer, &ast, source, &allocator, filename);
+
+        try ast_error_renderer.render();
+        try buf.flush();
+        std.debug.print("{any} errors\n", .{ast.errors.len});
+        std.process.exit(1);
+    }
+
     const hir = try hirgen.generate(allocator, &ast);
     const hirgen_time = timer.lap() / 1000;
 
     const module = try MirGen.generate(allocator, &hir);
-    // _ = mir;
     const mirgen_time = timer.lap() / 1000;
 
     std.debug.print("read={}us ast={}us hirgen={}us mirgen={}us\n", .{read_time, ast_time, hirgen_time, mirgen_time});
-
-    const out = std.io.getStdOut();
-    var buf = std.io.bufferedWriter(out.writer());
-    var writer = buf.writer();
 
     var ast_renderer = render.AstRenderer(4, @TypeOf(writer)).init(writer, &ast);
     _ = ast_renderer;

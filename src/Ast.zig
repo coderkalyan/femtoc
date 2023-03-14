@@ -17,6 +17,15 @@ pub const Error = struct {
         missing_type_annotation,
         missing_return_type,
         missing_identifier,
+        unexpected_tld_token,
+        unmatched_parenth,
+        unmatched_brace,
+        missing_equals,
+        missing_fn_brace,
+        unexpected_statement_token,
+        missing_expression,
+        unexpected_identifier,
+        unexpected_token,
     };
 };
 

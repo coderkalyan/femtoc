@@ -692,3 +692,170 @@ fn IndentingWriter(comptime width: u32, comptime WriterType: type) type {
 fn indentingWriter(comptime width: u32, underlying_stream: anytype) IndentingWriter(width, @TypeOf(underlying_stream)) {
     return .{ .depth = 0, .underlying_writer = underlying_stream, .needs_indent = false };
 }
+
+pub fn AstErrorRenderer(comptime width: u32, comptime WriterType: anytype) type {
+    return struct {
+        stream: IndentingWriter(width, WriterType),
+        ast: *const Ast,
+        newlines: []Ast.ByteOffset,
+        source: [:0]const u8,
+        allocator: *const std.mem.Allocator,
+        filename: [:0]const u8,
+
+        pub const Self = @This();
+
+        const TextTokenPos = struct {
+            line: u32,
+            character: Ast.ByteOffset,
+
+            line_pos: Ast.ByteOffset,
+            next_line_pos : Ast.ByteOffset,
+        };
+
+        pub fn init(writer: anytype, ast_data: *const Ast, source: [:0]const u8, allocator: *const std.mem.Allocator, filename: [:0]const u8) Self {
+            // TODO: maybe move this to the actual parsing step.
+            // TODO: reuse other Ast renderer
+            // TODO: not have such a bad init for this :(
+
+            return .{ 
+                .stream = indentingWriter(width, writer), 
+                .ast = ast_data,
+                .source = source,
+                .newlines = &.{},
+                .allocator = allocator,
+                .filename = filename,
+            };
+        }
+
+        fn build_newline_arr(self: *Self) !void {
+            var newline_locs: std.ArrayList(Ast.ByteOffset) = std.ArrayList(Ast.ByteOffset).init(self.allocator.*);
+            for (self.source) |char, i| {
+
+                // HACK: idk how to fix this rn, and don't want to bother kalyan so will fix later
+                if (char == '\n') try newline_locs.append(@intCast(Ast.ByteOffset, i)); 
+            }
+
+            // append the last char so we have a marker at the end of the file
+            // this will make slicing for the line preview simpler
+
+            try newline_locs.append(@intCast(Ast.ByteOffset, self.source.len - 1)); 
+
+            self.newlines = newline_locs.toOwnedSlice();
+        }
+
+        fn lookup_pos(self: *Self, source_index: Ast.ByteOffset) TextTokenPos {
+            // PERF: For now do a linear probe, but we should really do a binary search
+            var prev_newline_pos: Ast.ByteOffset = 0;
+            var current_newline_pos: Ast.ByteOffset = 0;
+
+            // Line counts start at 1
+            var line_number: u32 = 1; // TODO: check if this is the correct type
+
+            // std.debug.print("SRC I {any} \n", .{source_index});
+
+            for (self.newlines) |newline_pos| {
+                // std.debug.print("WE AT {any}, prev={}, linenum={} \n", .{newline_pos, prev_newline_pos, line_number});
+                if (source_index <= newline_pos)  {
+                    current_newline_pos = newline_pos;
+                    break;
+                }
+                prev_newline_pos = newline_pos;
+                line_number += 1;
+            }
+
+            return .{
+                .line = line_number, 
+                .character = (source_index - prev_newline_pos), 
+                .line_pos = prev_newline_pos,
+                .next_line_pos = current_newline_pos
+            };
+        }
+
+        pub fn render(r: *Self) !void {
+            try r.build_newline_arr();
+
+            // TODO: actually iterate errors
+            // try formatError(r, r.ast.errors[0]);
+            for (r.ast.errors) |ast_error| {
+                try formatError(r, ast_error);
+            }
+        }
+
+        fn getTokenStartLoc(r: *Self, token_index: Ast.TokenIndex) !Ast.ByteOffset {
+            const tokens = r.ast.tokens;
+            const token_start = tokens.items(.start)[token_index];
+            var lexer = lex.Lexer.init_index(r.ast.source, token_start);
+            const token = lexer.next();
+
+            return token.loc.start;
+        }
+
+        fn skipWhitespace(r: *Self, source_index: Ast.ByteOffset) !Ast.ByteOffset {
+            var i = source_index;
+            while (i < r.source.len) : (i += 1) {
+                if (!std.ascii.isWhitespace(r.source[i])) break;
+            }
+            return i;
+        }
+    
+        fn formatError(r: *Self, ast_error: Ast.Error) !void {
+            const preview_message = "";
+            // const preview_message = "Preview: ";
+
+            var error_message = switch (ast_error.tag) {
+                Ast.Error.Tag.missing_colon => "Missing colon",
+                Ast.Error.Tag.missing_equals => "Missing an '='",
+                Ast.Error.Tag.missing_expression => "Missing an expression",
+                Ast.Error.Tag.missing_fn_brace => "Malformed function block",
+                Ast.Error.Tag.missing_identifier => "Missing an identifier",
+                Ast.Error.Tag.missing_return_type => "Missing a return type",
+                Ast.Error.Tag.missing_type_annotation => "Missing a type annotation",
+                Ast.Error.Tag.unexpected_identifier => "Unexpected identifier",
+                Ast.Error.Tag.unexpected_statement_token => "Unexpected statement",
+                Ast.Error.Tag.unexpected_tld_token => "Unexpected statement", // TODO: better name for this?
+                Ast.Error.Tag.unmatched_brace => "Unmatched brace",
+                Ast.Error.Tag.unmatched_parenth => "Unmatched parenthesis",
+                Ast.Error.Tag.unexpected_token => "Unexpected token",
+            };
+
+            var token_source_loc = try r.getTokenStartLoc(ast_error.token);
+            var token_pos = lookup_pos(r, token_source_loc);
+
+            r.stream.indent();
+            var writer = r.stream.writer();
+
+            try writer.print("{s}:{any}:{any}: ERROR: ",.{r.filename, token_pos.line, token_pos.character});
+            try writer.writeAll(error_message);
+            try writer.writeByte('\n');
+
+            var line_pos_nw = try r.skipWhitespace(token_pos.line_pos);
+            var skipped_ws = line_pos_nw - token_pos.line_pos;
+            // std.debug.print("skipped_ws={any}\npreview_message.len={any}\ntoken_pos.character={}", .{skipped_ws, preview_message.len, token_pos.character});
+
+            try writer.writeAll(preview_message);
+            try writer.writeAll(r.source[line_pos_nw .. token_pos.next_line_pos]);
+            try writer.writeByte('\n');
+
+            var num_spaces = preview_message.len + token_pos.character;
+
+            // Prevent undeflows
+            if (num_spaces >= skipped_ws) num_spaces -= skipped_ws;
+            if (num_spaces >= 1) num_spaces -= 1;
+
+            try writer.writeByteNTimes(' ', num_spaces);
+            try writer.writeByte('^');
+            try writer.writeByte('\n');
+
+            // Prevent undeflows
+            if (num_spaces >= 2) num_spaces -= 2;
+
+            // todo figure out if this is correct
+            try writer.writeByteNTimes(' ', num_spaces);
+            try writer.writeAll("HERE");
+            try writer.writeByte('\n');
+
+            r.stream.dedent();
+            try writer.writeByte('\n');
+        }
+    };
+}

@@ -47,7 +47,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
         .extra_data = parser.extra.toOwnedSlice(gpa),
-        .errors = &.{},
+        .errors = parser.errors.toOwnedSlice(),
     };
 }
 
@@ -123,6 +123,85 @@ const Parser = struct {
         return len;
     }
 
+    // TODO: refactor this into two seperate methods
+    // really small perf impact, but why not just make it better =)
+    fn consumeUntilValidTLD(p: *Parser, report_unmatched: bool) Allocator.Error!void {
+        // consume until we're in a valid state e.g. next let
+        var open_parenths: i32 = 0;
+        var open_braces: i32 = 0;
+        // var open_quotes: u32 = 0;
+        // var open_square: u32 = 0;
+
+        var last_open_parenth: u32  = 0;
+        var last_close_parenth: u32  = 0;
+        var last_open_brace: u32 = 0;
+        var last_close_brace: u32 = 0;
+        // var last_open_quote: u32 = 0;
+        // var last_open_square: u32 = 0;
+
+        while (true)
+        {
+            switch (p.token_tags[p.index])
+            {
+                .eof => break,
+                .l_paren => {
+                    last_open_parenth = p.index;
+                    open_parenths += 1;
+                },
+                .r_paren => {
+                    last_close_parenth = p.index;
+                    open_parenths -= 1;
+                },
+                .l_brace => {
+                    last_open_brace = p.index;
+                    open_braces += 1;
+                },
+                .r_brace => {
+                    last_close_brace = p.index;
+                    open_braces -= 1;
+                },
+                .k_let => {
+                    // have to make sure this isn't in some smaller block
+                    if (open_parenths == 0 and open_braces == 0) break;
+                },
+                else => {}
+            }
+            p.index += 1;
+        }
+
+        if (report_unmatched)
+        {
+            if (open_parenths > 0) {
+                try p.errors.append(.{.tag=.unmatched_parenth, .token=last_open_parenth});
+            }
+
+            if (open_braces > 0) {
+                try p.errors.append(.{.tag=.unmatched_brace, .token=last_open_brace});
+            }
+
+            if (open_parenths < 0) {
+                try p.errors.append(.{.tag=.unmatched_parenth, .token=last_close_parenth});
+            }
+
+            if (open_braces < 0) {
+                try p.errors.append(.{.tag=.unmatched_brace, .token=last_close_brace});
+            }
+        }
+    }
+
+    fn consumeUntilSemi(p: *Parser) Allocator.Error!void {
+        while (true) {
+            // std.debug.print("EETING {}\n", .{p.token_tags[p.index]});
+
+            switch (p.token_tags[p.index]) {
+                .semi => { p.index += 1; break; },
+                .eof => break,
+                else => {},
+            }
+            p.index += 1;
+        }
+    }
+
     fn precedence(tag: Token.Tag) i32 {
         return switch (tag) {
             .k_or => 10,
@@ -154,7 +233,7 @@ const Parser = struct {
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
-            std.debug.print("HI IM AT {}, idx={}\n", .{p.token_tags[p.index], p.index});
+            // std.debug.print("HI IM AT {}, idx={}\n", .{p.token_tags[p.index], p.index});
 
             const node = switch (p.token_tags[p.index]) {
                 .eof => break,
@@ -163,14 +242,17 @@ const Parser = struct {
                     {
                         while (true)
                         {
-                            std.debug.print("CURRENTLY CHECKING {}, idx={}\n", .{p.token_tags[p.index], p.index});
+                            // this should be cleaned up by the emitter fo the HandledUserError
+                            // e.g. we should be either be at or next to a eof or let. 
+                            // std.debug.print("CURRENTLY CHECKING {}, idx={}\n", .{p.token_tags[p.index], p.index});
                             switch (p.token_tags[p.index])
                             {
                                 .eof, .k_let => {
-                                    std.debug.print("STOPPING AT {}, idx={}\n", .{p.token_tags[p.index], p.index});
+                                    // std.debug.print("STOPPING AT {}, idx={}\n", .{p.token_tags[p.index], p.index});
                                     break;
                                 },
-                                else => {std.debug.print("SKIPPED PAST ctoken {}, idx={}\n", .{p.token_tags[p.index], p.index});}   
+                                else => {}   
+                                // else => {std.debug.print("SKIPPED PAST ctoken {}, idx={}\n", .{p.token_tags[p.index], p.index});}   
                             }
                             p.index += 1;
                         }
@@ -180,8 +262,9 @@ const Parser = struct {
                     return;
                 },
                 else => {
-                    std.debug.print("{}\n", .{p.token_tags[p.index]});
-                    unreachable;
+                    try p.errors.append(.{.tag=.unexpected_tld_token, .token=p.index});
+                    try consumeUntilValidTLD(p, false);
+                    continue;
                 },
             };
 
@@ -350,7 +433,7 @@ const Parser = struct {
                 });
             },
             else => {
-                std.debug.print("{}\n", .{p.token_tags[p.index]});
+                // std.debug.print("{}\n", .{p.token_tags[p.index]});
                 return Error.UnexpectedToken;
             },
         };
@@ -362,41 +445,48 @@ const Parser = struct {
         // const return_ty = try p.expectType();
         if (p.expectType()) |return_ty|
         {
-            const body = try p.expectBlock();
-
-            return p.addNode(.{
-                .main_token = fn_token,
-                .data = .{
-                    .fn_decl = .{
-                        .signature = try p.addExtra(Node.FnSignature {
-                            .params_start = params.start,
-                            .params_end = params.end,
-                            .return_ty = return_ty,
-                        }),
-                        .body = body,
-                    }
-                },
-            });
-        }
-        else |err|
-        {
-            switch (err)
+            // const body = try p.expectBlock();
+            if (p.expectBlock()) |body|
             {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{.tag=.missing_return_type, .token=p.index});
-
-                    // consume leftover block
-                    if (p.expectBlock()) |_| {} else |block_err| {
-                        switch(block_err){
-                            Error.UnexpectedToken => {},
-                            else => return block_err,
+                return p.addNode(.{
+                    .main_token = fn_token,
+                    .data = .{
+                        .fn_decl = .{
+                            .signature = try p.addExtra(Node.FnSignature {
+                                .params_start = params.start,
+                                .params_end = params.end,
+                                .return_ty = return_ty,
+                            }),
+                            .body = body,
                         }
-                    }
-
+                    },
+                });
+            } else |err| switch (err)  {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_fn_brace, .token=p.index});
+                    // TODO: revisit this, could be a better solution to
+                    try consumeUntilValidTLD(p, true);
                     return Error.HandledUserError;
                 },
                 else => return err,
             }
+
+            
+        }
+        else |err| switch (err)
+        {
+            Error.UnexpectedToken => {
+                try p.errors.append(.{.tag=.missing_return_type, .token=p.index});
+                // consume leftover block
+                if (p.expectBlock()) |_| {} else |block_err| {
+                    switch(block_err){
+                        Error.UnexpectedToken => {},
+                        else => return block_err,
+                    }
+                }
+                return Error.HandledUserError;
+            },
+            else => return err,
         }
     }
 
@@ -555,8 +645,14 @@ const Parser = struct {
 
         while (true) {
             if (p.eatToken(.r_brace)) |_| break;
-            const stmt_node = try p.parseStatement();
-            try p.scratch.append(stmt_node);
+            // const stmt_node = try p.parseStatement();
+            if (p.parseStatement()) |stmt_node|
+            {
+                try p.scratch.append(stmt_node);
+            } else |err| switch(err) {
+                Error.HandledUserError => continue,
+                else => return err,
+            }
         }
 
         const stmts = p.scratch.items[scratch_top..];
@@ -575,6 +671,7 @@ const Parser = struct {
     }
 
     fn parseStatement(p: *Parser) Error!Node.Index {
+        // std.debug.print("WE AT {} {}\n", .{p.token_tags[p.index], p.index + 1});
         const node = switch (p.token_tags[p.index]) {
             .k_let => p.parseDecl(),
             .k_return => p.expectReturnStmt(),
@@ -588,10 +685,19 @@ const Parser = struct {
                 .ampersand_equal, .pipe_equal, .caret_equal,
                 .l_angle_l_angle_equal,
                 .r_angle_r_angle_equal => p.parseAssignment(),
-                else => return Error.UnexpectedToken,
+                else => {
+                    try p.errors.append(.{.tag=.unexpected_identifier, .token=p.index});
+
+                    // try eating until we get a semicolon
+                    try consumeUntilSemi(p);
+
+                    return Error.HandledUserError;
+                },
             },
             else => {
-                std.debug.print("{}\n", .{p.token_tags[p.index]});
+                // this should *pretty* much never happen, because the lexer will emit a identifier for an invalid toke (usually)
+                try p.errors.append(.{.tag=.unexpected_token, .token=p.index});
+                try consumeUntilSemi(p);
                 return Error.UnexpectedToken;
             },
         };
@@ -641,40 +747,59 @@ const Parser = struct {
         const let_token = try p.expectToken(.k_let);
         if (p.token_tags[p.index] == .k_mut) {
             _ = p.eatToken(.k_mut);
-            _ = try p.expectToken(.ident);
 
-            const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
-            _ = try p.expectToken(.equal);
-
-            const val = try p.expectExpr();
-            return p.addNode(.{
-                .main_token = let_token,
-                .data = .{ .var_decl = .{ .ty = ty, .val = val } },
-            });
-        } else {
-            // _ = try p.expectToken(.ident);
-            if (p.expectToken(.ident)) |_| {} else |err| {
-                switch (err)
-                {
-                    Error.UnexpectedToken => {
-                        try p.errors.append(.{
-                            .tag = .missing_type_annotation,
-                            .token = p.index
-                        });
-                        // return Error.HandledUserError;
-                    },
-                    else => return err,
-                }
+            if (p.expectToken(.ident)) |_| {} else |err| switch(err) {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_identifier, .token=p.index});
+                }, else => return err,
             }
 
             const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
-            _ = try p.expectToken(.equal);
+            if (p.expectToken(.equal)) |_| {} else |err| switch(err) {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_equals, .token=p.index});
+                }, else => return err,
+            }
 
-            const val = try p.expectExpr();
-            return p.addNode(.{
-                .main_token = let_token,
-                .data = .{ .const_decl = .{ .ty = ty, .val = val } },
-            });
+            if (p.expectExpr()) |val| {
+                return p.addNode(.{
+                    .main_token = let_token,
+                    .data = .{ .var_decl = .{ .ty = ty, .val = val } },
+                });
+            } else |err| switch (err) {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_expression, .token=p.index});
+                    try consumeUntilSemi(p);
+                    return Error.HandledUserError;
+                }, else => return err,
+            }
+        } else {
+            // _ = try p.expectToken(.ident);
+            if (p.expectToken(.ident)) |_| {} else |err| switch(err) {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_identifier, .token=p.index});
+                }, else => return err,
+            }
+
+            const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
+            if (p.expectToken(.equal)) |_| {} else |err| switch(err) {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_equals, .token=p.index});
+                }, else => return err,
+            }
+
+            if (p.expectExpr()) |val| {
+                return p.addNode(.{
+                    .main_token = let_token,
+                    .data = .{ .const_decl = .{ .ty = ty, .val = val } },
+                });
+            } else |err| switch (err) {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{.tag=.missing_expression, .token=p.index});
+                    try consumeUntilSemi(p);
+                    return Error.HandledUserError;
+                }, else => return err,
+            }
         }
     }
     
