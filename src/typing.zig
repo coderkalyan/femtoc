@@ -1,5 +1,6 @@
 const std = @import("std");
 const math = std.math;
+const Allocator = std.mem.Allocator;
 
 pub const Error = error { UnspecificType };
 
@@ -32,11 +33,12 @@ pub const Type = extern union {
     };
 
     pub const Payload = struct {
-        class: Class,
+        kind: Kind,
 
-        pub const Class = enum {
+        pub const Kind = enum {
             pointer,
             structure,
+            function,
         };
 
         pub inline fn cast(base: *const Payload, comptime T: type) ?*const T {
@@ -44,7 +46,7 @@ pub const Type = extern union {
         }
 
         pub fn size(p: *const Payload) !usize {
-            switch (p.class) {
+            switch (p.kind) {
                 .pointer => return 8,
                 .structure => {
                     var total: usize = 0;
@@ -60,12 +62,13 @@ pub const Type = extern union {
                     if (((total / max) * max) != total)
                         total = ((total / max) + 1) * max;
                     return total;
-                }
+                },
+                .function => return error.NotImplemented,
             }
         }
 
         pub fn alignment(p: *const Payload) !usize {
-            switch (p.class) {
+            switch (p.kind) {
                 .pointer => {
                     // TODO: this depends on architecture
                     return 8;
@@ -77,14 +80,15 @@ pub const Type = extern union {
                         max = @max(max, try member.alignment());
                     }
                     return max;
-                }
+                },
+                .function => return error.NotImplemented,
             }
         }
     };
 
     pub const Pointer = struct {
-        const base_class: Payload.Class = .pointer;
-        base: Payload = .{ .class = base_class },
+        const base_kind: Payload.Kind = .pointer;
+        base: Payload = .{ .kind = base_kind },
         pointee: Type,
 
         pub fn init(pointee: Type) Pointer {
@@ -93,8 +97,8 @@ pub const Type = extern union {
     };
 
     pub const Structure = struct {
-        const base_class: Payload.Class = .structure;
-        base: Payload = .{ .class = base_class },
+        const base_kind: Payload.Kind = .structure;
+        base: Payload = .{ .kind = base_kind },
         members: []Type,
 
         pub fn init(members: []Type) Structure {
@@ -102,10 +106,21 @@ pub const Type = extern union {
         }
     };
 
+    pub const Function = struct {
+        const base_kind: Payload.Kind = .function;
+        base: Payload = .{ .kind = base_kind },
+        params: []Type,
+        return_ty: Type,
+
+        pub fn init(gpa: Allocator, return_ty: Type, params: []Type) !Type {
+            const function = try gpa.create(Function);
+            function.* = Function { .params = params, .return_ty = return_ty };
+            return .{ .payload = &function.base };
+        }
+    };
+
     pub fn initTag(tag: Tag) Type {
-        return Type {
-            .tag = tag,
-        };
+        return .{ .tag = tag };
     }
 
     pub inline fn isTag(ty: Type) bool {

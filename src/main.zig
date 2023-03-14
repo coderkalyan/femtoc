@@ -5,6 +5,7 @@ const MirGen = @import("MirGen.zig");
 const MirMap = @import("MirMap.zig");
 const Mir = @import("Mir.zig");
 const render = @import("render.zig");
+const CodeGen = @import("CodeGen.zig");
 
 const time = std.time;
 const max_file_size = std.math.maxInt(u32);
@@ -61,10 +62,15 @@ pub fn main() anyerror!void {
     try hir_renderer.render();
     try buf.flush();
 
+    {
+        var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &compilation.global);
+        try mir_renderer.render();
+    }
     for (compilation.mir) |mir| {
         var mir_renderer = render.MirRenderer(2, @TypeOf(writer)).init(writer, &mir);
-        // _ = mir_renderer;
         try mir_renderer.render();
-        try buf.flush();
     }
+    try buf.flush();
+
+    try CodeGen.generate(allocator, &compilation);
 }

@@ -130,6 +130,11 @@ pub const Inst = struct {
     pub const Block = struct {
         insts_len: u32,
     };
+
+    pub const Function = struct {
+        // name: u32,
+        mir_index: u32,
+    };
 };
 
 pub const Index = u32;
@@ -177,10 +182,6 @@ pub fn extraData(mir: *const Mir, index: usize, comptime T: type) T {
     }
     return result;
 }
-
-pub const Function = struct {
-    len: u32,
-};
 
 pub const Module = struct {
     len: u32,

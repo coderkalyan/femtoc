@@ -5,7 +5,6 @@ const Type = @import("typing.zig").Type;
 const Analyzer = @import("Analyzer.zig");
 const MirMap = @import("MirMap.zig");
 const Module = @import("Module.zig");
-const Compilation = @import("Compilation.zig");
 
 const math = std.math;
 
@@ -22,6 +21,11 @@ hir: *const Hir,
 map: MirMap,
 global: ?Mir,
 mir: std.ArrayListUnmanaged(Mir),
+
+pub const Compilation = struct {
+    global: Mir,
+    mir: []const Mir,
+};
 
 pub fn generate(gpa: Allocator, hir: *const Hir) !Compilation {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -58,7 +62,7 @@ pub fn walkModule(mg: *MirGen) !Mir {
         .interner = &mg.hir.interner,
     };
 
-    try analyzer.analyzeModule(@intCast(u32, mg.hir.insts.len - 1));
+    _ = try analyzer.analyzeModule(@intCast(u32, mg.hir.insts.len - 1));
 
     return Mir {
         .insts = analyzer.instructions.toOwnedSlice(),

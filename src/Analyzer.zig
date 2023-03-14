@@ -120,7 +120,7 @@ pub fn addBlock(block: *Block) !u32 {
     });
 }
 
-pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !void {
+pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !u32 {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const module = analyzer.hir.extraData(pl, Hir.Inst.Module);
 
@@ -147,22 +147,28 @@ pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !void {
             .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge,
             .cmp_lt, .cmp_gt => try analyzer.binaryCmp(block, index),
             .fn_decl => try analyzer.fnDecl(block, index),
-            else => Mir.indexToRef(0),
+            else => Mir.indexToRef(std.math.maxInt(u32) - @intCast(u32, @typeInfo(Mir.Ref).Enum.fields.len)),
         };
         analyzer.map.putAssumeCapacity(index, ref);
     }
+
+    const index = try addBlock(block);
+    return index;
 }
 
-pub fn analyzeFunction(analyzer: *Analyzer, inst: Hir.Index) Error!Mir {
+pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const fn_decl = analyzer.hir.extraData(pl, Hir.Inst.FnDecl);
 
     var block = try analyzer.arena.create(Block);
+    defer analyzer.arena.destroy(block);
     block.* = Block {
-        .parent = null,
+        .parent = b,
         .analyzer = analyzer,
         .instructions = .{},
     };
+
+    const param_tys = try analyzer.gpa.alloc(Type, fn_decl.params_end - fn_decl.params_start);
 
     var extra_index = fn_decl.params_start;
     while (extra_index < fn_decl.params_end) : (extra_index += 1) {
@@ -170,8 +176,35 @@ pub fn analyzeFunction(analyzer: *Analyzer, inst: Hir.Index) Error!Mir {
         const ref = try analyzer.param(block, param_index);
         try analyzer.map.ensureSliceCapacity(analyzer.arena, &.{param_index});
         analyzer.map.putAssumeCapacity(param_index, ref);
+        param_tys[extra_index - fn_decl.params_start] = try analyzer.resolveTy(block, ref);
     }
+
     _ = try analyzer.analyzeBlock(block, fn_decl.body);
+    // TODO: proper ref to type
+    const return_ty = switch (fn_decl.return_ty) {
+        .i8_ty => Type.initTag(.i8),
+        .u8_ty => Type.initTag(.u8),
+        .i16_ty => Type.initTag(.i16),
+        .u16_ty => Type.initTag(.u16),
+        .i32_ty => Type.initTag(.i32),
+        .u32_ty => Type.initTag(.u32),
+        .i64_ty => Type.initTag(.i64),
+        .u64_ty => Type.initTag(.u64),
+        .void_ty => Type.initTag(.void),
+        else => return error.TypeError,
+    };
+
+    const function_ty = try Type.Function.init(analyzer.gpa, return_ty, param_tys);
+
+    // const function = try analyzer.addExtra(Mir.Inst.Function {
+    //     .mir_index = @intCast(u32, analyzer.mg.mir.items.len),
+    // });
+    // try analyzer.extra.appendSlice(analyzer.gpa, param_refs);
+    const mir_index = @intCast(u32, analyzer.mg.mir.items.len);
+    _ = try b.addInst(.{
+        .tag = .function,
+        .data = .{ .ty_pl = .{ .ty = function_ty, .pl = mir_index } },
+    });
 
     return Mir {
         .insts = analyzer.instructions.toOwnedSlice(),
@@ -264,9 +297,6 @@ pub fn param(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const data = analyzer.hir.extraData(pl, Hir.Inst.Param);
     // TODO: proper ref to type
-    // const ty = switch (analyzer.map.resolveRef(data.ty)) {
-
-    // };
     const ty = switch (data.ty) {
         .i8_ty => Type.initTag(.i8),
         .u8_ty => Type.initTag(.u8),
@@ -769,8 +799,6 @@ fn loop(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
 }
 
 fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
-    _ = b;
-
     const mg = parent.mg;
     var arena = std.heap.ArenaAllocator.init(parent.gpa);
     defer arena.deinit();
@@ -789,10 +817,11 @@ fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
         .interner = parent.interner,
     };
 
-    const mir = try analyzer.analyzeFunction(inst);
+    const mir_index = @intCast(u32, parent.mg.mir.items.len);
+    const mir = try analyzer.analyzeFunction(b, inst);
     try parent.mg.mir.append(parent.gpa, mir);
 
-    return @intToEnum(Mir.Ref, 0); // TODO: change to real function reference
+    return Mir.indexToRef(mir_index);
 }
 
 fn dbgValue(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {

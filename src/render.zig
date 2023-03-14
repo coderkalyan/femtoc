@@ -537,6 +537,23 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             var lbuf: [32]u8 = [_]u8{0} ** 32;
             var rbuf: [32]u8 = [_]u8{0} ** 32;
             switch (ir.insts.items(.tag)[index]) {
+                .function => {
+                    const data = ir.insts.items(.data)[index];
+                    const function_ty = data.ty_pl.ty.payload.cast(Type.Function).?;
+                    // std.debug.print("extra = {any}\n", .{ir.extra});
+                    // const function_data = ir.extraData(data.ty_pl.pl, Mir.Inst.Function);
+                    const mir_index = data.ty_pl.pl; //function_data.mir_index;
+                    try writer.print("function((", .{});
+                    if (function_ty.params.len > 0) {
+                        for (function_ty.params[0..function_ty.params.len - 1]) |param| {
+                            try self.formatTy(param, &lbuf);
+                            try writer.print("{s}, ", .{lbuf});
+                        }
+                        try self.formatTy(function_ty.params[function_ty.params.len - 1], &lbuf);
+                    }
+                    try self.formatTy(function_ty.return_ty, &rbuf);
+                    try writer.print("{s}) -> {s}, body=@{})", .{lbuf, rbuf, mir_index});
+                },
                 .block => {
                     const pl = ir.insts.items(.data)[index].pl;
                     const block = ir.extraData(pl, Mir.Inst.Block);
@@ -616,34 +633,6 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(ref, &lbuf);
                     try writer.print("load({s})", .{lbuf});
                 },
-                .function => {
-                    const pl = ir.insts.items(.data)[index].pl;
-                    const data = self.mir.extraData(pl, Mir.Function);
-                    try writer.print("func(ret_ty=, body={{", .{});
-                    self.stream.indent();
-                    try self.stream.newline();
-
-                    var extra_index: u32 = 0;
-                    while (extra_index < data.len) : (extra_index += 1) {
-                        const inst = self.mir.extra[pl + 1 + extra_index];
-                        try self.renderInst(inst);
-                    }
-
-                    self.stream.dedent();
-                    try writer.print("}})", .{});
-                },
-                // .br => {
-                //     const pl = ir.insts.items(.data)[index].pl;
-                //     try writer.print("br(label {})", .{pl});
-                // },
-                // .condbr => {
-                //     const condition = ir.insts.items(.data)[index].op_pl.op;
-                //     const pl = ir.insts.items(.data)[index].op_pl.pl;
-                //     const data = self.mir.extraData(pl, Mir.Inst.CondBr);
-                //     try self.formatRef(condition, &lbuf);
-                //     try writer.print("condbr({s}, label {}, label {})",
-                //                      .{lbuf, data.exec_true, data.exec_false});
-                // },
                 .branch_single => {
                     const condition = ir.insts.items(.data)[index].op_pl.op;
                     const pl = ir.insts.items(.data)[index].op_pl.pl;
