@@ -331,7 +331,15 @@ fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
                         else => return error.InvalidRef,
                     }
                 };
-                const index = try b.addConstant(expected_ty, .{ .uint = int_value });
+                const index = switch (expected_ty.tag) {
+                    .u1, .u8, .u16, .u32, .u64 => index: {
+                        break :index try b.addConstant(expected_ty, .{ .uint = int_value });
+                    },
+                    .i8, .i16, .i32, .i64 => index: {
+                        break :index try b.addConstant(expected_ty, .{ .sint = @intCast(i64, int_value) });
+                    },
+                    else => unreachable,
+                };
                 return Mir.indexToRef(index);
             },
             .comptime_sint => {
@@ -860,7 +868,11 @@ fn unsignedIntToRef(analyzer: *Analyzer, b: *Block, uint: u64) !Mir.Ref {
 fn coerceUnsignedInt(analyzer: *Analyzer, b: *Block, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
     const val = analyzer.refToUnsignedInt(ref);
     if ((val >= 0) and (val <= ty.intMaxValue())) {
-        const index = try b.addConstant(ty, .{ .uint = val });
+        const index = try b.addConstant(ty, switch (ty.tag) {
+            .u8, .u16, .u32, .u64 => .{ .uint = val },
+            .i8, .i16, .i32, .i64 => .{ .sint = @intCast(i64, val) },
+            else => unreachable,
+        });
         return Mir.indexToRef(index);
     } else {
         try analyzer.emitUserError(node, .coerce_overflow);
