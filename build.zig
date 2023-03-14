@@ -14,6 +14,9 @@ pub fn build(b: *std.build.Builder) void {
     const exe = b.addExecutable("femtoc", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
+    exe.linkLibC();
+    exe.linkSystemLibrary("c");
+    exe.linkSystemLibrary("LLVM-15");
     exe.install();
 
     const run_cmd = exe.run();
@@ -28,6 +31,7 @@ pub fn build(b: *std.build.Builder) void {
     const exe_tests = b.addTest("src/main.zig");
     exe_tests.setTarget(target);
     exe_tests.setBuildMode(mode);
+    exe_tests.linkLibC();
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&exe_tests.step);
