@@ -718,26 +718,21 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(data.ty_op.op, &rbuf);
                     try writer.print("fpext({s}, {s})", .{lbuf, rbuf});
                 },
-                // .ret_node => {
-                //     const operand = ir.insts.items(.data)[index].un_node.operand;
-                //     try self.formatRef(operand, &lbuf);
-                //     try writer.print("ret_node({s})", .{lbuf});
-                // },
-                // .call => {
-                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const call = ir.extraData(pl, Hir.Inst.Call);
-                //     try self.formatRef(call.addr, &lbuf);
-                //     try writer.print("call({s}", .{lbuf});
-                //     
-                //     var extra_index: u32 = 0;
-                //     while (extra_index < call.args_len) : (extra_index += 1) {
-                //         const arg = ir.extra_data[pl + 2 + extra_index];
-                //         try self.formatRef(@intToEnum(Hir.Ref, arg), &rbuf);
-                //         try writer.print(", {s}", .{rbuf});
-                //     }
-                //     
-                //     try writer.print(")", .{});
-                // },
+                .call => {
+                    const data = ir.insts.items(.data)[index];
+                    const call = ir.extraData(data.op_pl.pl, Mir.Inst.Call);
+                    try self.formatRef(data.op_pl.op, &lbuf);
+                    try writer.print("call(@{s}", .{lbuf});
+                    
+                    var extra_index: u32 = 0;
+                    while (extra_index < call.args_len) : (extra_index += 1) {
+                        const arg = ir.extra[data.op_pl.pl + 1 + extra_index];
+                        try self.formatRef(@intToEnum(Mir.Ref, arg), &rbuf);
+                        try writer.print(", {s}", .{rbuf});
+                    }
+                    
+                    try writer.print(")", .{});
+                },
                 else => {try writer.print("{}", .{ir.insts.items(.tag)[index]});},
             }
 

@@ -86,12 +86,17 @@ pub fn putAssumeCapacityNoClobber(m: *MirMap, inst: Hir.Index, ref: Mir.Ref) voi
 }
 
 pub fn get(m: *MirMap, inst: Hir.Index) ?Mir.Ref {
-    if (inst < m.start) return null;
-    if (inst - m.start < m.map.len) {
-        return m.map[inst - m.start];
-    } else {
-        return null;
-    }
+    const found = ref: {
+        if (inst < m.start) break :ref null;
+        if (inst - m.start < m.map.len) {
+            break :ref m.map[inst - m.start];
+        } else {
+            break :ref null;
+        }
+    };
+    if (found) |ref| return ref;
+    if (m.parent) |parent| return parent.get(inst);
+    return null;
 }
 
 pub fn remove(m: *MirMap, inst: Hir.Index) void {

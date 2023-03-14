@@ -242,6 +242,7 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!u32 {
             .branch_double => try analyzer.branchDouble(block, index),
             .loop => try analyzer.loop(block, index),
             .fn_decl => try analyzer.fnDecl(block, index),
+            .call => try analyzer.call(block, index),
             .dbg_value => try analyzer.dbgValue(block, index),
             .block => ref: {
                 var inner = Block {
@@ -822,6 +823,34 @@ fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     try parent.mg.mir.append(parent.gpa, mir);
 
     return Mir.indexToRef(mir_index);
+}
+
+fn call(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const call_data = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Call);
+    
+    const scratch_top = analyzer.scratch.items.len;
+    defer analyzer.scratch.shrinkRetainingCapacity(scratch_top);
+
+    const addr = analyzer.map.resolveRef(call_data.addr);
+    var arg_index: u32 = 0;
+    while (arg_index < call_data.args_len) : (arg_index += 1) {
+        const arg = analyzer.hir.extra_data[data.pl_node.pl + 2 + arg_index];
+        const ref = analyzer.map.resolveRef(@intToEnum(Hir.Ref, arg));
+        try analyzer.scratch.append(analyzer.arena, @enumToInt(ref));
+    }
+
+    const args = analyzer.scratch.items[scratch_top..];
+    const extra_data = try analyzer.addExtra(Mir.Inst.Call {
+        .args_len = @intCast(u32, args.len),
+    });
+    try analyzer.extra.appendSlice(analyzer.gpa, args);
+
+    const index = try b.addInst(.{
+        .tag = .call,
+        .data = .{ .op_pl = .{ .op = addr, .pl = extra_data } },
+    });
+    return Mir.indexToRef(index);
 }
 
 fn dbgValue(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
