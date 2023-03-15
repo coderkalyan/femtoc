@@ -93,10 +93,14 @@ fn getLlvmType(gpa: Allocator, ty: Type) !c.LLVMTypeRef {
     }
 }
 
-fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) c.LLVMValueRef {
+fn resolveLocalRef(codegen: *CodeGen, mirref: Mir.Ref) c.LLVMValueRef {
     const index = Mir.refToIndex(mirref).?;
-    if (codegen.map.get(index)) |ref| return ref;
-    return codegen.backend.map.get(index).?;
+    return codegen.map.get(index).?;
+}
+
+fn resolveGlobalRef(backend: *Backend, mirref: Mir.Ref) c.LLVMValueRef {
+    const index = Mir.refToIndex(mirref).?;
+    return backend.map.get(index).?;
 }
 
 fn generateGlobals(backend: *Backend, global: *const Mir) !void {
@@ -106,18 +110,42 @@ fn generateGlobals(backend: *Backend, global: *const Mir) !void {
     var extra_index: u32 = 0;
     while (extra_index < block_data.insts_len) : (extra_index += 1) {
         const inst_index = global.extra[data.pl + 1 + extra_index];
-        try generateGlobalInst(backend, global, inst_index);
+        const ref = try generateGlobalInst(backend, global, inst_index);
+        try backend.map.put(backend.gpa, inst_index, ref);
     }
 }
 
-fn generateGlobalInst(backend: *Backend, global: *const Mir, inst: u32) !void {
-    switch (global.insts.items(.tag)[inst]) {
+fn generateGlobalInst(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValueRef {
+    return switch (global.insts.items(.tag)[inst]) {
         .proto => try generateFunctionProto(backend, global, inst),
-        else => std.debug.print("{}", .{global.insts.items(.tag)[inst]}),
-    }
+        .constant => try constant(backend.gpa, global, inst),
+        .alloc => try generateGlobal(backend, global, inst),
+        .store => try generateInitializer(backend, global, inst),
+        else => ref: {
+            std.debug.print("{}\n", .{global.insts.items(.tag)[inst]});
+            break :ref c.LLVMConstPointerNull(c.LLVMInt32Type());
+        },
+    };
 }
 
-fn generateFunctionProto(backend: *Backend, global: *const Mir, inst: u32) !void {
+fn generateGlobal(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValueRef {
+    const data = global.insts.items(.data)[inst];
+
+    const ty = try getLlvmType(backend.gpa, data.ty);
+    const ref = c.LLVMAddGlobal(backend.module, ty, "");
+    return ref;
+}
+
+fn generateInitializer(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValueRef {
+    const data = global.insts.items(.data)[inst];
+
+    const addr = resolveGlobalRef(backend, data.bin_op.lref);
+    const val = resolveGlobalRef(backend, data.bin_op.rref);
+    c.LLVMSetInitializer(addr, val);
+    return val;
+}
+
+fn generateFunctionProto(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValueRef {
     const data = global.insts.items(.data)[inst];
 
     const function_ty = try getLlvmType(backend.gpa, data.ty_pl.ty);
@@ -125,6 +153,8 @@ fn generateFunctionProto(backend: *Backend, global: *const Mir, inst: u32) !void
     name[0] += @intCast(u8, data.ty_pl.pl);
     const function_ref = c.LLVMAddFunction(backend.module, &name, function_ty);
     try backend.map.put(backend.gpa, inst, function_ref);
+    
+    return function_ref;
 }
 
 fn generateFunctionBody(backend: *Backend, mir: *const Mir) !void {
@@ -148,9 +178,6 @@ fn generateFunctionBody(backend: *Backend, mir: *const Mir) !void {
     const entry = c.LLVMAppendBasicBlock(codegen.function, "entry");
     c.LLVMPositionBuilderAtEnd(codegen.builder, entry);
     try codegen.block(mir, data.bin_pl.r);
-
-    // std.debug.print("{any}\n", .{c.LLVMGetEntryBasicBlock(codegen.function)});
-    // std.debug.print("{any}\n", .{c.LLVMGetFirstInstruction(entry)});
 }
 
 fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !void {
@@ -161,21 +188,23 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !void {
     while (extra_index < block_data.insts_len) : (extra_index += 1) {
         const inst_index = mir.extra[data.pl + 1 + extra_index];
         const ref = switch (mir.insts.items(.tag)[inst_index]) {
-            .constant => try codegen.constant(mir, inst_index),
+            .constant => try constant(codegen.gpa, mir, inst_index),
             .add, .sub, .mul, .div, .mod => try codegen.binaryOp(mir, inst_index),
             .ret => try codegen.ret(mir, inst_index),
-            else => {
+            .alloc => try codegen.alloc(mir, inst_index),
+            .load => try codegen.load(mir, inst_index),
+            .store => try codegen.store(mir, inst_index),
+            else => ref: {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[inst_index]});
-                unreachable;
-                // break :ref c.LLVMConstPointerNull(c.LLVMInt32Type());
+                // unreachable;
+                break :ref c.LLVMConstPointerNull(c.LLVMInt32Type());
             }
         };
-        std.debug.print("{any}\n", .{c.LLVMGetInstructionOpcode(ref)});
         try codegen.map.put(codegen.gpa, inst_index, ref);
     }
 }
 
-fn constant(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
     const value = mir.values[data.ty_pl.pl];
     // TODO: make sure we will only use this with tagged types
@@ -185,7 +214,7 @@ fn constant(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef
         else => {},
     }
 
-    const ty = try getLlvmType(codegen.gpa, data.ty_pl.ty);
+    const ty = try getLlvmType(gpa, data.ty_pl.ty);
     switch (data.ty_pl.ty.tag) {
         .u1, .u8, .u16, .u32, .u64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.uint), 0),
         .i8, .i16, .i32, .i64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.sint), 1),
@@ -196,8 +225,9 @@ fn constant(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef
 
 fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
-    const lref = codegen.resolveRef(data.bin_op.lref);
-    const rref = codegen.resolveRef(data.bin_op.rref);
+    // TODO: handle global refs
+    const lref = codegen.resolveLocalRef(data.bin_op.lref);
+    const rref = codegen.resolveLocalRef(data.bin_op.rref);
     
     // TODO: take care of signed properly
     switch (mir.insts.items(.tag)[inst]) {
@@ -222,7 +252,30 @@ fn ret(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     if (data.un_op == Mir.Ref.void_val) {
         return c.LLVMBuildRetVoid(codegen.builder);
     } else {
-        const ref = codegen.resolveRef(data.un_op);
+        const ref = codegen.resolveLocalRef(data.un_op);
         return c.LLVMBuildRet(codegen.builder, ref);
     }
+}
+
+fn alloc(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const ty = try getLlvmType(codegen.gpa, data.ty);
+    return c.LLVMBuildAlloca(codegen.builder, ty, "");
+}
+
+fn store(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const addr = codegen.resolveLocalRef(data.bin_op.lref);
+    const val = codegen.resolveLocalRef(data.bin_op.rref);
+    return c.LLVMBuildStore(codegen.builder, val, addr);
+}
+
+fn load(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const addr = codegen.resolveLocalRef(data.un_op);
+    const ty = c.LLVMTypeOf(addr);
+    return c.LLVMBuildLoad2(codegen.builder, ty, addr, "");
 }
