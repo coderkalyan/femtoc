@@ -179,7 +179,7 @@ pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mi
         param_tys[extra_index - fn_decl.params_start] = try analyzer.resolveTy(block, ref);
     }
 
-    _ = try analyzer.analyzeBlock(block, fn_decl.body);
+    const block_index = try analyzer.analyzeBlock(block, fn_decl.body);
     // TODO: proper ref to type
     const return_ty = switch (fn_decl.return_ty) {
         .i8_ty => Type.initTag(.i8),
@@ -196,14 +196,14 @@ pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mi
 
     const function_ty = try Type.Function.init(analyzer.gpa, return_ty, param_tys);
 
-    // const function = try analyzer.addExtra(Mir.Inst.Function {
-    //     .mir_index = @intCast(u32, analyzer.mg.mir.items.len),
-    // });
-    // try analyzer.extra.appendSlice(analyzer.gpa, param_refs);
     const mir_index = @intCast(u32, analyzer.mg.mir.items.len);
-    _ = try b.addInst(.{
-        .tag = .function,
+    const proto = try b.addInst(.{
+        .tag = .proto,
         .data = .{ .ty_pl = .{ .ty = function_ty, .pl = mir_index } },
+    });
+    _ = try block.addInst(.{
+        .tag = .function,
+        .data = .{ .bin_pl = .{ .l = proto, .r = block_index } },
     });
 
     return Mir {

@@ -33,6 +33,7 @@ pub const Inst = struct {
 
     pub const Tag = enum(u8) {
         module,
+        proto,
         function,
         block,
 
@@ -101,6 +102,10 @@ pub const Inst = struct {
         },
         ty: Type,
         pl: u32,
+        bin_pl: struct {
+            l: u32,
+            r: u32,
+        },
     };
 
     pub fn typeOf(mir: *Mir, ref: Ref) Type {
