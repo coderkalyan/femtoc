@@ -44,12 +44,12 @@ pub const Inst = struct {
         div,
         mod,
 
-        eq,
-        neq,
-        geq,
-        leq,
-        gt,
-        lt,
+        cmp_eq,
+        cmp_ne,
+        cmp_ge,
+        cmp_le,
+        cmp_gt,
+        cmp_lt,
 
         alloc,
         load,

@@ -140,6 +140,8 @@ pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !void {
             .store => try analyzer.store(block, index),
             .validate_ty => try analyzer.validateTy(block, index),
             .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
+            .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge,
+            .cmp_lt, .cmp_gt => try analyzer.binaryCmp(block, index),
             .fn_decl => try analyzer.fnDecl(block, index),
             else => Mir.indexToRef(0),
         };
@@ -193,6 +195,8 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
             .store => try analyzer.store(block, index),
             .validate_ty => try analyzer.validateTy(block, index),
             .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
+            .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge,
+            .cmp_lt, .cmp_gt => try analyzer.binaryCmp(block, index),
             .ret_node => try analyzer.retNode(block, index),
             .ret_implicit => try analyzer.retImplicit(block, index),
             .yield_node => try analyzer.yieldNode(block, index),
@@ -217,8 +221,8 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
         return switch (analyzer.instructions.items(.tag)[index]) {
             .constant => data.ty_pl.ty,
             .add, .sub, .mul, .div, .mod => analyzer.resolveTy(b, data.bin_op.lref),
-            .eq, .neq, .geq,
-            .leq, .gt, .lt => analyzer.resolveTy(b, data.bin_op.lref),
+            .cmp_eq, .cmp_ne,
+            .cmp_ge, .cmp_le, .cmp_gt, .cmp_lt => analyzer.resolveTy(b, data.bin_op.lref),
             .alloc => data.ty,
             .load => analyzer.resolveTy(b, data.un_op),
             .store => analyzer.resolveTy(b, data.un_op),
@@ -555,6 +559,73 @@ fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
         },
         else => return error.TypeMismatch,
     }
+}
+
+fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    std.debug.print("cmp\n", .{});
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
+    const lref = analyzer.map.resolveRef(binary.lref);
+    const rref = analyzer.map.resolveRef(binary.rref);
+    const lty = try analyzer.resolveTy(b, lref);
+    const rty = try analyzer.resolveTy(b, rref);
+
+    if (lty.isComptimeInteger() and rty.isComptimeInteger()) {
+        // TODO: we shouldn't be demoting
+        const lval = try analyzer.demoteMaybeUnsignedInt(b, lref, data.pl_node.pl);
+        const rval = try analyzer.demoteMaybeUnsignedInt(b, rref, data.pl_node.pl);
+        const result = switch (analyzer.hir.insts.items(.tag)[inst]) {
+            .cmp_eq => lval == rval,
+            .cmp_ne => lval != rval,
+            .cmp_le => lval <= rval,
+            .cmp_ge => lval >= rval,
+            .cmp_lt => lval < rval,
+            .cmp_gt => lval > rval,
+            else => unreachable,
+        };
+
+        return analyzer.unsignedIntToRef(b, @boolToInt(result));
+    }
+
+    if (lty.compareTag(.comptime_float) and rty.compareTag(.comptime_float)) {
+        const lval = analyzer.refToFloat(lref);
+        const rval = analyzer.refToFloat(rref);
+        const result = switch (analyzer.hir.insts.items(.tag)[inst]) {
+            .cmp_eq => lval == rval,
+            .cmp_ne => lval != rval,
+            .cmp_le => lval <= rval,
+            .cmp_ge => lval >= rval,
+            .cmp_lt => lval < rval,
+            .cmp_gt => lval > rval,
+            else => unreachable,
+        };
+
+        return analyzer.unsignedIntToRef(b, @boolToInt(result));
+    }
+
+    // TODO: coercion
+    // switch (lty.tag) {
+    //     .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
+    std.debug.print("cmp inst\n", .{});
+    const index = try b.addInst(.{
+        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
+            .cmp_eq => .cmp_eq,
+            .cmp_ne => .cmp_ne,
+            .cmp_le => .cmp_le,
+            .cmp_ge => .cmp_ge,
+            .cmp_lt => .cmp_lt,
+            .cmp_gt => .cmp_gt,
+            else => unreachable,
+        },
+        .data = .{ .bin_op = .{ .lref = lref, .rref = rref } },
+    });
+    return Mir.indexToRef(index);
+    //     },
+    //     .f32, .f64 => {
+
+    //     },
+    //     else => unreachable,
+    // }
 }
 
 fn refToUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref) u64 {

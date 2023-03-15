@@ -114,6 +114,14 @@ pub const Type = extern union {
         return isTag(ty) and ty.tag == tag;
     }
 
+    pub inline fn isComptimeInteger(ty: Type) bool {
+        return isTag(ty) and (ty.tag == .comptime_uint or ty.tag == .comptime_sint);
+    }
+
+    pub inline fn isComptimeNumber(ty: Type) bool {
+        return isTag(ty) and (isComptimeInteger(ty) or ty.tag == .comptime_float);
+    }
+
     pub fn size(t: *const Type) !usize {
         if (@enumToInt(t.tag) < tagged_length) {
             return switch (t.tag) {
