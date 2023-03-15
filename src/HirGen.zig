@@ -632,16 +632,32 @@ fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 
 fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_chain = b.hg.tree.data(node).if_chain;
-    var block_scope = Block.init(b, scope);
-    const s = &block_scope.base;
 
-    const condition_ref = try expr(b, s, if_chain.condition);
+    const condition_ref = try expr(b, scope, if_chain.condition);
     const chain = b.hg.tree.extraData(if_chain.chain, Node.IfChain);
-    const exec_true = try block(b, s, chain.exec_true);
-    const next = switch (b.hg.tree.data(chain.next)) {
-        .if_simple => try ifSimple(b, s, chain.next),
-        .if_else => try ifElse(b, s, chain.next),
-        else => unreachable,
+    const exec_true = block: {
+        var block_scope = Block.init(b, scope);
+        defer block_scope.deinit();
+        break :block try block(&block_scope, &block_scope.base, chain.exec_true);
+    };
+    const next = block: {
+        var block_scope = Block.init(b, scope);
+        defer block_scope.deinit();
+        _ = switch (b.hg.tree.data(chain.next)) {
+            .if_simple => try ifSimple(&block_scope, &block_scope.base, chain.next),
+            .if_else => try ifElse(&block_scope, &block_scope.base, chain.next),
+            else => unreachable,
+        };
+
+        const ref = try b.hg.addExtra(Inst.Block {
+            .len = @intCast(u32, block_scope.instructions.items.len),
+        });
+        try b.hg.extra.appendSlice(b.hg.gpa, block_scope.instructions.items);
+
+        break :block try block_scope.addInst(.{
+            .tag = .block,
+            .data = .{ .pl_node = .{ .node = node, .pl = ref, } },
+        });
     };
 
     const branch = try b.hg.addExtra(Inst.BranchDouble {
