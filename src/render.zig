@@ -613,17 +613,45 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     self.stream.dedent();
                     try writer.print("}})", .{});
                 },
-                .br => {
-                    const pl = ir.insts.items(.data)[index].pl;
-                    try writer.print("br(label {})", .{pl});
-                },
-                .condbr => {
+                // .br => {
+                //     const pl = ir.insts.items(.data)[index].pl;
+                //     try writer.print("br(label {})", .{pl});
+                // },
+                // .condbr => {
+                //     const condition = ir.insts.items(.data)[index].op_pl.op;
+                //     const pl = ir.insts.items(.data)[index].op_pl.pl;
+                //     const data = self.mir.extraData(pl, Mir.Inst.CondBr);
+                //     try self.formatRef(condition, &lbuf);
+                //     try writer.print("condbr({s}, label {}, label {})",
+                //                      .{lbuf, data.exec_true, data.exec_false});
+                // },
+                .branch_single => {
                     const condition = ir.insts.items(.data)[index].op_pl.op;
                     const pl = ir.insts.items(.data)[index].op_pl.pl;
-                    const data = self.mir.extraData(pl, Mir.Inst.CondBr);
                     try self.formatRef(condition, &lbuf);
-                    try writer.print("condbr({s}, label {}, label {})",
-                                     .{lbuf, data.exec_true, data.exec_false});
+                    try writer.print("branch_single({s}, exec_true={{", .{lbuf});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(pl);
+                    self.stream.dedent();
+                    try writer.print("}}", .{});
+                },
+                .branch_double => {
+                    const condition = ir.insts.items(.data)[index].op_pl.op;
+                    const pl = ir.insts.items(.data)[index].op_pl.pl;
+                    const condbr = ir.extraData(pl, Mir.Inst.CondBr);
+                    try self.formatRef(condition, &lbuf);
+                    try writer.print("branch_double({s}, exec_true={{", .{lbuf});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(condbr.exec_true);
+                    self.stream.dedent();
+                    try writer.print("}}, exec_false={{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(condbr.exec_false);
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
                 },
                 .loop => {
                     const pl = ir.insts.items(.data)[index].pl;

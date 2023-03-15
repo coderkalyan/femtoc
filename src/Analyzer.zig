@@ -201,8 +201,8 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
             .ret_implicit => try analyzer.retImplicit(block, index),
             .yield_node => try analyzer.yieldNode(block, index),
             .yield_implicit => try analyzer.yieldImplicit(block, index),
-            // .branch_single => try analyzer.branchSingle(index),
-            // .branch_double => try analyzer.branchDouble(index),
+            .branch_single => try analyzer.branchSingle(block, index),
+            .branch_double => try analyzer.branchDouble(block, index),
             .loop => try analyzer.loop(block, index),
             .fn_decl => try analyzer.fnDecl(block, index),
             else => Mir.indexToRef(0),
@@ -1018,103 +1018,52 @@ fn branchSingle(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     const branch_single = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.BranchSingle);
     const condition = analyzer.map.resolveRef(branch_single.condition);
 
-    const prev = analyzer.insert_block;
-    const index = try prev.reserveInst(.condbr);
-    _ = try analyzer.addBlock(prev);
-
-    const exec_true = try analyzer.arena.create(Block);
-    exec_true.* = Block {
-        .analyzer = analyzer,
-        .instructions = .{},
+    const body = block: {
+        const block = &Block {
+            .parent = b,
+            .analyzer = analyzer,
+            .instructions = .{},
+        };
+        break :block try analyzer.analyzeBlock(block, branch_single.exec_true);
     };
-    analyzer.arena.destroy(prev);
-    analyzer.insert_block = exec_true;
-    try analyzer.analyzeBlock(branch_single.exec_true);
-    const fallthrough = try exec_true.addInst(.{
-        .tag = .br,
-        .data = .{ .pl = undefined },
+
+    const index = try b.addInst(.{
+        .tag = .branch_single,
+        .data = .{ .op_pl = .{ .op = condition, .pl = body } },
     });
-    const true_entry = try analyzer.addBlock(analyzer.insert_block);
-    analyzer.arena.destroy(exec_true);
-
-    const exec_false = try analyzer.arena.create(Block);
-    exec_false.* = Block {
-        .analyzer = analyzer,
-        .instructions = .{},
-    };
-    analyzer.insert_block = exec_false;
-
-    const condbr = try b.addExtra(Mir.Inst.CondBr {
-        .exec_true = true_entry,
-        .exec_false = undefined,
-    });
-    b.setInst(index, .{
-        .tag = .condbr,
-        .data = .{ .op_pl = .{ .op = condition, .pl = condbr } },
-    });
-
-    try analyzer.prev_rewrite.append(analyzer.arena, fallthrough);
-    try analyzer.prev_rewrite.append(analyzer.arena, index);
-
     return Mir.indexToRef(index);
 }
 
-fn branchDouble(analyzer: *Analyzer, inst: Hir.Index) Error!Mir.Ref {
+fn branchDouble(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const branch_double = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.BranchDouble);
     const condition = analyzer.map.resolveRef(branch_double.condition);
 
-    const prev = analyzer.insert_block;
-    const index = try prev.reserveInst(.condbr);
-    _ = try analyzer.addBlock(prev);
-
-    const exec_true = try analyzer.arena.create(Block);
-    exec_true.* = Block {
-        .analyzer = analyzer,
-        .instructions = .{},
+    const exec_true = block: {
+        const block = &Block {
+            .parent = b,
+            .analyzer = analyzer,
+            .instructions = .{},
+        };
+        break :block try analyzer.analyzeBlock(block, branch_double.exec_true);
     };
-    analyzer.arena.destroy(prev);
-    analyzer.insert_block = exec_true;
-    try analyzer.analyzeBlock(branch_double.exec_true);
-    const jump_out = try exec_true.addInst(.{
-        .tag = .br,
-        .data = .{ .pl = undefined },
-    });
-    const true_entry = try analyzer.addBlock(analyzer.insert_block);
-    analyzer.arena.destroy(exec_true);
-
-    const exec_false = try analyzer.arena.create(Block);
-    exec_false.* = Block {
-        .analyzer = analyzer,
-        .instructions = .{},
+    const exec_false = block: {
+        const block = &Block {
+            .parent = b,
+            .analyzer = analyzer,
+            .instructions = .{},
+        };
+        break :block try analyzer.analyzeBlock(block, branch_double.exec_false);
     };
-    analyzer.insert_block = exec_false;
-    try analyzer.analyzeBlock(branch_double.exec_false);
-    const fallthrough = try exec_false.addInst(.{
-        .tag = .br,
-        .data = .{ .pl = undefined },
-    });
-    const false_entry = try analyzer.addBlock(analyzer.insert_block);
-    analyzer.arena.destroy(exec_false);
 
-    const next = try analyzer.arena.create(Block);
-    next.* = Block {
-        .analyzer = analyzer,
-        .instructions = .{},
-    };
-    analyzer.insert_block = next;
-    const condbr = try next.addExtra(Mir.Inst.CondBr {
-        .exec_true = true_entry,
-        .exec_false = false_entry,
+    const condbr = try analyzer.addExtra(Mir.Inst.CondBr {
+        .exec_true = exec_true,
+        .exec_false = exec_false,
     });
-    next.setInst(index, .{
-        .tag = .condbr,
+    const index = try b.addInst(.{
+        .tag = .branch_double,
         .data = .{ .op_pl = .{ .op = condition, .pl = condbr } },
     });
-
-    try analyzer.prev_rewrite.append(analyzer.arena, jump_out);
-    try analyzer.prev_rewrite.append(analyzer.arena, fallthrough);
-
     return Mir.indexToRef(index);
 }
 
