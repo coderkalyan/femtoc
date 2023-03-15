@@ -587,6 +587,7 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_simple = b.hg.tree.data(node).if_simple;
     var block_scope = Block.init(b, scope);
+    defer block_scope.deinit();
     const s = &block_scope.base;
 
     const condition_ref = try expr(b, s, if_simple.condition);
@@ -604,13 +605,19 @@ fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 
 fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_else = b.hg.tree.data(node).if_else;
-    var block_scope = Block.init(b, scope);
-    const s = &block_scope.base;
 
-    const condition_ref = try expr(b, s, if_else.condition);
+    const condition_ref = try expr(b, scope, if_else.condition);
     const exec = b.hg.tree.extraData(if_else.exec, Node.IfElse);
-    const exec_true = try block(b, s, exec.exec_true);
-    const exec_false = try block(b, s, exec.exec_false);
+    const exec_true = block: {
+        var block_scope = Block.init(b, scope);
+        defer block_scope.deinit();
+        break :block try block(&block_scope, &block_scope.base, exec.exec_true);
+    };
+    const exec_false = block: {
+        var block_scope = Block.init(b, scope);
+        defer block_scope.deinit();
+        break :block try block(&block_scope, &block_scope.base, exec.exec_false);
+    };
     const branch = try b.hg.addExtra(Inst.BranchDouble {
         .condition = condition_ref,
         .exec_true = exec_true,
