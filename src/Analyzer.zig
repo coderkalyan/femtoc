@@ -223,7 +223,11 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
             .load => analyzer.resolveTy(b, data.un_op),
             .store => analyzer.resolveTy(b, data.un_op),
             .param => data.ty_pl.ty,
-            else => error.NotImplemented,
+            .call => analyzer.resolveTy(b, data.op_pl.op),
+            else => {
+                std.debug.print("{}\n", .{analyzer.instructions.items(.tag)[index]});
+                return error.NotImplemented;
+            },
         };
     } else {
         return switch (ref) {
@@ -305,6 +309,10 @@ fn alloc(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const index = try b.addInst(.{
         .tag = .alloc,
         .data = .{ .ty = ty },
+    });
+    _ = try b.addInst(.{
+        .tag = .store,
+        .data = .{ .bin_op = .{ .lref = Mir.indexToRef(index), .rref = ref } },
     });
     return Mir.indexToRef(index);
 }
