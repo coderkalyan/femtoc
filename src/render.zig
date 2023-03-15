@@ -634,7 +634,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.stream.newline();
                     try self.renderInst(pl);
                     self.stream.dedent();
-                    try writer.print("}}", .{});
+                    try writer.print("}})", .{});
                 },
                 .branch_double => {
                     const condition = ir.insts.items(.data)[index].op_pl.op;
