@@ -257,19 +257,19 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .int => try writer.print("int({})", .{ir.insts.items(.data)[index].int}),
                 .float => try writer.print("float({})", .{ir.insts.items(.data)[index].float}),
                 .add, .sub, .mul, .div, .mod,
-                .eq, .neq, .leq, .geq, .lt, .gt => {
+                .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge, .cmp_lt, .cmp_gt => {
                     try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
                         .add => "add",
                         .sub => "sub",
                         .mul => "mul",
                         .div => "div",
                         .mod => "mod",
-                        .eq => "eq",
-                        .neq => "neq",
-                        .leq => "leq",
-                        .geq => "geq",
-                        .lt => "lt",
-                        .gt => "gt",
+                        .cmp_eq => "cmp_eq",
+                        .cmp_ne => "cmp_ne",
+                        .cmp_le => "cmp_le",
+                        .cmp_ge => "cmp_ge",
+                        .cmp_lt => "cmp_lt",
+                        .cmp_gt => "cmp_gt",
                         else => unreachable,
                     });
 
