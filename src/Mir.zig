@@ -57,8 +57,8 @@ pub const Inst = struct {
         param,
 
         call,
-        br,
-        condbr,
+        branch_single,
+        branch_double,
         ret,
         yield,
         loop,
