@@ -6,6 +6,7 @@ const TypedValue = @import("typing.zig").TypedValue;
 const MirGen = @import("MirGen.zig");
 const MirMap = @import("MirMap.zig");
 const Interner = @import("interner.zig").Interner;
+const alu = @import("alu.zig");
 
 const Allocator = std.mem.Allocator;
 const Analyzer = @This();
@@ -18,6 +19,7 @@ const Error = Allocator.Error || Mir.Error || error {
     InvalidOperation,
     CodeError,
     Overflow,
+    DivZero,
 };
 
 mg: *MirGen,
@@ -269,7 +271,7 @@ pub fn param(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 
 pub fn integer(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .uint = data.int });
+    const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .int = data.int });
     return Mir.indexToRef(index);
 }
 
@@ -332,10 +334,10 @@ fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
         return ref;
     } else {
         switch (found_ty.tag) {
-            .comptime_uint => {
+            .comptime_uint, .comptime_sint => {
                 const int_value: u64 = if (Mir.refToIndex(ref)) |value_index| val: {
                     const pl = analyzer.instructions.items(.data)[value_index].ty_pl.pl;
-                    break :val analyzer.values.items[pl].uint;
+                    break :val analyzer.values.items[pl].int;
                 } else val: {
                     switch (ref) {
                         .zero_val => break :val 0,
@@ -344,26 +346,11 @@ fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
                     }
                 };
                 const index = switch (expected_ty.tag) {
-                    .u1, .u8, .u16, .u32, .u64 => index: {
-                        break :index try b.addConstant(expected_ty, .{ .uint = int_value });
-                    },
-                    .i8, .i16, .i32, .i64 => index: {
-                        break :index try b.addConstant(expected_ty, .{ .sint = @intCast(i64, int_value) });
-                    },
+                    .u1, .u8, .u16, .u32, .u64,
+                    .i8, .i16,
+                    .i32, .i64 => try b.addConstant(expected_ty, .{ .int = int_value }),
                     else => unreachable,
                 };
-                return Mir.indexToRef(index);
-            },
-            .comptime_sint => {
-                const int_value: i64 = if (Mir.refToIndex(ref)) |value_index| val: {
-                    const pl = analyzer.instructions.items(.data)[value_index].ty_pl.pl;
-                    break :val analyzer.values.items[pl].sint;
-                } else switch (ref) {
-                    .zero_val => return Mir.Ref.zero_val,
-                    .one_val => return Mir.Ref.one_val,
-                    else => return error.InvalidRef,
-                };
-                const index = try b.addConstant(expected_ty, .{ .sint = int_value });
                 return Mir.indexToRef(index);
             },
             .comptime_float => {
@@ -625,7 +612,7 @@ fn refToUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref) u64 {
         else => {
             const index = Mir.refToIndex(ref).?;
             const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
-            return analyzer.values.items[pl].uint;
+            return analyzer.values.items[pl].int;
         },
     }
 }
@@ -633,7 +620,7 @@ fn refToUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref) u64 {
 fn refToSignedInt(analyzer: *Analyzer, ref: Mir.Ref) i64 {
     const index = Mir.refToIndex(ref).?;
     const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
-    return analyzer.values.items[pl].sint;
+    return @bitCast(i64, analyzer.values.items[pl].int);
 }
 
 fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
@@ -657,225 +644,82 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !M
     std.debug.assert(lty.isTag());
     std.debug.assert(rty.isTag());
 
+    const lval = switch (lty.tag) {
+        .comptime_uint => analyzer.refToUnsignedInt(lref),
+        .comptime_sint => @bitCast(u64, analyzer.refToSignedInt(lref)),
+        else => unreachable,
+    };
+    const rval = switch (rty.tag) {
+        .comptime_uint => analyzer.refToUnsignedInt(rref),
+        .comptime_sint => @bitCast(u64, analyzer.refToSignedInt(rref)),
+        else => unreachable,
+    };
+
     switch (analyzer.hir.insts.items(.tag)[inst]) {
         .add => {
-            if ((lty.tag == .comptime_uint) and (rty.tag == .comptime_uint)) {
-                const lval = analyzer.refToUnsignedInt(lref);
-                const rval = analyzer.refToUnsignedInt(rref);
-                if (std.math.maxInt(u64) - lval < rval) {
-                    try analyzer.emitUserError(data.pl_node.pl, .uint_overflow);
-                    unreachable;
-                } else {
-                    const result: u64 = lval + rval;
-                    return analyzer.unsignedIntToRef(b, result);
-                }
-            } else if ((lty.tag == .comptime_sint) and (rty.tag == .comptime_sint)) {
-                const lval = analyzer.refToSignedInt(lref);
-                const rval = analyzer.refToSignedInt(rref);
-                if (lval < std.math.minInt(i64) - rval) {
-                    try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
-                    unreachable;
-                } else {
-                    const result: i64 = lval + rval;
-                    return analyzer.signedIntToRef(b, result);
-                }
+            if (lty.compareTag(.comptime_uint) and rty.compareTag(.comptime_uint)) {
+                const result = try alu.uadd(lval, rval);
+                return analyzer.unsignedIntToRef(b, result);
             } else {
-                const lval = try analyzer.demoteMaybeUnsignedInt(b, lref, data.pl_node.pl);
-                const rval = try analyzer.demoteMaybeUnsignedInt(b, rref, data.pl_node.pl);
-                const result: i64 = lval + rval;
-                return analyzer.signedIntToRef(b, result);
+                const result = try alu.sadd(lval, rval);
+                return analyzer.signedIntToRef(b, @bitCast(i64, result));
             }
         },
         .sub => {
-            if ((lty.tag == .comptime_uint) and (rty.tag == .comptime_sint)) {
-                const lval = analyzer.refToUnsignedInt(lref);
-                const rval: u64 = @intCast(u64, try std.math.absInt(analyzer.refToSignedInt(rref)));
-                if (lval > std.math.maxInt(u64) + rval) {
-                    try analyzer.emitUserError(data.pl_node.pl, .uint_overflow);
-                    unreachable;
-                } else {
-                    const result: u64 = lval + rval;
-                    return analyzer.unsignedIntToRef(b, result);
-                }
-            } else if ((lty.tag == .comptime_sint) and (rty.tag == .comptime_uint)) {
-                const lval = analyzer.refToSignedInt(lref);
-                const rval = try analyzer.demoteUnsignedInt(rref, data.pl_node.pl);
-                if (lval < std.math.minInt(i64) + rval) {
-                    try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
-                    unreachable;
-                } else {
-                    const result: i64 = lval - rval;
-                    return analyzer.signedIntToRef(b, result);
-                }
-            } else {
-                const lval = try analyzer.demoteMaybeUnsignedInt(b, lref, data.pl_node.pl);
-                const rval = try analyzer.demoteMaybeUnsignedInt(b, rref, data.pl_node.pl);
-                const result: i64 = lval - rval;
-                return analyzer.signedIntToRef(b, result);
-            }
+            const result = try alu.sadd(lval, alu.negate(rval));
+            return analyzer.signedIntToRef(b, @bitCast(i64, result));
         },
         .mul => {
-            switch (lty.tag) {
-                .comptime_uint => {
-                    switch (rty.tag) {
-                        .comptime_uint => {
-                            const lval = analyzer.refToUnsignedInt(lref);
-                            const rval = analyzer.refToUnsignedInt(rref);
-                            if ((rval != 0) and (lval > std.math.maxInt(u64) / rval)) {
-                                try analyzer.emitUserError(data.pl_node.pl, .uint_overflow);
-                                unreachable;
-                            }
-                            const result = lval * rval;
-                            return analyzer.unsignedIntToRef(b, result);
-                        },
-                        .comptime_sint => {
-                            const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
-                            const rval = analyzer.refToSignedInt(rref);
-                            if ((rval != 0) and (lval < std.math.minInt(u64) / rval)) {
-                                try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
-                                unreachable;
-                            }
-                            const result = lval * rval;
-                            return analyzer.signedIntToRef(b, result);
-                        },
-                        else => unreachable,
-                    }
-                },
-                .comptime_sint => {
-                    switch (rty.tag) {
-                        .comptime_uint => {
-                            const lval = analyzer.refToSignedInt(lref);
-                            const rval = try analyzer.demoteUnsignedInt(rref, data.pl_node.pl);
-                            if ((rval != 0) and (lval < std.math.minInt(u64) / rval)) {
-                                try analyzer.emitUserError(data.pl_node.pl, .sint_underflow);
-                                unreachable;
-                            }
-                            const result = lval * rval;
-                            return analyzer.signedIntToRef(b, result);
-                        },
-                        .comptime_sint => {
-                            const lval = analyzer.refToSignedInt(lref);
-                            const rval = analyzer.refToSignedInt(rref);
-                            if ((lval == -1) and (rval == std.math.minInt(i64))) {
-                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
-                                unreachable;
-                            }
-                            if ((rval == -1) and (lval == std.math.minInt(i64))) {
-                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
-                                unreachable;
-                            }
-                            const result = lval * rval;
-                            return analyzer.signedIntToRef(b, result);
-                        },
-                        else => unreachable,
-                    }
-                },
-                else => unreachable,
+            if (lty.compareTag(.comptime_uint) and rty.compareTag(.comptime_uint)) {
+                const result = try alu.umul(lval, rval);
+                return analyzer.unsignedIntToRef(b, result);
+            } else {
+                const result = try alu.smul(lval, rval);
+                return analyzer.signedIntToRef(b, @bitCast(i64, result));
             }
         },
         .div => {
-            switch (lty.tag) {
-                .comptime_uint => {
-                    switch (rty.tag) {
-                        .comptime_uint => {
-                            const lval = analyzer.refToUnsignedInt(lref);
-                            const rval = analyzer.refToUnsignedInt(rref);
-                            if (rval == 0) {
-                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
-                                unreachable;
-                            }
-                            return analyzer.unsignedIntToRef(b, lval / rval);
-                        },
-                        .comptime_sint => {
-                            const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
-                            const rval = analyzer.refToSignedInt(rref);
-                            return analyzer.signedIntToRef(b, @divTrunc(lval, rval));
-                        },
-                        else => unreachable,
-                    }
-                },
-                .comptime_sint => {
-                    switch (rty.tag) {
-                        .comptime_uint => {
-                            const lval = analyzer.refToSignedInt(lref);
-                            const rval = try analyzer.demoteUnsignedInt(rref, data.pl_node.pl);
-                            if (rval == 0) {
-                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
-                                unreachable;
-                            }
-                            return analyzer.signedIntToRef(b, @divTrunc(lval, rval));
-                        },
-                        .comptime_sint => {
-                            const lval = analyzer.refToSignedInt(lref);
-                            const rval = analyzer.refToSignedInt(rref);
-                            if ((lval == -1) and (rval == std.math.minInt(i64))) {
-                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
-                                unreachable;
-                            }
-                            if ((rval == -1) and (lval == std.math.minInt(i64))) {
-                                try analyzer.emitUserError(data.pl_node.pl, .sint_flip_overflow);
-                                unreachable;
-                            }
-                            return analyzer.signedIntToRef(b, @divTrunc(lval, rval));
-                        },
-                        else => unreachable,
-                    }
-                },
-                else => unreachable,
+            if (lty.compareTag(.comptime_uint) and rty.compareTag(.comptime_uint)) {
+                const result = try alu.udiv(lval, rval);
+                return analyzer.unsignedIntToRef(b, result);
+            } else {
+                const result = try alu.sdiv(lval, rval);
+                return analyzer.signedIntToRef(b, @bitCast(i64, result));
             }
         },
-        .mod => {
-            switch (lty.tag) {
-                .comptime_uint => {
-                    switch (rty.tag) {
-                        .comptime_uint => {
-                            const lval = analyzer.refToUnsignedInt(lref);
-                            const rval = analyzer.refToUnsignedInt(rref);
+        .lsl => {
+            const result = alu.lsl(lval, rval);
+            return analyzer.unsignedIntToRef(b, result);
+        },
+        .lsr => {
+            const result = try alu.lsr(lval, rval);
+            return analyzer.unsignedIntToRef(b, result);
+        },
+        .asl => {
+            const result = if (rty.compareTag(.comptime_uint))
+                try alu.asl(lval, rval)
+            else
+                try alu.asr(lval, alu.negate(rval));
 
-                            if (analyzer.refToUnsignedInt(rref) == 0) {
-                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
-                                unreachable;
-                            }
-
-                            const result = lval % rval;
-                            return analyzer.unsignedIntToRef(b, result);
-                        },
-                        .comptime_sint => {
-                            const lval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
-                            const rval = analyzer.refToSignedInt(rref);
-                            const result = @mod(lval, rval);
-                            return analyzer.signedIntToRef(b, result);
-                        },
-                        else => unreachable,
-                    }
-                },
-                .comptime_sint => {
-                    switch (rty.tag) {
-                        .comptime_uint => {
-                            const rval = try analyzer.demoteUnsignedInt(lref, data.pl_node.pl);
-
-                            if (analyzer.refToUnsignedInt(rref) == 0) {
-                                try analyzer.emitUserError(data.pl_node.pl, .divisor_zero);
-                                unreachable;
-                            }
-
-                            const lval = analyzer.refToSignedInt(rref);
-                            const result = @mod(lval, rval);
-                            return analyzer.signedIntToRef(b, result);
-                        },
-                        .comptime_sint => {
-                            const lval = analyzer.refToSignedInt(lref);
-                            const rval = analyzer.refToSignedInt(rref);
-                            const result = @mod(lval, rval);
-                            return analyzer.signedIntToRef(b, result);
-                        },
-                        else => unreachable,
-                    }
-                },
-                else => unreachable,
+            if (lty.compareTag(.comptime_uint)) {
+                return analyzer.unsignedIntToRef(b, result);
+            } else {
+                return analyzer.signedIntToRef(b, @bitCast(i64, result));
             }
         },
-        .lsl, .lsr, .asl, .asr => return error.NotImplemented,
+        .asr => {
+            const result = if (rty.compareTag(.comptime_uint))
+                try alu.asr(lval, rval)
+            else
+                try alu.asl(lval, alu.negate(rval));
+
+            if (lty.compareTag(.comptime_uint)) {
+                return analyzer.unsignedIntToRef(b, result);
+            } else {
+                return analyzer.signedIntToRef(b, @bitCast(i64, result));
+            }
+        },
+        .mod => return error.NotImplemented,
         else => unreachable,
     }
 }
@@ -912,10 +756,11 @@ fn signedIntToRef(analyzer: *Analyzer, b: *Block, sint: i64) !Mir.Ref {
         else => {
             if (sint > 0) {
                 const uint = @intCast(u64, sint);
-                const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .uint = uint });
+                const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .int = uint });
                 return Mir.indexToRef(index);
             } else {
-                const index = try b.addConstant(Type.initTag(.comptime_sint), .{ .sint = sint });
+                const uint = @bitCast(u64, sint);
+                const index = try b.addConstant(Type.initTag(.comptime_sint), .{ .int = uint });
                 return Mir.indexToRef(index);
             }
         }
@@ -928,7 +773,7 @@ fn unsignedIntToRef(analyzer: *Analyzer, b: *Block, uint: u64) !Mir.Ref {
         0 => return .zero_val,
         1 => return .one_val,
         else => {
-            const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .uint = uint });
+            const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .int = uint });
             return Mir.indexToRef(index);
         }
     }
@@ -938,8 +783,8 @@ fn coerceUnsignedInt(analyzer: *Analyzer, b: *Block, node: u32, ty: Type, ref: M
     const val = analyzer.refToUnsignedInt(ref);
     if ((val >= 0) and (val <= ty.intMaxValue())) {
         const index = try b.addConstant(ty, switch (ty.tag) {
-            .u8, .u16, .u32, .u64 => .{ .uint = val },
-            .i8, .i16, .i32, .i64 => .{ .sint = @intCast(i64, val) },
+            .u8, .u16, .u32, .u64 => .{ .int = val },
+            .i8, .i16, .i32, .i64 => .{ .int = alu.negate(val) },
             else => unreachable,
         });
         return Mir.indexToRef(index);
@@ -958,7 +803,7 @@ fn coerceSignedInt(analyzer: *Analyzer, b: *Block, node: u32, ty: Type, ref: Mir
         try analyzer.emitUserError(node, .coerce_overflow);
         unreachable;
     } else {
-        const index = try b.addConstant(ty, .{ .sint = val });
+        const index = try b.addConstant(ty, .{ .int = @bitCast(u64, val) });
         return Mir.indexToRef(index);
     }
 }

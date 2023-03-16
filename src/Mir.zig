@@ -171,8 +171,7 @@ pub const Module = struct {
 };
 
 pub const Value = union {
-    uint: u64, // used for *positive* values
-    sint: i64, // used for *negative* values even though it can represent positive
+    int: u64,
     float: f64,
     payload: *Payload,
 
@@ -181,6 +180,7 @@ pub const Value = union {
 
         pub const Tag = enum {
             reference, // dummy not fleshed out yet
+            function,
         };
     };
 };
