@@ -11,9 +11,15 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
+    // Create executable
     const exe = b.addExecutable("femtoc", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
+
+    // Add deps
+    // exe.addPackage(.{ .name = "clap", .source = .{ .path = "extern/zig-clap/clap.zig" } });
+
+    // Install
     exe.install();
 
     const run_cmd = exe.run();
