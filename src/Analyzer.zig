@@ -562,7 +562,6 @@ fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 }
 
 fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
-    std.debug.print("cmp\n", .{});
     const data = analyzer.hir.insts.items(.data)[inst];
     const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
     const lref = analyzer.map.resolveRef(binary.lref);
@@ -604,9 +603,6 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     }
 
     // TODO: coercion
-    // switch (lty.tag) {
-    //     .i8, .u8, .i16, .u16, .i32, .u32, .i64, .u64 => {
-    std.debug.print("cmp inst\n", .{});
     const index = try b.addInst(.{
         .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
             .cmp_eq => .cmp_eq,
@@ -620,12 +616,6 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
         .data = .{ .bin_op = .{ .lref = lref, .rref = rref } },
     });
     return Mir.indexToRef(index);
-    //     },
-    //     .f32, .f64 => {
-
-    //     },
-    //     else => unreachable,
-    // }
 }
 
 fn refToUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref) u64 {
