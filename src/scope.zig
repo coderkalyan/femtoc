@@ -22,6 +22,7 @@ pub const Scope = struct {
             .module => null,
             .namespace => base.cast(Namespace).?.parent,
             .block => base.cast(Block).?.parent,
+            .body => base.cast(Body).?.parent,
             .local_val => base.cast(LocalVal).?.parent,
             .local_ptr => base.cast(LocalPtr).?.parent,
             .local_type => base.cast(LocalType).?.parent,
@@ -32,6 +33,7 @@ pub const Scope = struct {
         module,
         namespace,
         block,
+        body,
         local_val,
         local_ptr,
         local_type,
@@ -95,6 +97,13 @@ pub const Scope = struct {
             b.instructions.appendAssumeCapacity(index);
             return index;
         }
+    };
+
+    pub const Body = struct {
+        const base_tag: Tag = .body;
+        base: Scope = .{ .tag = base_tag },
+
+        parent: *Scope,
     };
 
     pub const LocalVal = struct {
@@ -174,6 +183,7 @@ pub const Scope = struct {
                     
                     s = block.parent;
                 },
+                .body => s = s.cast(Body).?.parent,
                 .local_val => {
                     const local_val = s.cast(LocalVal).?;
                     if (local_val.ident == ident) {
@@ -231,6 +241,7 @@ pub const Scope = struct {
                     
                     s = block.parent;
                 },
+                .body => s = s.cast(Body).?.parent,
                 .local_val => s = s.cast(LocalVal).?.parent,
                 .local_ptr => s = s.cast(LocalPtr).?.parent,
                 .local_type => {

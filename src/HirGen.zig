@@ -346,7 +346,11 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const param_top = hg.extra.items.len;
 
     var block_scope = Block.init(b, s);
+    defer block_scope.deinit();
     s = &block_scope.base;
+    var body_scope = Scope.Body { .parent = s };
+    s = &body_scope.base;
+
     const return_ty = try ty(&block_scope, s, signature.return_ty);
     const body = try block(&block_scope, s, fn_decl.body);
 
@@ -438,17 +442,26 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         }
     }
 
-    const ref = try hg.addExtra(Inst.Block {
-        .len = @intCast(u32, b.instructions.items.len),
-    });
-    try hg.extra.appendSlice(hg.gpa, b.instructions.items);
-
     // unwind and free scope objects
     while (s != scope) {
         const parent = s.parent().?;
         hg.arena.destroy(s);
         s = parent;
     }
+
+    if ((scope.tag == .body) and !blockReturns(b)) {
+        // insert implicit return
+        // TODO: find the closing brace as token
+        _ = try b.addInst(.{
+            .tag = .ret_implicit,
+            .data = .{ .un_tok = .{ .tok = 0, .operand = Ref.void_val, } },
+        });
+    }
+
+    const ref = try hg.addExtra(Inst.Block {
+        .len = @intCast(u32, b.instructions.items.len),
+    });
+    try hg.extra.appendSlice(hg.gpa, b.instructions.items);
 
     return b.addInst(.{
         .tag = .block,
@@ -879,4 +892,29 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
         .tag = .module,
         .data = .{ .pl_node = .{ .node = node, .pl = ref } },
     });
+}
+
+fn instructionReturns(hg: *HirGen, inst: u32) bool {
+    switch (hg.instructions.items(.tag)[inst]) {
+        .block => {
+            const data = hg.instructions.items(.data)[inst];
+            const insts_len = hg.extra.items[data.pl_node.pl];
+            if (insts_len == 0) return false;
+            return instructionReturns(hg, hg.extra.items[data.pl_node.pl + insts_len]);
+        },
+        .branch_single => return false,
+        .branch_double => {
+            const data = hg.instructions.items(.data)[inst];
+            const lret = instructionReturns(hg, hg.extra.items[data.pl_node.pl + 1]);
+            const rret = instructionReturns(hg, hg.extra.items[data.pl_node.pl + 2]);
+            return lret and rret;
+        },
+        .ret_implicit, .ret_node => return true,
+        else => return false,
+    }
+}
+
+fn blockReturns(b: *Block) bool {
+    const inst = b.instructions.items[b.instructions.items.len - 1];
+    return instructionReturns(b.hg, inst);
 }
