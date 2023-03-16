@@ -20,7 +20,13 @@ pub fn main() anyerror!void {
 
     var timer = try time.Timer.start();
 
-    var file = try std.fs.cwd().openFile(args.next().?, .{});
+    const fileName = args.next();
+    if (fileName == null) {
+        std.log.err("A file name must be supplied.", .{});
+        std.process.exit(1);
+    }
+
+    var file = try std.fs.cwd().openFile(fileName.?, .{});
     defer file.close();
     const stat = try file.stat();
     if (stat.size > max_file_size) {
@@ -45,7 +51,7 @@ pub fn main() anyerror!void {
     // _ = mir;
     const mirgen_time = timer.lap() / 1000;
 
-    std.debug.print("read={}us ast={}us hirgen={}us mirgen={}us\n", .{read_time, ast_time, hirgen_time, mirgen_time});
+    std.debug.print("read={}us ast={}us hirgen={}us mirgen={}us\n", .{ read_time, ast_time, hirgen_time, mirgen_time });
 
     const out = std.io.getStdOut();
     var buf = std.io.bufferedWriter(out.writer());
