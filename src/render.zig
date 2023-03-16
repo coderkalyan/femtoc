@@ -548,10 +548,10 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatTy(data.ty_pl.ty, &lbuf);
                     switch (data.ty_pl.ty.tag) {
                         .comptime_uint, .u1, .u8, .u16, .u32, .u64 => {
-                            try writer.print("constant({s}, {})", .{lbuf, value.uint});
+                            try writer.print("constant({s}, {})", .{lbuf, value.int});
                         },
                         .comptime_sint, .i8, .i16, .i32, .i64 => {
-                            try writer.print("constant({s}, {})", .{lbuf, value.sint});
+                            try writer.print("constant({s}, {})", .{lbuf, @bitCast(i64, value.int)});
                         },
                         .comptime_float, .f32, .f64 => {
                             try writer.print("constant({s}, {})", .{lbuf, value.float});
