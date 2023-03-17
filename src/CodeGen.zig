@@ -96,8 +96,15 @@ fn getLlvmType(gpa: Allocator, ty: Type) !c.LLVMTypeRef {
 }
 
 fn resolveLocalRef(codegen: *CodeGen, mirref: Mir.Ref) c.LLVMValueRef {
-    const index = Mir.refToIndex(mirref).?;
-    return codegen.map.get(index).?;
+    if (Mir.refToIndex(mirref)) |index| {
+        return codegen.map.get(index).?;
+    } else {
+        return switch (mirref) {
+            .zero_val => c.LLVMConstInt(c.LLVMInt64Type(), 0, 0),
+            .one_val => c.LLVMConstInt(c.LLVMInt64Type(), 1, 0),
+            else => unreachable,
+        };
+    }
 }
 
 fn resolveGlobalRef(backend: *Backend, mirref: Mir.Ref) c.LLVMValueRef {
@@ -209,6 +216,7 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
                 try codegen.branchDouble(mir, inst_index);
                 continue;
             },
+            .dbg_value => try codegen.dbgValue(mir, inst_index),
             else => ref: {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[inst_index]});
                 // unreachable;
@@ -385,4 +393,14 @@ fn functionParam(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index, index: u32
     const param_ref = c.LLVMGetParam(codegen.function, index);
     c.LLVMSetValueName2(param_ref, param_str.ptr, param_str.len);
     return param_ref;
+}
+
+fn dbgValue(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const id = data.op_pl.pl;
+    const ident_str = try mir.interner.get(id);
+    const ref = codegen.resolveLocalRef(data.op_pl.op);
+    c.LLVMSetValueName2(ref, ident_str.ptr, ident_str.len);
+    return ref;
 }
