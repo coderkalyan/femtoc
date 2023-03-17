@@ -194,6 +194,10 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !void {
             .alloc => try codegen.alloc(mir, inst_index),
             .load => try codegen.load(mir, inst_index),
             .store => try codegen.store(mir, inst_index),
+            .cmp_eq, .cmp_ne,
+            .cmp_ule, .cmp_uge, .cmp_ult, .cmp_ugt,
+            .cmp_sle, .cmp_sge, .cmp_slt, .cmp_sgt,
+            .cmp_fle, .cmp_fge, .cmp_flt, .cmp_fgt => try codegen.cmp(mir, inst_index),
             else => ref: {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[inst_index]});
                 // unreachable;
@@ -209,15 +213,16 @@ fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const value = mir.values[data.ty_pl.pl];
     // TODO: make sure we will only use this with tagged types
     switch (data.ty_pl.ty.tag) {
-        .comptime_uint, .comptime_sint => return c.LLVMConstPointerNull(c.LLVMInt32Type()),
+        .comptime_uint,
+        .comptime_sint,
         .comptime_float => return c.LLVMConstPointerNull(c.LLVMInt32Type()),
         else => {},
     }
 
     const ty = try getLlvmType(gpa, data.ty_pl.ty);
     switch (data.ty_pl.ty.tag) {
-        .u1, .u8, .u16, .u32, .u64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.uint), 0),
-        .i8, .i16, .i32, .i64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.sint), 1),
+        .u1, .u8, .u16, .u32, .u64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 0),
+        .i8, .i16, .i32, .i64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 1),
         .f32, .f64 => return c.LLVMConstReal(ty, value.float),
         else => unreachable,
     }
@@ -231,17 +236,17 @@ fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef
     
     // TODO: take care of signed properly
     switch (mir.insts.items(.tag)[inst]) {
-        .add => return c.LLVMBuildAdd(codegen.builder, lref, rref, "add"),
-        .sub => return c.LLVMBuildSub(codegen.builder, lref, rref, "sub"),
-        .mul => return c.LLVMBuildMul(codegen.builder, lref, rref, "mul"),
+        .add => return c.LLVMBuildAdd(codegen.builder, lref, rref, ""),
+        .sub => return c.LLVMBuildSub(codegen.builder, lref, rref, ""),
+        .mul => return c.LLVMBuildMul(codegen.builder, lref, rref, ""),
         .div => {
             return switch (c.LLVMGetValueKind(lref)) {
-                c.LLVMConstantIntValueKind => c.LLVMBuildSDiv(codegen.builder, lref, rref, "div"),
-                c.LLVMConstantFPValueKind => c.LLVMBuildFDiv(codegen.builder, lref, rref, "div"),
+                c.LLVMConstantIntValueKind => c.LLVMBuildSDiv(codegen.builder, lref, rref, ""),
+                c.LLVMConstantFPValueKind => c.LLVMBuildFDiv(codegen.builder, lref, rref, ""),
                 else => unreachable,
             };
         },
-        .mod => return c.LLVMBuildSRem(codegen.builder, lref, rref, "mod"),
+        .mod => return c.LLVMBuildSRem(codegen.builder, lref, rref, ""),
         else => unreachable,
     }
 }
@@ -276,6 +281,48 @@ fn load(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
 
     const addr = codegen.resolveLocalRef(data.un_op);
-    const ty = c.LLVMTypeOf(addr);
+    const ty = c.LLVMGetAllocatedType(addr);
     return c.LLVMBuildLoad2(codegen.builder, ty, addr, "");
+}
+
+fn cmp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const tag = mir.insts.items(.tag)[inst];
+    const data = mir.insts.items(.data)[inst];
+
+    const lref = codegen.resolveLocalRef(data.bin_op.lref);
+    const rref = codegen.resolveLocalRef(data.bin_op.rref);
+    return switch (tag) {
+        .cmp_eq => ref: {
+            const ty = c.LLVMTypeOf(lref);
+            break :ref switch (c.LLVMGetTypeKind(ty)) {
+                c.LLVMIntegerTypeKind => c.LLVMBuildICmp(codegen.builder, c.LLVMIntEQ, lref, rref, ""),
+                c.LLVMFloatTypeKind => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOEQ, lref, rref, ""),
+                else => unreachable,
+            };
+        },
+        .cmp_ne => ref: {
+            const ty = c.LLVMTypeOf(lref);
+            break :ref switch (c.LLVMGetTypeKind(ty)) {
+                c.LLVMIntegerTypeKind => c.LLVMBuildICmp(codegen.builder, c.LLVMIntNE, lref, rref, ""),
+                c.LLVMFloatTypeKind => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealONE, lref, rref, ""),
+                else => unreachable,
+            };
+        },
+
+        .cmp_ule => c.LLVMBuildICmp(codegen.builder, c.LLVMIntULE, lref, rref, ""),
+        .cmp_uge => c.LLVMBuildICmp(codegen.builder, c.LLVMIntUGE, lref, rref, ""),
+        .cmp_ult => c.LLVMBuildICmp(codegen.builder, c.LLVMIntULT, lref, rref, ""),
+        .cmp_ugt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntUGT, lref, rref, ""),
+
+        .cmp_sle => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSLE, lref, rref, ""),
+        .cmp_sge => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSGE, lref, rref, ""),
+        .cmp_slt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSLT, lref, rref, ""),
+        .cmp_sgt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSGT, lref, rref, ""),
+
+        .cmp_fle => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOLE, lref, rref, ""),
+        .cmp_fge => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOGE, lref, rref, ""),
+        .cmp_flt => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOLT, lref, rref, ""),
+        .cmp_fgt => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOGT, lref, rref, ""),
+        else => unreachable,
+    };
 }
