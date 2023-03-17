@@ -273,7 +273,7 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
             .cmp_eq, .cmp_ne,
             .cmp_uge, .cmp_ule, .cmp_ugt, .cmp_ult,
             .cmp_sge, .cmp_sle, .cmp_sgt, .cmp_slt,
-            .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => analyzer.resolveTy(b, data.bin_op.lref),
+            .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => Type.initTag(.u1),
             .alloc => data.ty,
             .load => analyzer.resolveTy(b, data.un_op),
             .store => analyzer.resolveTy(b, data.un_op),
@@ -410,7 +410,19 @@ fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
                 const index = try b.addConstant(expected_ty, .{ .float = float_value });
                 return Mir.indexToRef(index);
             },
-            else => return error.TypeError,
+            .u1 => {
+                const val: u64 = switch (ref) {
+                    .zero_val => 0,
+                    .one_val => 1,
+                    else => return error.InvalidRef,
+                };
+                const index = try b.addConstant(expected_ty, .{ .int = val });
+                return Mir.indexToRef(index);
+            },
+            else => {
+                std.debug.print("{}\n", .{found_ty.tag});
+                return error.TypeError;
+            },
         }
     }
 }

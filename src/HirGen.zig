@@ -611,13 +611,27 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     }
 }
 
+fn branchCondition(b: *Block, scope: *Scope, node: Node.Index) !Ref {
+    const condition_ref = try expr(b, scope, node);
+    const validate_data = try b.hg.addExtra(Inst.ValidateTy {
+        .ref = condition_ref,
+        .ty = Ref.bool_ty,
+    });
+    // TODO: should be implicit not node
+    const validate_ty = try b.addInst(.{
+        .tag = .validate_ty,
+        .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
+    });
+    return indexToRef(validate_ty);
+}
+
 fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_simple = b.hg.tree.data(node).if_simple;
     var block_scope = Block.init(b, scope);
     defer block_scope.deinit();
     const s = &block_scope.base;
 
-    const condition_ref = try expr(b, s, if_simple.condition);
+    const condition_ref = try branchCondition(b, scope, if_simple.condition);
     const exec_ref = try block(&block_scope, s, if_simple.exec_true);
     const branch = try b.hg.addExtra(Inst.BranchSingle {
         .condition = condition_ref,
@@ -633,7 +647,7 @@ fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_else = b.hg.tree.data(node).if_else;
 
-    const condition_ref = try expr(b, scope, if_else.condition);
+    const condition_ref = try branchCondition(b, scope, if_else.condition);
     const exec = b.hg.tree.extraData(if_else.exec, Node.IfElse);
     const exec_true = block: {
         var block_scope = Block.init(b, scope);
@@ -660,7 +674,7 @@ fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_chain = b.hg.tree.data(node).if_chain;
 
-    const condition_ref = try expr(b, scope, if_chain.condition);
+    const condition_ref = try branchCondition(b, scope, if_chain.condition);
     const chain = b.hg.tree.extraData(if_chain.chain, Node.IfChain);
     const exec_true = block: {
         var block_scope = Block.init(b, scope);
