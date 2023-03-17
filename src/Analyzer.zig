@@ -224,7 +224,9 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
             .constant => data.ty_pl.ty,
             .add, .sub, .mul, .div, .mod => analyzer.resolveTy(b, data.bin_op.lref),
             .cmp_eq, .cmp_ne,
-            .cmp_ge, .cmp_le, .cmp_gt, .cmp_lt => analyzer.resolveTy(b, data.bin_op.lref),
+            .cmp_uge, .cmp_ule, .cmp_ugt, .cmp_ult,
+            .cmp_sge, .cmp_sle, .cmp_sgt, .cmp_slt,
+            .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => analyzer.resolveTy(b, data.bin_op.lref),
             .alloc => data.ty,
             .load => analyzer.resolveTy(b, data.un_op),
             .store => analyzer.resolveTy(b, data.un_op),
@@ -556,10 +558,12 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
 
-    if (lty.isComptimeInteger() and rty.isComptimeInteger()) {
-        // TODO: we shouldn't be demoting
-        const lval = try analyzer.demoteMaybeUnsignedInt(b, lref, data.pl_node.pl);
-        const rval = try analyzer.demoteMaybeUnsignedInt(b, rref, data.pl_node.pl);
+    // for now, we are using c++ semantics: if either is unsigned
+    // everything is treated as unsigned
+    if (lty.compareTag(.comptime_sint) and rty.compareTag(.comptime_sint)) {
+        // only case where we do signed comparison
+        const lval: i64 = @bitCast(i64, analyzer.refToSignedInt(lref));
+        const rval: i64 = @bitCast(i64, analyzer.refToSignedInt(rref));
         const result = switch (analyzer.hir.insts.items(.tag)[inst]) {
             .cmp_eq => lval == rval,
             .cmp_ne => lval != rval,
@@ -569,11 +573,21 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
             .cmp_gt => lval > rval,
             else => unreachable,
         };
-
         return addUnsignedValue(b, @boolToInt(result));
-    }
-
-    if (lty.compareTag(.comptime_float) and rty.compareTag(.comptime_float)) {
+    } else if (lty.isComptimeNumber() and rty.isComptimeNumber()) {
+        const lval: u64 = analyzer.refToUnsignedInt(lref);
+        const rval: u64 = analyzer.refToUnsignedInt(rref);
+        const result = switch (analyzer.hir.insts.items(.tag)[inst]) {
+            .cmp_eq => lval == rval,
+            .cmp_ne => lval != rval,
+            .cmp_le => lval <= rval,
+            .cmp_ge => lval >= rval,
+            .cmp_lt => lval < rval,
+            .cmp_gt => lval > rval,
+            else => unreachable,
+        };
+        return addUnsignedValue(b, @boolToInt(result));
+    } else if (lty.compareTag(.comptime_float) and rty.compareTag(.comptime_float)) {
         const lval = analyzer.refToFloat(lref);
         const rval = analyzer.refToFloat(rref);
         const result = switch (analyzer.hir.insts.items(.tag)[inst]) {
@@ -585,21 +599,65 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
             .cmp_gt => lval > rval,
             else => unreachable,
         };
-
         return addUnsignedValue(b, @boolToInt(result));
     }
 
     // TODO: coercion
-    const index = try b.addInst(.{
-        .tag = switch (analyzer.hir.insts.items(.tag)[inst]) {
-            .cmp_eq => .cmp_eq,
-            .cmp_ne => .cmp_ne,
-            .cmp_le => .cmp_le,
-            .cmp_ge => .cmp_ge,
-            .cmp_lt => .cmp_lt,
-            .cmp_gt => .cmp_gt,
-            else => unreachable,
+    const hir_tag = analyzer.hir.insts.items(.tag)[inst];
+    const tag: Mir.Inst.Tag = switch (lty.tag) {
+        .u1, .u8, .u16, .u32, .u64 => switch (rty.tag) {
+            .u1, .u8, .u16, .u32, .u64 => switch (hir_tag) {
+                .cmp_eq => .cmp_eq,
+                .cmp_ne => .cmp_ne,
+                .cmp_le => .cmp_ule,
+                .cmp_ge => .cmp_uge,
+                .cmp_lt => .cmp_ult,
+                .cmp_gt => .cmp_ugt,
+                else => unreachable,
+            },
+            .i8, .i16, .i32, .i64 => switch (hir_tag) {
+                .cmp_eq => .cmp_eq,
+                .cmp_ne => .cmp_ne,
+                .cmp_le => .cmp_sle,
+                .cmp_ge => .cmp_sge,
+                .cmp_lt => .cmp_slt,
+                .cmp_gt => .cmp_sgt,
+                else => unreachable,
+            },
+            .f32, .f64 => return error.TypeMismatch,
+            else => return error.TypeMismatch,
         },
+        .i8, .i16, .i32, .i64 => switch (rty.tag) {
+            .u1, .u8, .u16, .u32, .u64,
+            .i8, .i16, .i32, .i64 => switch (hir_tag) {
+                .cmp_eq => .cmp_eq,
+                .cmp_ne => .cmp_ne,
+                .cmp_le => .cmp_sle,
+                .cmp_ge => .cmp_sge,
+                .cmp_lt => .cmp_slt,
+                .cmp_gt => .cmp_sgt,
+                else => unreachable,
+            },
+            .f32, .f64 => return error.TypeMismatch,
+            else => return error.TypeMismatch,
+        },
+        .f32, .f64 => switch (rty.tag) {
+            .f32, .f64 => switch (hir_tag) {
+                .cmp_eq => .cmp_eq,
+                .cmp_ne => .cmp_ne,
+                .cmp_le => .cmp_fle,
+                .cmp_ge => .cmp_fge,
+                .cmp_lt => .cmp_flt,
+                .cmp_gt => .cmp_fgt,
+                else => unreachable,
+            },
+            else => return error.TypeMismatch,
+        },
+        else => return error.TypeMismatch,
+    };
+
+    const index = try b.addInst(.{
+        .tag = tag,
         .data = .{ .bin_op = .{ .lref = lref, .rref = rref } },
     });
     return Mir.indexToRef(index);
@@ -722,22 +780,6 @@ fn emitUserError(analyzer: *Analyzer, node: u32, tag: Mir.UserError.Tag) !void {
         .tag = tag,
     });
     return error.CodeError;
-}
-
-fn demoteUnsignedInt(analyzer: *Analyzer, ref: Mir.Ref, node: u32) !i64 {
-    const uint = analyzer.refToUnsignedInt(ref);
-    if (uint > std.math.maxInt(i64)) {
-        try analyzer.emitUserError(node, .uint_sign_cast_overflow);
-        unreachable;
-    } else {
-        return @intCast(i64, uint);
-    }
-}
-
-fn demoteMaybeUnsignedInt(analyzer: *Analyzer, b: *Block, ref: Mir.Ref, node: u32) !i64 {
-    const ty = try analyzer.resolveTy(b, ref);
-    return if (ty.tag == .comptime_uint) analyzer.demoteUnsignedInt(ref, node)
-           else analyzer.refToSignedInt(ref);
 }
 
 fn coerceUnsignedInt(analyzer: *Analyzer, b: *Block, node: u32, ty: Type, ref: Mir.Ref) !Mir.Ref {
