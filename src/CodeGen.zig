@@ -117,10 +117,10 @@ fn generateGlobals(backend: *Backend, global: *const Mir) !void {
 
 fn generateGlobalInst(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValueRef {
     return switch (global.insts.items(.tag)[inst]) {
-        .proto => try generateFunctionProto(backend, global, inst),
+        .proto => generateFunctionProto(backend, global, inst),
         .constant => try constant(backend.gpa, global, inst),
         .alloc => try generateGlobal(backend, global, inst),
-        .store => try generateInitializer(backend, global, inst),
+        .store => generateInitializer(backend, global, inst),
         else => ref: {
             std.debug.print("{}\n", .{global.insts.items(.tag)[inst]});
             break :ref c.LLVMConstPointerNull(c.LLVMInt32Type());
@@ -136,7 +136,7 @@ fn generateGlobal(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValue
     return ref;
 }
 
-fn generateInitializer(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValueRef {
+fn generateInitializer(backend: *Backend, global: *const Mir, inst: u32) c.LLVMValueRef {
     const data = global.insts.items(.data)[inst];
 
     const addr = resolveGlobalRef(backend, data.bin_op.lref);
@@ -180,7 +180,7 @@ fn generateFunctionBody(backend: *Backend, mir: *const Mir) !void {
     try codegen.block(mir, data.bin_pl.r);
 }
 
-fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !void {
+fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.Error!void {
     const data = mir.insts.items(.data)[inst];
     const block_data = mir.extraData(data.pl, Mir.Inst.Block);
 
@@ -189,15 +189,23 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !void {
         const inst_index = mir.extra[data.pl + 1 + extra_index];
         const ref = switch (mir.insts.items(.tag)[inst_index]) {
             .constant => try constant(codegen.gpa, mir, inst_index),
-            .add, .sub, .mul, .div, .mod => try codegen.binaryOp(mir, inst_index),
-            .ret => try codegen.ret(mir, inst_index),
+            .add, .sub, .mul, .div, .mod => codegen.binaryOp(mir, inst_index),
+            .ret => codegen.ret(mir, inst_index),
             .alloc => try codegen.alloc(mir, inst_index),
-            .load => try codegen.load(mir, inst_index),
-            .store => try codegen.store(mir, inst_index),
+            .load => codegen.load(mir, inst_index),
+            .store => codegen.store(mir, inst_index),
             .cmp_eq, .cmp_ne,
             .cmp_ule, .cmp_uge, .cmp_ult, .cmp_ugt,
             .cmp_sle, .cmp_sge, .cmp_slt, .cmp_sgt,
-            .cmp_fle, .cmp_fge, .cmp_flt, .cmp_fgt => try codegen.cmp(mir, inst_index),
+            .cmp_fle, .cmp_fge, .cmp_flt, .cmp_fgt => codegen.cmp(mir, inst_index),
+            .branch_single => {
+                try codegen.branchSingle(mir, inst_index);
+                continue;
+            },
+            .branch_double => {
+                try codegen.branchDouble(mir, inst_index);
+                continue;
+            },
             else => ref: {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[inst_index]});
                 // unreachable;
@@ -228,7 +236,7 @@ fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     }
 }
 
-fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
     // TODO: handle global refs
     const lref = codegen.resolveLocalRef(data.bin_op.lref);
@@ -251,7 +259,7 @@ fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef
     }
 }
 
-fn ret(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+fn ret(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
     
     if (data.un_op == Mir.Ref.void_val) {
@@ -269,7 +277,7 @@ fn alloc(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     return c.LLVMBuildAlloca(codegen.builder, ty, "");
 }
 
-fn store(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+fn store(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
 
     const addr = codegen.resolveLocalRef(data.bin_op.lref);
@@ -277,7 +285,7 @@ fn store(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     return c.LLVMBuildStore(codegen.builder, val, addr);
 }
 
-fn load(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+fn load(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
 
     const addr = codegen.resolveLocalRef(data.un_op);
@@ -285,7 +293,7 @@ fn load(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     return c.LLVMBuildLoad2(codegen.builder, ty, addr, "");
 }
 
-fn cmp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+fn cmp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) c.LLVMValueRef {
     const tag = mir.insts.items(.tag)[inst];
     const data = mir.insts.items(.data)[inst];
 
@@ -325,4 +333,43 @@ fn cmp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
         .cmp_fgt => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOGT, lref, rref, ""),
         else => unreachable,
     };
+}
+
+fn branchSingle(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.Error!void {
+    const data = mir.insts.items(.data)[inst];
+
+    const condition = codegen.resolveLocalRef(data.op_pl.op);
+    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "exec_true");
+    const exit = c.LLVMAppendBasicBlock(codegen.function, "exit");
+    _ = c.LLVMBuildCondBr(codegen.builder, condition, exec_true, exit);
+
+    c.LLVMPositionBuilderAtEnd(codegen.builder, exec_true);
+    try codegen.block(mir, data.op_pl.pl);
+    if (c.LLVMGetBasicBlockTerminator(exec_true) == null)
+        _ = c.LLVMBuildBr(codegen.builder, exit);
+
+    c.LLVMPositionBuilderAtEnd(codegen.builder, exit);
+}
+
+fn branchDouble(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.Error!void {
+    const data = mir.insts.items(.data)[inst];
+    const condbr = mir.extraData(data.op_pl.pl, Mir.Inst.CondBr);
+
+    const condition = codegen.resolveLocalRef(data.op_pl.op);
+    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "exec_true");
+    const exec_false = c.LLVMAppendBasicBlock(codegen.function, "exec_false");
+    const exit = c.LLVMAppendBasicBlock(codegen.function, "exit");
+    _ = c.LLVMBuildCondBr(codegen.builder, condition, exec_true, exec_false);
+
+    c.LLVMPositionBuilderAtEnd(codegen.builder, exec_true);
+    try codegen.block(mir, condbr.exec_true);
+    if (c.LLVMGetBasicBlockTerminator(exec_true) == null)
+        _ = c.LLVMBuildBr(codegen.builder, exit);
+
+    c.LLVMPositionBuilderAtEnd(codegen.builder, exec_false);
+    try codegen.block(mir, condbr.exec_false);
+    if (c.LLVMGetBasicBlockTerminator(exec_false) == null)
+        _ = c.LLVMBuildBr(codegen.builder, exit);
+
+    c.LLVMPositionBuilderAtEnd(codegen.builder, exit);
 }
