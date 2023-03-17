@@ -11,6 +11,8 @@ const c = @cImport({
     @cInclude("llvm-c/Disassembler.h");
 });
 
+const Error = Allocator.Error || @import("interner.zig").Error;
+
 pub const Backend = struct {
     gpa: Allocator,
     compilation: *const Compilation,
@@ -180,7 +182,7 @@ fn generateFunctionBody(backend: *Backend, mir: *const Mir) !void {
     try codegen.block(mir, data.bin_pl.r);
 }
 
-fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.Error!void {
+fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
     const data = mir.insts.items(.data)[inst];
     const block_data = mir.extraData(data.pl, Mir.Inst.Block);
 
@@ -198,6 +200,7 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.Error!vo
             .cmp_ule, .cmp_uge, .cmp_ult, .cmp_ugt,
             .cmp_sle, .cmp_sge, .cmp_slt, .cmp_sgt,
             .cmp_fle, .cmp_fge, .cmp_flt, .cmp_fgt => codegen.cmp(mir, inst_index),
+            .param => try codegen.functionParam(mir, inst_index, extra_index),
             .branch_single => {
                 try codegen.branchSingle(mir, inst_index);
                 continue;
@@ -335,7 +338,7 @@ fn cmp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) c.LLVMValueRef {
     };
 }
 
-fn branchSingle(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.Error!void {
+fn branchSingle(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
     const data = mir.insts.items(.data)[inst];
 
     const condition = codegen.resolveLocalRef(data.op_pl.op);
@@ -351,7 +354,7 @@ fn branchSingle(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.E
     c.LLVMPositionBuilderAtEnd(codegen.builder, exit);
 }
 
-fn branchDouble(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.Error!void {
+fn branchDouble(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
     const data = mir.insts.items(.data)[inst];
     const condbr = mir.extraData(data.op_pl.pl, Mir.Inst.CondBr);
 
@@ -372,4 +375,14 @@ fn branchDouble(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Allocator.E
         _ = c.LLVMBuildBr(codegen.builder, exit);
 
     c.LLVMPositionBuilderAtEnd(codegen.builder, exit);
+}
+
+fn functionParam(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index, index: u32) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const id = data.ty_pl.pl;
+    const param_str = try mir.interner.get(id);
+    const param_ref = c.LLVMGetParam(codegen.function, index);
+    c.LLVMSetValueName2(param_ref, param_str.ptr, param_str.len);
+    return param_ref;
 }
