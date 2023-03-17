@@ -7,5 +7,4 @@ let factorial = fn (n: i32) i32 {
 
 let main = fn () void {
     let fact = factorial(10);
-    return;
 };
