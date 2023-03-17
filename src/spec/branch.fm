@@ -11,6 +11,7 @@ let main = fn () void {
         let a: i32 = 3;
         let b: i32 = 4;
         let c = a + b;
+        return;
     } else {
         let a: i32 = 5;
     }
@@ -18,5 +19,4 @@ let main = fn () void {
     // if ({ let val = func(); yield val }) {
     //
     // }
-    return;
 }
