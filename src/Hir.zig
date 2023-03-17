@@ -62,6 +62,10 @@ pub const Inst = struct {
         yield_implicit,
         yield_node,
 
+        dbg_value,
+        dbg_declare,
+        dbg_assign,
+
         module,
     };
 
@@ -179,6 +183,11 @@ pub const Inst = struct {
 
     pub const Module = struct {
         len: u32,
+    };
+
+    pub const DebugValue = struct {
+        name: u32,
+        value: Ref,
     };
 };
 

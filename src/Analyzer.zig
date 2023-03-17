@@ -207,6 +207,7 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !u32 {
             .branch_double => try analyzer.branchDouble(block, index),
             .loop => try analyzer.loop(block, index),
             .fn_decl => try analyzer.fnDecl(block, index),
+            .dbg_value => try analyzer.dbgValue(block, index),
             else => Mir.indexToRef(0),
         };
         analyzer.map.putAssumeCapacity(index, ref);
@@ -962,4 +963,16 @@ fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     try parent.mg.mir.append(parent.gpa, mir);
 
     return @intToEnum(Mir.Ref, 0); // TODO: change to real function reference
+}
+
+fn dbgValue(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const data = analyzer.hir.insts.items(.data)[inst];
+    const dbg_value = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.DebugValue);
+
+    const ref = analyzer.map.resolveRef(dbg_value.value);
+    const index = try b.addInst(.{
+        .tag = .dbg_value,
+        .data = .{ .op_pl = .{ .op = ref, .pl = dbg_value.name } },
+    });
+    return Mir.indexToRef(index);
 }

@@ -70,6 +70,10 @@ pub const Inst = struct {
         ret,
         yield,
         loop,
+
+        dbg_value,
+        dbg_declare,
+        dbg_assign,
     };
 
     pub const Data = union {

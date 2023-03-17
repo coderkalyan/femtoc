@@ -452,6 +452,13 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     
                     try writer.print(")", .{});
                 },
+                .dbg_value => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const data = ir.extraData(pl, Hir.Inst.DebugValue);
+                    const ident_str = try ir.interner.get(data.name);
+                    try self.formatRef(data.value, &lbuf);
+                    try writer.print("dbg_value({s}, {s})", .{ident_str, lbuf});
+                },
                 else => {try writer.print("{}", .{ir.insts.items(.tag)[index]});},
             }
 
@@ -697,6 +704,12 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const param_str = try ir.interner.get(data.ty_pl.pl);
                     try self.formatTy(data.ty_pl.ty, &lbuf);
                     try writer.print("param(\"{s}\", {s})", .{param_str, lbuf});
+                },
+                .dbg_value => {
+                    const data = ir.insts.items(.data)[index];
+                    const ident_str = try ir.interner.get(data.op_pl.pl);
+                    try self.formatRef(data.op_pl.op, &lbuf);
+                    try writer.print("dbg_value({s}, {s})", .{ident_str, lbuf});
                 },
                 // .ret_node => {
                 //     const operand = ir.insts.items(.data)[index].un_node.operand;

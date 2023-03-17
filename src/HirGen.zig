@@ -476,13 +476,27 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     // instruction return value is stored in the scope such that future
     // code that needs to access this constant can simply look up the identifier
     // and refer to the associated value instruction
-    const const_decl = b.hg.tree.data(node).const_decl;
+    const hg = b.hg;
+    const const_decl = hg.tree.data(node).const_decl;
+
+    const ident_index = hg.tree.mainToken(node);
+    const ident_str = hg.tree.tokenString(ident_index + 1);
+    const id = try hg.interner.intern(ident_str);
+    const ref = try expr(b, s, const_decl.val);
+    const dbg_data = try hg.addExtra(Inst.DebugValue {
+        .name = id,
+        .value = ref,
+    });
+    _ = try b.addInst(.{
+        .tag = .dbg_value,
+        .data = .{ .pl_node = .{ .node = node, .pl = dbg_data } },
+    });
+
     if (const_decl.ty == 0) {
         // untyped (inferred) declaration
-        return expr(b, s, const_decl.val);
+        return ref;
     } else {
-        const ref = try expr(b, s, const_decl.val);
-        const validate_data = try b.hg.addExtra(Inst.ValidateTy {
+        const validate_data = try hg.addExtra(Inst.ValidateTy {
             .ref = ref,
             .ty = try ty(b, s, const_decl.ty),
         });
