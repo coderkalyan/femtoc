@@ -31,7 +31,7 @@ pub fn negate(a: u64) u64 {
 }
 
 pub inline fn isNegative(a: u64) bool {
-    return (a & (1 << 63)) > 0;
+    return (a & (@intCast(u64, 1) << 63)) > 0;
 }
 pub fn demoteUnsigned(a: u64) !u64 {
     if (isNegative(a)) return error.Overflow;
