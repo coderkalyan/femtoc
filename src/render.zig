@@ -711,6 +711,18 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(data.op_pl.op, &lbuf);
                     try writer.print("dbg_value({s}, {s})", .{ident_str, lbuf});
                 },
+                .zext => {
+                    const data = ir.insts.items(.data)[index];
+                    try self.formatTy(data.ty_op.ty, &lbuf);
+                    try self.formatRef(data.ty_op.op, &rbuf);
+                    try writer.print("zext({s}, {s})", .{lbuf, rbuf});
+                },
+                .sext => {
+                    const data = ir.insts.items(.data)[index];
+                    try self.formatTy(data.ty_op.ty, &lbuf);
+                    try self.formatRef(data.ty_op.op, &rbuf);
+                    try writer.print("sext({s}, {s})", .{lbuf, rbuf});
+                },
                 // .ret_node => {
                 //     const operand = ir.insts.items(.data)[index].un_node.operand;
                 //     try self.formatRef(operand, &lbuf);
@@ -772,6 +784,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     .comptime_float => "comptime_float",
                     .f32 => "f32",
                     .f64 => "f64",
+                    else => unreachable,
                 }});
             }
         }

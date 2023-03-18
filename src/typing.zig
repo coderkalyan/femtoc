@@ -27,6 +27,8 @@ pub const Type = extern union {
         comptime_float,
         f32,
         f64,
+
+        _,
     };
 
     pub const Payload = struct {
@@ -122,7 +124,7 @@ pub const Type = extern union {
         return isTag(ty) and (isComptimeInteger(ty) or ty.tag == .comptime_float);
     }
 
-    pub fn size(t: *const Type) !usize {
+    pub fn size(t: Type) !usize {
         if (@enumToInt(t.tag) < tagged_length) {
             return switch (t.tag) {
                 .void => 0,
@@ -205,6 +207,22 @@ pub const Type = extern union {
         } else {
             return 0;
         }
+    }
+
+    pub fn isIntType(t: Type) bool {
+        return switch (t.tag) {
+            .u1, .u8, .u16, .u32, .u64, .comptime_uint,
+            .i8, .i16, .i32, .i64, .comptime_sint => true,
+            else => false,
+        };
+    }
+
+    pub fn intSign(t: Type) bool {
+        return switch (t.tag) {
+            .u1, .u8, .u16, .u32, .u64, .comptime_uint => false,
+            .i8, .i16, .i32, .i64, .comptime_sint => true,
+            else => unreachable,
+        };
     }
 };
 
