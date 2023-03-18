@@ -208,6 +208,9 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
             .cmp_ule, .cmp_uge, .cmp_ult, .cmp_ugt,
             .cmp_sle, .cmp_sge, .cmp_slt, .cmp_sgt,
             .cmp_fle, .cmp_fge, .cmp_flt, .cmp_fgt => codegen.cmp(mir, inst_index),
+            .zext => try codegen.zext(mir, inst_index),
+            .sext => try codegen.sext(mir, inst_index),
+            .fpext => try codegen.fpext(mir, inst_index),
             .param => try codegen.functionParam(mir, inst_index, extra_index),
             .branch_single => {
                 try codegen.branchSingle(mir, inst_index);
@@ -404,4 +407,28 @@ fn dbgValue(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef
     const ref = codegen.resolveLocalRef(data.op_pl.op);
     c.LLVMSetValueName2(ref, ident_str.ptr, ident_str.len);
     return ref;
+}
+
+fn zext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const ty = try getLlvmType(codegen.gpa, data.ty_op.ty);
+    const ref = codegen.resolveLocalRef(data.ty_op.op);
+    return c.LLVMBuildZExt(codegen.builder, ref, ty, "");
+}
+
+fn sext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const ty = try getLlvmType(codegen.gpa, data.ty_op.ty);
+    const ref = codegen.resolveLocalRef(data.ty_op.op);
+    return c.LLVMBuildSExt(codegen.builder, ref, ty, "");
+}
+
+fn fpext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
+    const data = mir.insts.items(.data)[inst];
+
+    const ty = try getLlvmType(codegen.gpa, data.ty_op.ty);
+    const ref = codegen.resolveLocalRef(data.ty_op.op);
+    return c.LLVMBuildFPExt(codegen.builder, ref, ty, "");
 }
