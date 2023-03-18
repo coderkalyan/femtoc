@@ -11,3 +11,8 @@ pub fn main() void {
     const c = a / b;
     _ = c;
 }
+
+pub fn panic(msg: []const u8, error_return_trace: ?*@import("std").builtin.StackTrace) noreturn {
+    @breakpoint();
+    unreachable;
+}
