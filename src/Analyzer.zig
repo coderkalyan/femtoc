@@ -458,65 +458,77 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
         return addUnsignedValue(b, @boolToInt(result));
     }
 
-    // TODO: coercion
-    const hir_tag = analyzer.hir.insts.items(.tag)[inst];
-    const tag: Mir.Inst.Tag = switch (lty.tag) {
-        .u1, .u8, .u16, .u32, .u64 => switch (rty.tag) {
-            .u1, .u8, .u16, .u32, .u64 => switch (hir_tag) {
-                .cmp_eq => .cmp_eq,
-                .cmp_ne => .cmp_ne,
-                .cmp_le => .cmp_ule,
-                .cmp_ge => .cmp_uge,
-                .cmp_lt => .cmp_ult,
-                .cmp_gt => .cmp_ugt,
-                else => unreachable,
-            },
-            .i8, .i16, .i32, .i64 => switch (hir_tag) {
-                .cmp_eq => .cmp_eq,
-                .cmp_ne => .cmp_ne,
-                .cmp_le => .cmp_sle,
-                .cmp_ge => .cmp_sge,
-                .cmp_lt => .cmp_slt,
-                .cmp_gt => .cmp_sgt,
-                else => unreachable,
-            },
-            .f32, .f64 => return error.TypeMismatch,
-            else => return error.TypeMismatch,
-        },
-        .i8, .i16, .i32, .i64 => switch (rty.tag) {
-            .u1, .u8, .u16, .u32, .u64,
-            .i8, .i16, .i32, .i64 => switch (hir_tag) {
-                .cmp_eq => .cmp_eq,
-                .cmp_ne => .cmp_ne,
-                .cmp_le => .cmp_sle,
-                .cmp_ge => .cmp_sge,
-                .cmp_lt => .cmp_slt,
-                .cmp_gt => .cmp_sgt,
-                else => unreachable,
-            },
-            .f32, .f64 => return error.TypeMismatch,
-            else => return error.TypeMismatch,
-        },
-        .f32, .f64 => switch (rty.tag) {
-            .f32, .f64 => switch (hir_tag) {
-                .cmp_eq => .cmp_eq,
-                .cmp_ne => .cmp_ne,
-                .cmp_le => .cmp_fle,
-                .cmp_ge => .cmp_fge,
-                .cmp_lt => .cmp_flt,
-                .cmp_gt => .cmp_fgt,
-                else => unreachable,
-            },
-            else => return error.TypeMismatch,
-        },
-        else => return error.TypeMismatch,
-    };
+    if (lty.isFloatType() and rty.isFloatType()) {
+        const lwidth = lty.numWidth();
+        const rwidth = rty.numWidth();
+        const isdouble = if (std.math.max(lwidth, rwidth) == 64) true else false;
+        const dest_ty = if (isdouble) Type.initTag(.f64) else Type.initTag(.f32);
+        const lval = try coercion.coerce(analyzer, b, lref, dest_ty);
+        const rval = try coercion.coerce(analyzer, b, rref, dest_ty);
+        const hir_tag = analyzer.hir.insts.items(.tag)[inst];
 
-    const index = try b.addInst(.{
-        .tag = tag,
-        .data = .{ .bin_op = .{ .lref = lref, .rref = rref } },
-    });
-    return Mir.indexToRef(index);
+        const tag: Mir.Inst.Tag = switch (hir_tag) {
+            .cmp_eq => .cmp_eq,
+            .cmp_ne => .cmp_ne,
+            .cmp_le => .cmp_fle,
+            .cmp_ge => .cmp_fge,
+            .cmp_lt => .cmp_flt,
+            .cmp_gt => .cmp_fgt,
+            else => unreachable,
+        };
+        const index = try b.addInst(.{
+            .tag = tag,
+            .data = .{ .bin_op = .{ .lref = lval, .rref = rval } },
+        });
+        return Mir.indexToRef(index);
+    } else if (lty.isIntType() and rty.isIntType()) {
+        const lsign = lty.intSign();
+        const rsign = rty.intSign();
+        const vals = if (lty.isComptimeInteger()) vals: {
+            const rwidth = rty.numWidth();
+            const lval = try coercion.coerce(analyzer, b, lref, Type.initInt(rwidth, lsign));
+            const rval = rref;
+            break :vals .{ lval, rval };
+        } else if (rty.isComptimeInteger()) vals: {
+            const lwidth = lty.numWidth();
+            const lval = lref;
+            const rval = try coercion.coerce(analyzer, b, rref, Type.initInt(lwidth, rsign));
+            break :vals .{ lval, rval };
+        } else vals: {
+            const lwidth = lty.numWidth();
+            const rwidth = rty.numWidth();
+            const maxwidth = std.math.max(lwidth, rwidth);
+            const lval = try coercion.coerce(analyzer, b, lref, Type.initInt(maxwidth, lsign));
+            const rval = try coercion.coerce(analyzer, b, rref, Type.initInt(maxwidth, rsign));
+            break :vals .{ lval, rval };
+        };
+        const lval = vals[0];
+        const rval = vals[1];
+
+        const hir_tag = analyzer.hir.insts.items(.tag)[inst];
+        const tag: Mir.Inst.Tag = if (lsign and rsign) switch (hir_tag) {
+            .cmp_eq => .cmp_eq,
+            .cmp_ne => .cmp_ne,
+            .cmp_le => .cmp_sle,
+            .cmp_ge => .cmp_sge,
+            .cmp_lt => .cmp_slt,
+            .cmp_gt => .cmp_sgt,
+            else => unreachable,
+        } else switch (hir_tag) {
+            .cmp_eq => .cmp_eq,
+            .cmp_ne => .cmp_ne,
+            .cmp_le => .cmp_ule,
+            .cmp_ge => .cmp_uge,
+            .cmp_lt => .cmp_ult,
+            .cmp_gt => .cmp_ugt,
+            else => unreachable,
+        };
+        const index = try b.addInst(.{
+            .tag = tag,
+            .data = .{ .bin_op = .{ .lref = lval, .rref = rval } },
+        });
+        return Mir.indexToRef(index);
+    } else return error.TypeMismatch;
 }
 
 fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
