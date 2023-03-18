@@ -74,6 +74,9 @@ pub const Inst = struct {
         dbg_value,
         dbg_declare,
         dbg_assign,
+
+        zext,
+        sext,
     };
 
     pub const Data = union {
