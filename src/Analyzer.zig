@@ -235,7 +235,7 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
             .store => analyzer.resolveTy(b, data.un_op),
             .param => data.ty_pl.ty,
             .call => analyzer.resolveTy(b, data.op_pl.op),
-            .zext, .sext => data.ty_op.ty,
+            .zext, .sext, .fpext => data.ty_op.ty,
             else => {
                 std.debug.print("{}\n", .{analyzer.instructions.items(.tag)[index]});
                 return error.NotImplemented;

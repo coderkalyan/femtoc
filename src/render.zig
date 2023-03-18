@@ -723,6 +723,12 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(data.ty_op.op, &rbuf);
                     try writer.print("sext({s}, {s})", .{lbuf, rbuf});
                 },
+                .fpext => {
+                    const data = ir.insts.items(.data)[index];
+                    try self.formatTy(data.ty_op.ty, &lbuf);
+                    try self.formatRef(data.ty_op.op, &rbuf);
+                    try writer.print("fpext({s}, {s})", .{lbuf, rbuf});
+                },
                 // .ret_node => {
                 //     const operand = ir.insts.items(.data)[index].un_node.operand;
                 //     try self.formatRef(operand, &lbuf);

@@ -77,6 +77,7 @@ pub const Inst = struct {
 
         zext,
         sext,
+        fpext,
     };
 
     pub const Data = union {

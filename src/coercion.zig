@@ -14,12 +14,14 @@ pub fn coerce(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.
         .u1, .u8, .u16, .u32, .u64,
         .i8, .i16, .i32, .i64 => coerceToInt(analyzer, b, src, dest_ty),
         .comptime_uint, .comptime_sint => coerceToComptimeInt(analyzer, b, src, dest_ty),
+        .f32, .f64 => coerceToFloat(analyzer, b, src, dest_ty),
+        .comptime_float => coerceToComptimeFloat(analyzer, b, src, dest_ty),
         else => error.NotImplemented,
     };
 }
 
 fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
-    const src_ty = try Analyzer.resolveTy(analyzer, b, src);
+    const src_ty = try analyzer.resolveTy(b, src);
     if (!src_ty.isIntType()) return error.InvalidCoercion;
 
     const src_sign = src_ty.intSign();
@@ -69,7 +71,7 @@ fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir
 }
 
 fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
-    const src_ty = try Analyzer.resolveTy(analyzer, b, src);
+    const src_ty = try analyzer.resolveTy(b, src);
     switch (dest_ty.tag) {
         .comptime_uint => switch (src_ty.tag) {
             .comptime_uint => return src,
@@ -118,6 +120,28 @@ pub fn binaryCoerceTo(lty: Type, rty: Type) !Type {
                 else => return error.NotImplemented,
             }
         },
+        .f32 => return if (rty.tag == .comptime_float) lty else rty,
+        .f64 => return lty,
         else => return error.NotImplemented,
     }
+}
+
+pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
+    const src_ty = try analyzer.resolveTy(b, src);
+    if (src_ty.tag == dest_ty.tag) {
+        return src;
+    } else if ((dest_ty.tag == .f64) and (src_ty.tag == .f32)) {
+        const index = try b.addInst(.{
+            .tag = .fpext,
+            .data = .{ .ty_op = .{ .ty = Type.initTag(.f64), .op = src } },
+        });
+        return Mir.indexToRef(index);
+    } else return error.InvalidCoercion;
+}
+
+pub fn coerceToComptimeFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
+    _ = dest_ty;
+    const src_ty = try analyzer.resolveTy(b, src);
+    if (src_ty.tag == .comptime_float) return src;
+    return error.InvalidCoercion;
 }
