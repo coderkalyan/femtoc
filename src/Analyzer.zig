@@ -210,6 +210,16 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!u32 {
             .loop => try analyzer.loop(block, index),
             .fn_decl => try analyzer.fnDecl(block, index),
             .dbg_value => try analyzer.dbgValue(block, index),
+            .block => ref: {
+                var inner = Block {
+                    .parent = block,
+                    .analyzer = analyzer,
+                    .instructions = .{},
+                };
+                const block_index = try analyzer.analyzeBlock(&inner, index);
+                try block.instructions.append(analyzer.gpa, block_index);
+                break :ref Mir.indexToRef(block_index);
+            },
             else => Mir.indexToRef(0),
         };
         analyzer.map.putAssumeCapacity(index, ref);
