@@ -217,12 +217,50 @@ pub const Type = extern union {
         };
     }
 
+    pub fn isFloatType(t: Type) bool {
+        return switch (t.tag) {
+            .f32, .f64, .comptime_float => true,
+            else => false,
+        };
+    }
     pub fn intSign(t: Type) bool {
         return switch (t.tag) {
             .u1, .u8, .u16, .u32, .u64, .comptime_uint => false,
             .i8, .i16, .i32, .i64, .comptime_sint => true,
             else => unreachable,
         };
+    }
+
+    pub fn numWidth(t: Type) u8 {
+        return switch (t.tag) {
+            .u1 => 1,
+            .u8, .i8 => 8,
+            .u16, .i16 => 16,
+            .u32, .i32, .f32 => 32,
+            .u64, .i64, .f64 => 64,
+            else => unreachable,
+        };
+    }
+
+    pub fn initInt(width: u8, sign: bool) Type {
+        if (sign) {
+            switch (width) {
+                8 => return Type.initTag(.i8),
+                16 => return Type.initTag(.i16),
+                32 => return Type.initTag(.i32),
+                64 => return Type.initTag(.i64),
+                else => unreachable,
+            }
+        } else {
+            switch (width) {
+                1 => return Type.initTag(.u1),
+                8 => return Type.initTag(.u8),
+                16 => return Type.initTag(.u16),
+                32 => return Type.initTag(.u32),
+                64 => return Type.initTag(.u64),
+                else => unreachable,
+            }
+        }
     }
 };
 
