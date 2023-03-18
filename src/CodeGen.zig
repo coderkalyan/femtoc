@@ -11,7 +11,7 @@ const c = @cImport({
     @cInclude("llvm-c/Disassembler.h");
 });
 
-const Error = Allocator.Error || @import("interner.zig").Error;
+const Error = Allocator.Error || @import("interner.zig").Error || error { NotImplemented };
 
 pub const Backend = struct {
     gpa: Allocator,
@@ -199,7 +199,7 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
         const inst_index = mir.extra[data.pl + 1 + extra_index];
         const ref = switch (mir.insts.items(.tag)[inst_index]) {
             .constant => try constant(codegen.gpa, mir, inst_index),
-            .add, .sub, .mul, .div, .mod => codegen.binaryOp(mir, inst_index),
+            .add, .sub, .mul, .div, .mod => try codegen.binaryOp(mir, inst_index),
             .ret => codegen.ret(mir, inst_index),
             .alloc => try codegen.alloc(mir, inst_index),
             .load => codegen.load(mir, inst_index),
@@ -251,26 +251,40 @@ fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     }
 }
 
-fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) c.LLVMValueRef {
+fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
     // TODO: handle global refs
     const lref = codegen.resolveLocalRef(data.bin_op.lref);
     const rref = codegen.resolveLocalRef(data.bin_op.rref);
     
-    // TODO: take care of signed properly
-    switch (mir.insts.items(.tag)[inst]) {
-        .add => return c.LLVMBuildAdd(codegen.builder, lref, rref, ""),
-        .sub => return c.LLVMBuildSub(codegen.builder, lref, rref, ""),
-        .mul => return c.LLVMBuildMul(codegen.builder, lref, rref, ""),
-        .div => {
-            return switch (c.LLVMGetValueKind(lref)) {
-                c.LLVMConstantIntValueKind => c.LLVMBuildSDiv(codegen.builder, lref, rref, ""),
-                c.LLVMConstantFPValueKind => c.LLVMBuildFDiv(codegen.builder, lref, rref, ""),
-                else => unreachable,
-            };
-        },
-        .mod => return c.LLVMBuildSRem(codegen.builder, lref, rref, ""),
-        else => unreachable,
+    if (c.LLVMGetTypeKind(c.LLVMTypeOf(lref)) != c.LLVMIntegerTypeKind) {
+        // floats
+        return switch (mir.insts.items(.tag)[inst]) {
+            .add => c.LLVMBuildFAdd(codegen.builder, lref, rref, ""),
+            .sub => c.LLVMBuildFSub(codegen.builder, lref, rref, ""),
+            .mul => c.LLVMBuildFMul(codegen.builder, lref, rref, ""),
+            .div => c.LLVMBuildFDiv(codegen.builder, lref, rref, ""),
+            .mod => return c.LLVMBuildFRem(codegen.builder, lref, rref, ""),
+            else => unreachable,
+        };
+    } else {
+        // TODO: take care of signed properly
+        return switch (mir.insts.items(.tag)[inst]) {
+            .add => return c.LLVMBuildAdd(codegen.builder, lref, rref, ""),
+            .sub => return c.LLVMBuildSub(codegen.builder, lref, rref, ""),
+            .mul => return c.LLVMBuildMul(codegen.builder, lref, rref, ""),
+            .div => {
+                const lty = try mir.resolveTy(data.bin_op.lref);
+                const rty = try mir.resolveTy(data.bin_op.rref);
+                if (lty.intSign() or rty.intSign()) {
+                    return c.LLVMBuildSDiv(codegen.builder, lref, rref, "");
+                } else {
+                    return c.LLVMBuildUDiv(codegen.builder, lref, rref, "");
+                }
+            },
+            .mod => return c.LLVMBuildSRem(codegen.builder, lref, rref, ""),
+            else => unreachable,
+        };
     }
 }
 

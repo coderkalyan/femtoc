@@ -222,3 +222,33 @@ pub const TypedValue = struct {
         }
     }
 };
+
+pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) !Type {
+    if (Mir.refToIndex(ref)) |index| {
+        const data = mir.insts.items(.data)[index];
+        return switch (mir.insts.items(.tag)[index]) {
+            .constant => data.ty_pl.ty,
+            .add, .sub, .mul, .div, .mod => mir.resolveTy(data.bin_op.lref),
+            .cmp_eq, .cmp_ne,
+            .cmp_uge, .cmp_ule, .cmp_ugt, .cmp_ult,
+            .cmp_sge, .cmp_sle, .cmp_sgt, .cmp_slt,
+            .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => Type.initTag(.u1),
+            .alloc => data.ty,
+            .load => mir.resolveTy(data.un_op),
+            .store => mir.resolveTy(data.un_op),
+            .param => data.ty_pl.ty,
+            .call => mir.resolveTy(data.op_pl.op),
+            .zext, .sext, .fpext => data.ty_op.ty,
+            else => {
+                std.debug.print("{}\n", .{mir.insts.items(.tag)[index]});
+                return error.NotImplemented;
+            },
+        };
+    } else {
+        return switch (ref) {
+            .zero_val, .one_val => .{ .tag = .comptime_uint },
+            .void_val => .{ .tag = .void },
+            else => error.NotImplemented,
+        };
+    }
+}
