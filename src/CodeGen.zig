@@ -76,6 +76,7 @@ fn getLlvmType(gpa: Allocator, ty: Type) !c.LLVMTypeRef {
             .comptime_float => unreachable,
             .f32 => c.LLVMFloatType(),
             .f64 => c.LLVMDoubleType(),
+            else => unreachable,
         };
     } else {
         switch (ty.payload.kind) {
