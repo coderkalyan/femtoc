@@ -766,6 +766,7 @@ fn loop(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
         break :block try analyzer.analyzeBlock(block, loop_data.body);
     };
 
+    // TODO: switch this to a bin_pl?
     const extra_index = try analyzer.addExtra(Mir.Inst.Loop {
         .condition = condition,
         .body = body,
