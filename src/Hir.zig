@@ -216,26 +216,26 @@ pub const Ref = enum(u32) {
     void_val,
     _,
 
-    pub fn toType(ref: Hir.Ref) Type {
-        return switch (ref) {
-            .i8_ty => Type.initTag(.i8),
-            .u8_ty => Type.initTag(.u8),
-            .i16_ty => Type.initTag(.i16),
-            .u16_ty => Type.initTag(.u16),
-            .i32_ty => Type.initTag(.i32),
-            .u32_ty => Type.initTag(.u32),
-            .i64_ty => Type.initTag(.i64),
-            .u64_ty => Type.initTag(.u64),
-            .f32_ty => Type.initTag(.f32),
-            .f64_ty => Type.initTag(.f64),
-            .bool_ty => Type.initTag(.u1),
-            .void_ty => Type.initTag(.void),
-            .zero_val, .one_val,
-            .btrue_val, .bfalse_val,
-            .void_val => unreachable,
-            _ => unreachable,
-        };
-    }
+    // pub fn toType(ref: Hir.Ref) Type {
+    //     return switch (ref) {
+    //         .i8_ty => Type.initInt(8, true),
+    //         .u8_ty => Type.initInt(8, false),
+    //         .i16_ty => Type.initInt(16, true),
+    //         .u16_ty => Type.initInt(16, false),
+    //         .i32_ty => Type.initInt(32, true),
+    //         .u32_ty => Type.initInt(32, false),
+    //         .i64_ty => Type.initInt(64, true),
+    //         .u64_ty => Type.initInt(64, false),
+    //         .f32_ty => Type.initFloat(32),
+    //         .f64_ty => Type.initFloat(64),
+    //         .bool_ty => Type.initInt(1, false),
+    //         .void_ty => Type.initVoid(),
+    //         .zero_val, .one_val,
+    //         .btrue_val, .bfalse_val,
+    //         .void_val => unreachable,
+    //         _ => unreachable,
+    //     };
+    // }
 };
 
 pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {

@@ -540,7 +540,8 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             switch (ir.insts.items(.tag)[index]) {
                 .proto => {
                     const data = ir.insts.items(.data)[index];
-                    const function_ty = data.ty_pl.ty.payload.cast(Type.Function).?;
+                    const ty = ir.refToType(data.ty_pl.ty);
+                    const function_ty = ty.extended.cast(Type.Function).?;
                     const mir_index = data.ty_pl.pl;
                     try writer.print("proto((", .{});
                     if (function_ty.params.len > 0) {
@@ -578,15 +579,16 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .constant => {
                     const data = ir.insts.items(.data)[index];
                     const value = ir.values[data.ty_pl.pl];
-                    try self.formatTy(data.ty_pl.ty, &lbuf);
-                    switch (data.ty_pl.ty.tag) {
-                        .comptime_uint, .u1, .u8, .u16, .u32, .u64 => {
+                    const ty = ir.refToType(data.ty_pl.ty);
+                    try self.formatRef(data.ty_pl.ty, &lbuf);
+                    switch (ty.kind()) {
+                        .comptime_uint, .uint => {
                             try writer.print("constant({s}, {})", .{lbuf, value.int});
                         },
-                        .comptime_sint, .i8, .i16, .i32, .i64 => {
+                        .comptime_sint, .sint => {
                             try writer.print("constant({s}, {})", .{lbuf, @bitCast(i64, value.int)});
                         },
-                        .comptime_float, .f32, .f64 => {
+                        .comptime_float, .float => {
                             try writer.print("constant({s}, {})", .{lbuf, value.float});
                         },
                         else => {},
@@ -699,7 +701,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .param => {
                     const data = ir.insts.items(.data)[index];
                     const param_str = try ir.interner.get(data.ty_pl.pl);
-                    try self.formatTy(data.ty_pl.ty, &lbuf);
+                    try self.formatRef(data.ty_pl.ty, &lbuf);
                     try writer.print("param(\"{s}\", {s})", .{param_str, lbuf});
                 },
                 .dbg_value => {
@@ -710,19 +712,19 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .zext => {
                     const data = ir.insts.items(.data)[index];
-                    try self.formatTy(data.ty_op.ty, &lbuf);
+                    try self.formatRef(data.ty_op.ty, &lbuf);
                     try self.formatRef(data.ty_op.op, &rbuf);
                     try writer.print("zext({s}, {s})", .{lbuf, rbuf});
                 },
                 .sext => {
                     const data = ir.insts.items(.data)[index];
-                    try self.formatTy(data.ty_op.ty, &lbuf);
+                    try self.formatRef(data.ty_op.ty, &lbuf);
                     try self.formatRef(data.ty_op.op, &rbuf);
                     try writer.print("sext({s}, {s})", .{lbuf, rbuf});
                 },
                 .fpext => {
                     const data = ir.insts.items(.data)[index];
-                    try self.formatTy(data.ty_op.ty, &lbuf);
+                    try self.formatRef(data.ty_op.ty, &lbuf);
                     try self.formatRef(data.ty_op.op, &rbuf);
                     try writer.print("fpext({s}, {s})", .{lbuf, rbuf});
                 },
@@ -741,6 +743,11 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     
                     try writer.print(")", .{});
                 },
+                .ty => {
+                    const data = ir.insts.items(.data)[index];
+                    try self.formatTy(data.ty, &lbuf);
+                    try writer.print("ty({s})", .{lbuf});
+                },
                 else => {try writer.print("{}", .{ir.insts.items(.tag)[index]});},
             }
 
@@ -756,7 +763,19 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     .zero_val => "zero",
                     .one_val => "one",
                     .void_val => "void_val",
-                    else => unreachable,
+                    .void_ty => "void",
+                    .u1_ty => "u1",
+                    .u8_ty => "u8",
+                    .u16_ty => "u16",
+                    .u32_ty => "u32",
+                    .u64_ty => "u64",
+                    .i8_ty => "i8",
+                    .i16_ty => "i16",
+                    .i32_ty => "i32",
+                    .i64_ty => "i64",
+                    .f32_ty => "f32",
+                    .f64_ty => "f64",
+                    _ => unreachable,
                 }});
             }
         }
@@ -768,26 +787,25 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
         fn formatTy(_: *Self, ty: Type, buf: []u8) !void {
             std.mem.set(u8, buf, 0);
-            if (ty.isTag()) {
-                _ = try std.fmt.bufPrint(buf, "{s}", .{switch (ty.tag) {
-                    .void => "void",
-                    .comptime_uint => "comptime_uint",
-                    .comptime_sint => "comptime_sint",
-                    .u1 => "u1",
-                    .u8 => "u8",
-                    .i8 => "i8",
-                    .u16 => "u16",
-                    .i16 => "i16",
-                    .u32 => "u32",
-                    .i32 => "i32",
-                    .u64 => "u64",
-                    .i64 => "i64",
-                    .comptime_float => "comptime_float",
-                    .f32 => "f32",
-                    .f64 => "f64",
-                    else => unreachable,
-                }});
-            }
+            _ = try std.fmt.bufPrint(buf, "{s}", .{switch (ty.kind()) {
+                .void => "void",
+                .comptime_uint => "comptime_uint",
+                .comptime_sint => "comptime_sint",
+                .comptime_float => "comptime_float",
+                .uint => {
+                    _ = try std.fmt.bufPrint(buf, "u{}", .{ty.basic.width});
+                    return;
+                },
+                .sint => {
+                    _ = try std.fmt.bufPrint(buf, "i{}", .{ty.basic.width});
+                    return;
+                },
+                .float => {
+                    _ = try std.fmt.bufPrint(buf, "f{}", .{ty.basic.width});
+                    return;
+                },
+                else => return, //return error.NotImplemented,
+            }});
         }
     };
 }

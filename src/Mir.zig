@@ -38,6 +38,7 @@ pub const Inst = struct {
         block,
 
         constant, // data contains type
+        ty,
 
         add,
         sub,
@@ -79,11 +80,14 @@ pub const Inst = struct {
         zext,
         sext,
         fpext,
+
+        global_val,
+        global_ptr,
     };
 
     pub const Data = union {
         ty_pl: struct {
-            ty: Type,
+            ty: Ref,
             // payload index in another array (like extra or values)
             pl: u32,
         },
@@ -92,7 +96,7 @@ pub const Inst = struct {
             pl: u32,
         },
         ty_op: struct {
-            ty: Type,
+            ty: Ref,
             op: Ref,
         },
         un_op: Ref,
@@ -152,7 +156,7 @@ pub const Ref = enum(u32) {
     u16_ty,
     u32_ty,
     u64_ty,
-    i1_ty,
+    u1_ty,
     i8_ty,
     i16_ty,
     i32_ty,
@@ -173,6 +177,31 @@ pub fn refToIndex(ref: Ref) ?Index {
     const ref_len = @intCast(u32, @typeInfo(Ref).Enum.fields.len);
     const index = @enumToInt(ref);
     return if (index >= ref_len) index - ref_len else null;
+}
+
+pub fn refToType(mir: *const Mir, ref: Ref) Type {
+    if (refToIndex(ref)) |index| {
+        std.debug.assert(mir.insts.items(.tag)[index] == .ty);
+        return mir.insts.items(.data)[index].ty;
+    } else {
+        return switch (ref) {
+            .u1_ty => Type.initInt(1, false),
+            .i8_ty => Type.initInt(8, true),
+            .u8_ty => Type.initInt(8, false),
+            .i16_ty => Type.initInt(16, true),
+            .u16_ty => Type.initInt(16, false),
+            .i32_ty => Type.initInt(32, true),
+            .u32_ty => Type.initInt(32, false),
+            .i64_ty => Type.initInt(64, true),
+            .u64_ty => Type.initInt(64, false),
+            .f32_ty => Type.initFloat(32),
+            .f64_ty => Type.initFloat(64),
+            .void_ty => Type.initVoid(),
+            .zero_val, .one_val,
+            .void_val => unreachable,
+            _ => unreachable,
+        };
+    }
 }
 
 pub fn extraData(mir: *const Mir, index: usize, comptime T: type) T {
@@ -227,18 +256,18 @@ pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) !Type {
     if (Mir.refToIndex(ref)) |index| {
         const data = mir.insts.items(.data)[index];
         return switch (mir.insts.items(.tag)[index]) {
-            .constant => data.ty_pl.ty,
+            .constant => mir.refToType(data.ty_pl.ty),
             .add, .sub, .mul, .div, .mod => mir.resolveTy(data.bin_op.lref),
             .cmp_eq, .cmp_ne,
             .cmp_uge, .cmp_ule, .cmp_ugt, .cmp_ult,
             .cmp_sge, .cmp_sle, .cmp_sgt, .cmp_slt,
-            .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => Type.initTag(.u1),
+            .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => Type.initInt(1, false),
             .alloc => data.ty,
             .load => mir.resolveTy(data.un_op),
             .store => mir.resolveTy(data.un_op),
-            .param => data.ty_pl.ty,
+            .param => mir.refToType(data.ty_pl.ty),
             .call => mir.resolveTy(data.op_pl.op),
-            .zext, .sext, .fpext => data.ty_op.ty,
+            .zext, .sext, .fpext => mir.refToType(data.ty_op.ty),
             else => {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[index]});
                 return error.NotImplemented;
@@ -246,8 +275,8 @@ pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) !Type {
         };
     } else {
         return switch (ref) {
-            .zero_val, .one_val => .{ .tag = .comptime_uint },
-            .void_val => .{ .tag = .void },
+            .zero_val, .one_val => Type.initComptimeInt(false),
+            .void_val => Type.initVoid(),
             else => error.NotImplemented,
         };
     }

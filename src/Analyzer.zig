@@ -97,12 +97,47 @@ pub const Block = struct {
             .tag = .constant,
             .data = .{
                 .ty_pl = .{
-                    .ty = ty,
+                    .ty = try b.typeToRef(ty),
                     .pl = value,
                 }
             }
         });
         return index;
+    }
+
+    pub fn addType(b: *Block, ty: Type) !u32 {
+        const index = try b.addInst(.{
+            .tag = .ty,
+            .data = .{ .ty = ty },
+        });
+        return index;
+    }
+
+    pub fn typeToRef(b: *Block, ty: Type) !Mir.Ref {
+        return switch (ty.kind()) {
+            .void => .void_ty,
+            .uint => switch (ty.basic.width) {
+                1 => .u1_ty,
+                8 => .u8_ty,
+                16 => .u16_ty,
+                32 => .u32_ty,
+                64 => .u64_ty,
+                else => Mir.indexToRef(try b.addType(ty)),
+            },
+            .sint => switch (ty.basic.width) {
+                8 => .i8_ty,
+                16 => .i16_ty,
+                32 => .i32_ty,
+                64 => .i64_ty,
+                else => Mir.indexToRef(try b.addType(ty)),
+            },
+            .float => switch (ty.basic.width) {
+                32 => .f32_ty,
+                64 => .f64_ty,
+                else => error.NotImplemented,
+            },
+            else => return Mir.indexToRef(try b.addType(ty)),
+        };
     }
 };
 
@@ -159,6 +194,7 @@ pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !u32 {
 pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const fn_decl = analyzer.hir.extraData(pl, Hir.Inst.FnDecl);
+    const mir = analyzer.getTempMir();
 
     var block = try analyzer.arena.create(Block);
     defer analyzer.arena.destroy(block);
@@ -180,26 +216,14 @@ pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mi
     }
 
     const block_index = try analyzer.analyzeBlock(block, fn_decl.body);
-    // TODO: proper ref to type
-    const return_ty = switch (fn_decl.return_ty) {
-        .i8_ty => Type.initTag(.i8),
-        .u8_ty => Type.initTag(.u8),
-        .i16_ty => Type.initTag(.i16),
-        .u16_ty => Type.initTag(.u16),
-        .i32_ty => Type.initTag(.i32),
-        .u32_ty => Type.initTag(.u32),
-        .i64_ty => Type.initTag(.i64),
-        .u64_ty => Type.initTag(.u64),
-        .void_ty => Type.initTag(.void),
-        else => return error.TypeError,
-    };
+    const return_ty = mir.refToType(analyzer.map.resolveRef(fn_decl.return_ty));
 
     const function_ty = try Type.Function.init(analyzer.gpa, return_ty, param_tys);
 
     const mir_index = @intCast(u32, analyzer.mg.mir.items.len);
     const proto = try b.addInst(.{
         .tag = .proto,
-        .data = .{ .ty_pl = .{ .ty = function_ty, .pl = mir_index } },
+        .data = .{ .ty_pl = .{ .ty = try b.typeToRef(function_ty), .pl = mir_index } },
     });
     _ = try block.addInst(.{
         .tag = .function,
@@ -283,32 +307,36 @@ pub fn param(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.extraData(pl, Hir.Inst.Param);
     // TODO: proper ref to type
     const ty = switch (data.ty) {
-        .i8_ty => Type.initTag(.i8),
-        .u8_ty => Type.initTag(.u8),
-        .i16_ty => Type.initTag(.i16),
-        .u16_ty => Type.initTag(.u16),
-        .i32_ty => Type.initTag(.i32),
-        .u32_ty => Type.initTag(.u32),
-        .i64_ty => Type.initTag(.i64),
-        .u64_ty => Type.initTag(.u64),
+        .void_ty => Type.initVoid(),
+        .bool_ty => Type.initInt(1, false),
+        .i8_ty => Type.initInt(8, true),
+        .u8_ty => Type.initInt(8, false),
+        .i16_ty => Type.initInt(16, true),
+        .u16_ty => Type.initInt(16, false),
+        .i32_ty => Type.initInt(32, true),
+        .u32_ty => Type.initInt(32, false),
+        .i64_ty => Type.initInt(64, true),
+        .u64_ty => Type.initInt(64, false),
+        .f32_ty => Type.initFloat(32),
+        .f64_ty => Type.initFloat(64),
         else => return error.TypeError,
     };
     const index = try b.addInst(.{
         .tag = .param,
-        .data = .{ .ty_pl = .{ .ty = ty, .pl = data.name } },
+        .data = .{ .ty_pl = .{ .ty = try b.typeToRef(ty), .pl = data.name } },
     });
     return Mir.indexToRef(index);
 }
 
 pub fn integer(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .int = data.int });
+    const index = try b.addConstant(Type.initComptimeInt(false), .{ .int = data.int });
     return Mir.indexToRef(index);
 }
 
 fn float(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const index = try b.addConstant(Type.initTag(.comptime_float), .{ .float = data.float });
+    const index = try b.addConstant(Type.initComptimeFloat(), .{ .float = data.float });
     return Mir.indexToRef(index);
 }
 
@@ -357,58 +385,11 @@ fn alloc(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const validate_ty = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.ValidateTy);
-    const ref = analyzer.map.resolveRef(validate_ty.ref);
-    const found_ty = try analyzer.resolveTy(b, ref);
-    const expected_ty = validate_ty.ty.toType();
+    const mir = analyzer.getTempMir();
 
-    if (found_ty.tag == expected_ty.tag) {
-        return ref;
-    } else {
-        switch (found_ty.tag) {
-            .comptime_uint, .comptime_sint => {
-                const int_value: u64 = if (Mir.refToIndex(ref)) |value_index| val: {
-                    const pl = analyzer.instructions.items(.data)[value_index].ty_pl.pl;
-                    break :val analyzer.values.items[pl].int;
-                } else val: {
-                    switch (ref) {
-                        .zero_val => break :val 0,
-                        .one_val => break :val 1,
-                        else => return error.InvalidRef,
-                    }
-                };
-                const index = switch (expected_ty.tag) {
-                    .u1, .u8, .u16, .u32, .u64,
-                    .i8, .i16,
-                    .i32, .i64 => try b.addConstant(expected_ty, .{ .int = int_value }),
-                    else => unreachable,
-                };
-                return Mir.indexToRef(index);
-            },
-            .comptime_float => {
-                const float_value: f64 = if (Mir.refToIndex(ref)) |value_index| val: {
-                    const pl = analyzer.instructions.items(.data)[value_index].ty_pl.pl;
-                    break :val analyzer.values.items[pl].float;
-                } else {
-                    return error.InvalidRef;
-                };
-                const index = try b.addConstant(expected_ty, .{ .float = float_value });
-                return Mir.indexToRef(index);
-            },
-            .u1 => {
-                const val: u64 = switch (ref) {
-                    .zero_val => 0,
-                    .one_val => 1,
-                    else => return error.InvalidRef,
-                };
-                const index = try b.addConstant(expected_ty, .{ .int = val });
-                return Mir.indexToRef(index);
-            },
-            else => {
-                std.debug.print("{}\n", .{found_ty.tag});
-                return error.TypeError;
-            },
-        }
-    }
+    const src = analyzer.map.resolveRef(validate_ty.ref);
+    const dest_ty = mir.refToType(analyzer.map.resolveRef(validate_ty.ty));
+    return coercion.coerce(analyzer, b, src, dest_ty);
 }
 
 fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
@@ -419,8 +400,8 @@ fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref 
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
 
-    if (lty.compareTag(.comptime_uint) or lty.compareTag(.comptime_sint)) {
-        if (rty.compareTag(.comptime_uint) or rty.compareTag(.comptime_sint)) {
+    if (lty.kind() == .comptime_uint or lty.kind() == .comptime_sint) {
+        if (rty.kind() == .comptime_uint or rty.kind() == .comptime_sint) {
             return analyzer.analyzeComptimeArithmetic(b, inst);
         }
     }
@@ -450,10 +431,12 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const rref = analyzer.map.resolveRef(binary.rref);
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
+    const lkind = lty.kind();
+    const rkind = rty.kind();
 
     // for now, we are using c++ semantics: if either is unsigned
     // everything is treated as unsigned
-    if (lty.compareTag(.comptime_sint) and rty.compareTag(.comptime_sint)) {
+    if (lkind == .comptime_sint and rkind == .comptime_sint) {
         // only case where we do signed comparison
         const lval: i64 = @bitCast(i64, analyzer.refToInt(lref));
         const rval: i64 = @bitCast(i64, analyzer.refToInt(rref));
@@ -467,7 +450,7 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
             else => unreachable,
         };
         return addUnsignedValue(b, @boolToInt(result));
-    } else if (lty.isComptimeNumber() and rty.isComptimeNumber()) {
+    } else if ((lkind == .comptime_uint or lkind == .comptime_sint) and (rkind == .comptime_uint or rkind == .comptime_sint)) {
         const lval: u64 = analyzer.refToInt(lref);
         const rval: u64 = analyzer.refToInt(rref);
         const result = switch (analyzer.hir.insts.items(.tag)[inst]) {
@@ -480,7 +463,7 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
             else => unreachable,
         };
         return addUnsignedValue(b, @boolToInt(result));
-    } else if (lty.compareTag(.comptime_float) and rty.compareTag(.comptime_float)) {
+    } else if (lkind == .comptime_float and rkind == .comptime_float) {
         const lval = analyzer.refToFloat(lref);
         const rval = analyzer.refToFloat(rref);
         const result = switch (analyzer.hir.insts.items(.tag)[inst]) {
@@ -495,11 +478,10 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
         return addUnsignedValue(b, @boolToInt(result));
     }
 
-    if (lty.isFloatType() and rty.isFloatType()) {
-        const lwidth = lty.numWidth();
-        const rwidth = rty.numWidth();
-        const isdouble = if (std.math.max(lwidth, rwidth) == 64) true else false;
-        const dest_ty = if (isdouble) Type.initTag(.f64) else Type.initTag(.f32);
+    if ((lkind == .comptime_float or lkind == .float) and (rkind == .comptime_float or rkind == .float)) {
+        const lwidth = lty.basic.width;
+        const rwidth = rty.basic.width;
+        const dest_ty = Type.initFloat(std.math.max(lwidth, rwidth));
         const lval = try coercion.coerce(analyzer, b, lref, dest_ty);
         const rval = try coercion.coerce(analyzer, b, rref, dest_ty);
         const hir_tag = analyzer.hir.insts.items(.tag)[inst];
@@ -518,22 +500,22 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
             .data = .{ .bin_op = .{ .lref = lval, .rref = rval } },
         });
         return Mir.indexToRef(index);
-    } else if (lty.isIntType() and rty.isIntType()) {
+    } else if (lty.isInt() and rty.isInt()) {
         const lsign = lty.intSign();
         const rsign = rty.intSign();
-        const vals = if (lty.isComptimeInteger()) vals: {
-            const rwidth = rty.numWidth();
+        const vals = if (lty.isComptimeInt()) vals: {
+            const rwidth = rty.basic.width;
             const lval = try coercion.coerce(analyzer, b, lref, Type.initInt(rwidth, lsign));
             const rval = rref;
             break :vals .{ lval, rval };
-        } else if (rty.isComptimeInteger()) vals: {
-            const lwidth = lty.numWidth();
+        } else if (rty.isComptimeInt()) vals: {
+            const lwidth = lty.basic.width;
             const lval = lref;
             const rval = try coercion.coerce(analyzer, b, rref, Type.initInt(lwidth, rsign));
             break :vals .{ lval, rval };
         } else vals: {
-            const lwidth = lty.numWidth();
-            const rwidth = rty.numWidth();
+            const lwidth = lty.basic.width;
+            const rwidth = rty.basic.width;
             const maxwidth = std.math.max(lwidth, rwidth);
             const lval = try coercion.coerce(analyzer, b, lref, Type.initInt(maxwidth, lsign));
             const rval = try coercion.coerce(analyzer, b, rref, Type.initInt(maxwidth, rsign));
@@ -568,7 +550,7 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     } else return error.TypeMismatch;
 }
 
-fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
+pub fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
     const index = Mir.refToIndex(ref).?;
     const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
     return analyzer.values.items[pl].float;
@@ -591,7 +573,7 @@ fn addUnsignedValue(b: *Block, val: u64) !Mir.Ref {
         0 => return Mir.Ref.zero_val,
         1 => return Mir.Ref.one_val,
         else => {
-            const index = try b.addConstant(Type.initTag(.comptime_uint), .{ .int = val });
+            const index = try b.addConstant(Type.initComptimeInt(false), .{ .int = val });
             return Mir.indexToRef(index);
         }
     }
@@ -602,8 +584,8 @@ fn addSignedValue(b: *Block, val: u64) !Mir.Ref {
         0 => return Mir.Ref.zero_val,
         1 => return Mir.Ref.one_val,
         else => {
-            const tag: Type.Tag = if (alu.isNegative(val)) .comptime_sint else .comptime_uint;
-            const index = try b.addConstant(Type.initTag(tag), .{ .int = val });
+            const sign = alu.isNegative(val);
+            const index = try b.addConstant(Type.initComptimeInt(sign), .{ .int = val });
             return Mir.indexToRef(index);
         }
     }
@@ -624,13 +606,13 @@ fn analyzeComptimeArithmetic(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !M
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
 
-    std.debug.assert(lty.isTag());
-    std.debug.assert(rty.isTag());
+    // std.debug.assert(lty.isTag());
+    // std.debug.assert(rty.isTag());
 
     const lval = analyzer.refToInt(lref);
     const rval = analyzer.refToInt(rref);
-    const lsign = lty.compareTag(.comptime_sint);
-    const rsign = rty.compareTag(.comptime_sint);
+    const lsign = lty.intSign();
+    const rsign = rty.intSign();
 
     // if both values are unsigned, we perform unsigned operations
     // otherwise signed. TODO: revise this?

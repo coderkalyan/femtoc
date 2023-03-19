@@ -10,11 +10,10 @@ pub const Error = error {
 };
 
 pub fn coerce(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
-    return switch (dest_ty.tag) {
-        .u1, .u8, .u16, .u32, .u64,
-        .i8, .i16, .i32, .i64 => coerceToInt(analyzer, b, src, dest_ty),
+    return switch (dest_ty.kind()) {
+        .uint, .sint => coerceToInt(analyzer, b, src, dest_ty),
         .comptime_uint, .comptime_sint => coerceToComptimeInt(analyzer, b, src, dest_ty),
-        .f32, .f64 => coerceToFloat(analyzer, b, src, dest_ty),
+        .float => coerceToFloat(analyzer, b, src, dest_ty),
         .comptime_float => coerceToComptimeFloat(analyzer, b, src, dest_ty),
         else => error.NotImplemented,
     };
@@ -22,47 +21,41 @@ pub fn coerce(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.
 
 fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     const src_ty = try analyzer.resolveTy(b, src);
-    if (!src_ty.isIntType()) return error.InvalidCoercion;
+    if (@bitCast(u64, dest_ty) == @bitCast(u64, src_ty)) return src;
 
     const src_sign = src_ty.intSign();
     const dest_sign = dest_ty.intSign();
-    switch (src_ty.tag) {
+    switch (src_ty.basic.kind) {
         .comptime_uint => {
             const val: u64 = analyzer.refToInt(src);
-            if ((val >= dest_ty.intMinValue()) and (val <= dest_ty.intMaxValue())) {
+            if ((val >= dest_ty.minInt()) and (val <= dest_ty.maxInt())) {
                 const index = try b.addConstant(dest_ty, .{ .int = val });
                 return Mir.indexToRef(index);
             } else return error.Truncated;
         },
         .comptime_sint => {
             const val: i64 = @bitCast(i64, analyzer.refToInt(src));
-            if ((val >= dest_ty.intMinValue()) and (val <= dest_ty.intMaxValue())) {
+            if ((val >= dest_ty.minInt()) and (val <= dest_ty.maxInt())) {
                 const index = try b.addConstant(dest_ty, .{ .int = @bitCast(u64, val) });
                 return Mir.indexToRef(index);
             } else return error.Truncated;
         },
-        .u1, .u8, .u16, .u32, .u64 => {
+        .uint => {
             if (src_sign != dest_sign) return error.Truncated;
-            if (dest_ty.intMaxValue() < src_ty.intMaxValue()) return error.Truncated;
-            if (dest_ty.intMaxValue() == src_ty.intMaxValue()) return src;
+            if (dest_ty.maxInt() < src_ty.maxInt()) return error.Truncated;
             const index = try b.addInst(.{
                 .tag = .zext,
-                .data = .{ .ty_op = .{ .ty = dest_ty, .op = src } },
+                .data = .{ .ty_op = .{ .ty = try b.typeToRef(dest_ty), .op = src } },
             });
             return Mir.indexToRef(index);
         },
-        .i8, .i16, .i32, .i64 => {
+        .sint => {
             if (src_sign != dest_sign) return error.Truncated;
-            const smax = src_ty.intMaxValue();
-            const dmax = dest_ty.intMaxValue();
-            const smin = src_ty.intMinValue();
-            const dmin = dest_ty.intMinValue();
-            if (dmax < smax) return error.Truncated;
-            if (dmin > smin) return error.Truncated;
-            if ((dmax == smax) and (dmin == smin)) return src;
+            if (dest_ty.maxInt() < src_ty.maxInt()) return error.Truncated;
+            if (dest_ty.minInt() > src_ty.minInt()) return error.Truncated;
             const index = try b.addInst(.{
                 .tag = .sext,
-                .data = .{ .ty_op = .{ .ty = dest_ty, .op = src } },
+                .data = .{ .ty_op = .{ .ty = try b.typeToRef(dest_ty), .op = src } },
             });
             return Mir.indexToRef(index);
         },
@@ -72,8 +65,8 @@ fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir
 
 fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     const src_ty = try analyzer.resolveTy(b, src);
-    switch (dest_ty.tag) {
-        .comptime_uint => switch (src_ty.tag) {
+    switch (dest_ty.basic.kind) {
+        .comptime_uint => switch (src_ty.kind()) {
             .comptime_uint => return src,
             .comptime_sint => {
                 const val: i64 = @bitCast(i64, analyzer.refToInt(src));
@@ -83,7 +76,7 @@ fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Ty
             },
             else => unreachable,
         },
-        .comptime_sint => switch (src_ty.tag) {
+        .comptime_sint => switch (src_ty.kind()) {
             .comptime_uint => {
                 const val: u64 = analyzer.refToInt(src);
                 if (val > std.math.maxInt(i64)) return error.Truncated;
@@ -105,43 +98,53 @@ fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Ty
 // if this function returns, it does NOT necessarily mean the coercion will
 // succeed (coerce() will determine that)
 pub fn binaryCoerceTo(lty: Type, rty: Type) !Type {
-    switch (lty.tag) {
+    switch (lty.kind()) {
         .comptime_uint, .comptime_sint, .comptime_float => return rty,
-        .u1, .u8, .u16, .u32, .u64,
-        .i8, .i16, .i32, .i64 => {
-            switch (rty.tag) {
-                .comptime_uint, .comptime_sint, .comptime_float => return lty,
-                .u1, .u8, .u16, .u32, .u64,
-                .i8, .i16, .i32, .i64 => {
-                    const lsize = try lty.size();
-                    const rsize = try rty.size();
-                    return if (rsize > lsize) rty else lty;
-                },
-                else => return error.NotImplemented,
-            }
+        .uint, .sint => switch (rty.kind()) {
+            .comptime_uint, .comptime_sint, .comptime_float => return lty,
+            .uint, .sint => {
+                const lsize = lty.size();
+                const rsize = rty.size();
+                return if (rsize > lsize) rty else lty;
+            },
+            else => return error.NotImplemented,
         },
-        .f32 => return if (rty.tag == .comptime_float) lty else rty,
-        .f64 => return lty,
+        .float => {
+            if (lty.basic.width == 64) return lty;
+            return if (rty.kind() == .comptime_float) lty else rty;
+        },
         else => return error.NotImplemented,
     }
 }
 
 pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     const src_ty = try analyzer.resolveTy(b, src);
-    if (src_ty.tag == dest_ty.tag) {
-        return src;
-    } else if ((dest_ty.tag == .f64) and (src_ty.tag == .f32)) {
-        const index = try b.addInst(.{
-            .tag = .fpext,
-            .data = .{ .ty_op = .{ .ty = Type.initTag(.f64), .op = src } },
-        });
-        return Mir.indexToRef(index);
-    } else return error.InvalidCoercion;
+    std.debug.print("src = {} {} dest = {} {}\n", .{src_ty.kind(), src_ty.basic.width, dest_ty.kind(), dest_ty.basic.width});
+    if (@bitCast(u64, src_ty) == @bitCast(u64, dest_ty)) return src;
+    if (dest_ty.basic.width == 64) {
+        if (src_ty.kind() == .comptime_float) {
+            const val = analyzer.refToFloat(src);
+            const index = try b.addConstant(dest_ty, .{ .float = val });
+            return Mir.indexToRef(index);
+        } else if (src_ty.basic.width == 32) {
+            const index = try b.addInst(.{
+                .tag = .fpext,
+                .data = .{ .ty_op = .{ .ty = try b.typeToRef(Type.initFloat(64)), .op = src } },
+            });
+            return Mir.indexToRef(index);
+        } else return error.InvalidCoercion;
+    } else {
+        if (src_ty.kind() == .comptime_float) {
+            const val = analyzer.refToFloat(src);
+            const index = try b.addConstant(dest_ty, .{ .float = val });
+            return Mir.indexToRef(index);
+        } else return error.InvalidCoercion;
+    }
 }
 
 pub fn coerceToComptimeFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     _ = dest_ty;
     const src_ty = try analyzer.resolveTy(b, src);
-    if (src_ty.tag == .comptime_float) return src;
+    if (src_ty.kind() == .comptime_float) return src;
     return error.InvalidCoercion;
 }

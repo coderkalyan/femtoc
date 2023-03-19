@@ -64,36 +64,28 @@ pub fn generate(gpa: Allocator, compilation: *const Compilation) !void {
 }
 
 fn getLlvmType(gpa: Allocator, ty: Type) !c.LLVMTypeRef {
-    if (ty.isTag()) {
-        return switch (ty.tag) {
-            .void => c.LLVMVoidType(),
-            .comptime_uint, .comptime_sint => unreachable,
-            .u1 => c.LLVMInt1Type(),
-            .i8, .u8 => c.LLVMInt8Type(),
-            .i16, .u16 => c.LLVMInt16Type(),
-            .i32, .u32 => c.LLVMInt32Type(),
-            .i64, .u64 => c.LLVMInt64Type(),
-            .comptime_float => unreachable,
-            .f32 => c.LLVMFloatType(),
-            .f64 => c.LLVMDoubleType(),
+    return switch (ty.kind()) {
+        .void => c.LLVMVoidType(),
+        .comptime_uint, .comptime_sint, .comptime_float => unreachable,
+        .uint, .sint => c.LLVMIntType(ty.basic.width),
+        .float => switch (ty.basic.width) {
+            32 => c.LLVMFloatType(),
+            64 => c.LLVMDoubleType(),
             else => unreachable,
-        };
-    } else {
-        switch (ty.payload.kind) {
-            .function => {
-                const function = ty.payload.cast(Type.Function).?;
-                const return_ty = try getLlvmType(gpa, function.return_ty);
+        },
+        .function => {
+            const function = ty.extended.cast(Type.Function).?;
+            const return_ty = try getLlvmType(gpa, function.return_ty);
 
-                const params = try gpa.alloc(c.LLVMTypeRef, function.params.len);
-                for (function.params) |param, i| {
-                    params[i] = try getLlvmType(gpa, param);
-                }
+            const params = try gpa.alloc(c.LLVMTypeRef, function.params.len);
+            for (function.params) |param, i| {
+                params[i] = try getLlvmType(gpa, param);
+            }
 
-                return c.LLVMFunctionType(return_ty, params.ptr, @intCast(c_uint, params.len), 0);
-            },
-            else => unreachable,
-        }
-    }
+            return c.LLVMFunctionType(return_ty, params.ptr, @intCast(c_uint, params.len), 0);
+        },
+        else => unreachable,
+    };
 }
 
 fn resolveLocalRef(codegen: *CodeGen, mirref: Mir.Ref) c.LLVMValueRef {
@@ -158,7 +150,7 @@ fn generateInitializer(backend: *Backend, global: *const Mir, inst: u32) c.LLVMV
 fn generateFunctionProto(backend: *Backend, global: *const Mir, inst: u32) !c.LLVMValueRef {
     const data = global.insts.items(.data)[inst];
 
-    const function_ty = try getLlvmType(backend.gpa, data.ty_pl.ty);
+    const function_ty = try getLlvmType(backend.gpa, global.refToType(data.ty_pl.ty));
     var name = [_]u8{'a', 0};
     name[0] += @intCast(u8, data.ty_pl.pl);
     const function_ref = c.LLVMAddFunction(backend.module, &name, function_ty);
@@ -221,11 +213,11 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
                 continue;
             },
             .dbg_value => try codegen.dbgValue(mir, inst_index),
-            else => ref: {
+            .ty => continue,
+            else => {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[inst_index]});
-                // unreachable;
-                break :ref c.LLVMConstPointerNull(c.LLVMInt32Type());
-            }
+                continue;
+            },
         };
         try codegen.map.put(codegen.gpa, inst_index, ref);
     }
@@ -234,19 +226,19 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!void {
 fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
     const value = mir.values[data.ty_pl.pl];
-    // TODO: make sure we will only use this with tagged types
-    switch (data.ty_pl.ty.tag) {
+    const mir_ty = mir.refToType(data.ty_pl.ty);
+    switch (mir_ty.kind()) {
         .comptime_uint,
         .comptime_sint,
         .comptime_float => return c.LLVMConstPointerNull(c.LLVMInt32Type()),
         else => {},
     }
 
-    const ty = try getLlvmType(gpa, data.ty_pl.ty);
-    switch (data.ty_pl.ty.tag) {
-        .u1, .u8, .u16, .u32, .u64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 0),
-        .i8, .i16, .i32, .i64 => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 1),
-        .f32, .f64 => return c.LLVMConstReal(ty, value.float),
+    const ty = try getLlvmType(gpa, mir_ty);
+    switch (mir_ty.kind()) {
+        .uint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 0),
+        .sint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 1),
+        .float => return c.LLVMConstReal(ty, value.float),
         else => unreachable,
     }
 }
@@ -426,7 +418,7 @@ fn dbgValue(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef
 fn zext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
 
-    const ty = try getLlvmType(codegen.gpa, data.ty_op.ty);
+    const ty = try getLlvmType(codegen.gpa, mir.refToType(data.ty_op.ty));
     const ref = codegen.resolveLocalRef(data.ty_op.op);
     return c.LLVMBuildZExt(codegen.builder, ref, ty, "");
 }
@@ -434,7 +426,7 @@ fn zext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
 fn sext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
 
-    const ty = try getLlvmType(codegen.gpa, data.ty_op.ty);
+    const ty = try getLlvmType(codegen.gpa, mir.refToType(data.ty_op.ty));
     const ref = codegen.resolveLocalRef(data.ty_op.op);
     return c.LLVMBuildSExt(codegen.builder, ref, ty, "");
 }
@@ -442,7 +434,7 @@ fn sext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
 fn fpext(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
 
-    const ty = try getLlvmType(codegen.gpa, data.ty_op.ty);
+    const ty = try getLlvmType(codegen.gpa, mir.refToType(data.ty_op.ty));
     const ref = codegen.resolveLocalRef(data.ty_op.op);
     return c.LLVMBuildFPExt(codegen.builder, ref, ty, "");
 }
