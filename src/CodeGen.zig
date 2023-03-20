@@ -188,6 +188,7 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!c.LLVMValueR
 
     const after_block = c.LLVMAppendBasicBlock(codegen.function, "");
     var yield_val: c.LLVMValueRef = null;
+    var yield_jump: bool = false;
 
     var extra_index: u32 = 0;
     while (extra_index < block_data.insts_len) : (extra_index += 1) {
@@ -219,13 +220,13 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!c.LLVMValueR
             .ty => continue,
             .yield => {
                 yield_val = codegen.yield(mir, inst_index);
-                _ = c.LLVMBuildBr(codegen.builder, after_block);
                 break;
             },
             .loop => {
                 try codegen.loop(mir, inst_index);
                 continue;
             },
+            .block => try codegen.block(mir, inst_index),
             else => {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[inst_index]});
                 continue;
@@ -234,13 +235,14 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!c.LLVMValueR
         try codegen.map.put(codegen.gpa, inst_index, ref);
     }
 
-    if (yield_val) |ref| {
+    if (yield_jump) {
+        _ = c.LLVMBuildBr(codegen.builder, after_block);
         c.LLVMPositionBuilderAtEnd(codegen.builder, after_block);
-        return ref;
     } else {
         c.LLVMDeleteBasicBlock(after_block);
-        return null;
     }
+
+    return yield_val;
 }
 
 fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
@@ -475,9 +477,9 @@ fn loop(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !void {
 
     c.LLVMPositionBuilderAtEnd(codegen.builder, condition_block);
     const condition_ref = try codegen.block(mir, loop_data.condition);
-    const yield_block = c.LLVMGetInsertBlock(codegen.builder);
-    const name = "loop_yield";
-    c.LLVMSetValueName2(c.LLVMBasicBlockAsValue(yield_block), name, name.len);
+    // const yield_block = c.LLVMGetInsertBlock(codegen.builder);
+    // const name = "loop_yield";
+    // c.LLVMSetValueName2(c.LLVMBasicBlockAsValue(yield_block), name, name.len);
     const exit_block = c.LLVMAppendBasicBlock(codegen.function, "loop_exit");
     _ = c.LLVMBuildCondBr(codegen.builder, condition_ref, entry_block, exit_block);
 
