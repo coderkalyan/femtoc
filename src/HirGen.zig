@@ -731,9 +731,18 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const condition = block: {
         var block_scope = Scope.Block.init(b, scope);
         defer block_scope.deinit();
+        const validate_data = try block_scope.hg.addExtra(Inst.ValidateTy {
+            .ref = Ref.btrue_val,
+            .ty = Ref.bool_ty,
+        });
+        // TODO: should be implicit not node
+        const validate_ty = try block_scope.addInst(.{
+            .tag = .validate_ty,
+            .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
+        });
         _ = try block_scope.addInst(.{
             .tag = .yield_implicit,
-            .data = .{ .un_tok = .{ .tok = undefined, .operand = Ref.btrue_val } },
+            .data = .{ .un_tok = .{ .tok = undefined, .operand = indexToRef(validate_ty) } },
         });
 
         const data = try block_scope.hg.addExtra(Inst.Block {
