@@ -119,7 +119,6 @@ pub fn binaryCoerceTo(lty: Type, rty: Type) !Type {
 
 pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     const src_ty = try analyzer.resolveTy(b, src);
-    std.debug.print("src = {} {} dest = {} {}\n", .{src_ty.kind(), src_ty.basic.width, dest_ty.kind(), dest_ty.basic.width});
     if (@bitCast(u64, src_ty) == @bitCast(u64, dest_ty)) return src;
     if (dest_ty.basic.width == 64) {
         if (src_ty.kind() == .comptime_float) {

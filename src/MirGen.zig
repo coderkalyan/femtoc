@@ -5,6 +5,8 @@ const Type = @import("typing.zig").Type;
 const Analyzer = @import("Analyzer.zig");
 const MirMap = @import("MirMap.zig");
 const Module = @import("Module.zig");
+const Compilation = @import("Compilation.zig");
+const Driver = @import("Driver.zig");
 
 const math = std.math;
 
@@ -22,12 +24,7 @@ map: MirMap,
 global: ?Mir,
 mir: std.ArrayListUnmanaged(Mir),
 
-pub const Compilation = struct {
-    global: Mir,
-    mir: []const Mir,
-};
-
-pub fn generate(gpa: Allocator, hir: *const Hir) !Compilation {
+pub fn generate(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !Compilation {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
@@ -44,6 +41,7 @@ pub fn generate(gpa: Allocator, hir: *const Hir) !Compilation {
     return Compilation {
         .global = global,
         .mir = mirgen.mir.toOwnedSlice(gpa),
+        .config = config,
     };
 }
 

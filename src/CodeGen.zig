@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Mir = @import("Mir.zig");
-const Compilation = @import("MirGen.zig").Compilation;
+const Compilation = @import("Compilation.zig");
 const Type = @import("typing.zig").Type;
 
 const c = @cImport({
