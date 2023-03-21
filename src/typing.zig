@@ -181,7 +181,7 @@ pub const Type = extern union {
         if (ty.basic.kind == .uint) {
             return 0;
         } else {
-            return -(@intCast(i64, 1) << width);
+            return (@intCast(i64, -1) << width);
         }
     }
 
