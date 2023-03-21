@@ -246,9 +246,8 @@ fn block(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) Error!c.LLVMValueR
 }
 
 fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
-    const data = mir.insts.items(.data)[inst];
-    const value = mir.values[data.ty_pl.pl];
-    const mir_ty = mir.refToType(data.ty_pl.ty);
+    const data = mir.insts.items(.data)[inst].ty_pl;
+    const mir_ty = mir.refToType(data.ty);
     switch (mir_ty.kind()) {
         .comptime_uint,
         .comptime_sint,
@@ -258,9 +257,9 @@ fn constant(gpa: Allocator, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef {
 
     const ty = try getLlvmType(gpa, mir_ty);
     switch (mir_ty.kind()) {
-        .uint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 0),
-        .sint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, value.int), 1),
-        .float => return c.LLVMConstReal(ty, value.float),
+        .uint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, mir.valToInt(data.pl)), 0),
+        .sint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, mir.valToInt(data.pl)), 1),
+        .float => return c.LLVMConstReal(ty, mir.valToFloat(data.pl)),
         else => unreachable,
     }
 }
@@ -270,7 +269,7 @@ fn binaryOp(codegen: *CodeGen, mir: *const Mir, inst: Mir.Index) !c.LLVMValueRef
     const lref = codegen.resolveLocalRef(data.bin_op.lref);
     const rref = codegen.resolveLocalRef(data.bin_op.rref);
     
-    const lty = try mir.resolveTy(data.bin_op.lref);
+    const lty = mir.resolveTy(data.bin_op.lref);
     return switch (lty.kind()) {
         .uint => switch (mir.insts.items(.tag)[inst]) {
             .add => c.LLVMBuildAdd(codegen.builder, lref, rref, ""),

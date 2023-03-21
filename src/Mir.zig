@@ -2,6 +2,7 @@ const std = @import("std");
 const Type = @import("typing.zig").Type;
 const NodeIndex = @import("Ast.zig").Node.Index;
 const Interner = @import("interner.zig").Interner;
+const Value = @import("value.zig").Value;
 
 // const Interner = @import("interner.zig").Interner;
 const Mir = @This();
@@ -221,38 +222,7 @@ pub const Module = struct {
     len: u32,
 };
 
-pub const Value = union {
-    int: u64,
-    float: f64,
-    payload: *Payload,
-
-    pub const Payload = struct {
-        tag: Tag,
-
-        pub const Tag = enum {
-            reference, // dummy not fleshed out yet
-            function,
-        };
-    };
-};
-
-pub const TypedValue = struct {
-    ty: Type,
-    val: Value,
-
-    pub fn coerces(tv: *TypedValue, ty: Type) bool {
-        // TODO: payload types
-        switch (tv.ty.tag) {
-            .comptime_int => {
-                _ = ty;
-                return true;
-            },
-            else => return false,
-        }
-    }
-};
-
-pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) !Type {
+pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) Type {
     if (Mir.refToIndex(ref)) |index| {
         const data = mir.insts.items(.data)[index];
         return switch (mir.insts.items(.tag)[index]) {
@@ -270,14 +240,79 @@ pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) !Type {
             .zext, .sext, .fpext => mir.refToType(data.ty_op.ty),
             else => {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[index]});
-                return error.NotImplemented;
+                unreachable;
             },
         };
     } else {
         return switch (ref) {
             .zero_val, .one_val => Type.initComptimeInt(false),
             .void_val => Type.initVoid(),
-            else => error.NotImplemented,
+            else => unreachable,
+            // else => error.NotImplemented,
         };
     }
+}
+
+// TODO: merge with plToInt
+pub fn refToInt(mir: *const Mir, ref: Mir.Ref) u64 {
+    switch (ref) {
+        .zero_val => return 0,
+        .one_val => return 1,
+        else => {
+            const index = Mir.refToIndex(ref).?;
+            const data = mir.insts.items(.data)[index].ty_pl;
+            const val = mir.values[data.pl];
+            switch (val.kind()) {
+                .zero => return 0,
+                .one => return 1,
+                .u32 => {
+                    const payload = val.payload.cast(Value.Payload.U32).?;
+                    const ty = mir.resolveTy(data.ty);
+                    if (ty.intSign()) {
+                        // interpret payload as i32, sign extend it to i64,
+                        // then reinterpret as u64 to return
+                        // TODO: probably more readable to implement and use alu.sext
+                        return @bitCast(u64, @intCast(i64, @bitCast(i32, payload.int)));
+                    } else {
+                        return @intCast(u64, payload.int);
+                    }
+                },
+                .u64 => {
+                    const payload = val.payload.cast(Value.Payload.U64).?;
+                    return payload.int;
+                },
+                else => unreachable,
+            }
+        },
+    }
+}
+
+pub fn valToInt(mir: *const Mir, val_pl: u32) u64 {
+    const val = mir.values[val_pl];
+    switch (val.kind()) {
+        .zero => return 0,
+        .one => return 1,
+        .u32 => {
+            const payload = val.payload.cast(Value.Payload.U32).?;
+            return @intCast(u64, payload.int);
+        },
+        .u64 => {
+            const payload = val.payload.cast(Value.Payload.U64).?;
+            return payload.int;
+        },
+        else => unreachable,
+    }
+}
+
+pub fn refToFloat(mir: *const Mir, ref: Mir.Ref) f64 {
+    const index = Mir.refToIndex(ref).?;
+    const pl = mir.insts.items(.data)[index].ty_pl.pl;
+    return mir.valToFloat(pl);
+}
+
+
+pub fn valToFloat(mir: *const Mir, val_pl: u32) f64 {
+    const val = mir.values[val_pl];
+    const f = val.payload.cast(Value.Payload.F64).?;
+    return f.float;
 }

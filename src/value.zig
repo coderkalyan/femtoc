@@ -1,67 +1,58 @@
 const std = @import("std");
-const typing = @import("typing.zig");
+const Hir = @import("Hir.zig");
+const Type = @import("typing.zig").Type;
+const Compilation = @import("Compilation.zig");
+const Decl = Compilation.Decl;
 
-const Type = typing.Type;
-
-pub const Value = union {
-    int: u64,
-    float: f64,
+pub const Value = extern union {
+    // int: u64,
+    // float: f64,
+    tag: Tag,
     payload: *Payload,
+
+    const tagged_length = 4096;
+
+    pub const Tag = enum(u32) {
+        zero,
+        one,
+        void_val,
+
+        // everything below is a payload
+        u32,
+        u64,
+        f64,
+        function,
+    };
 
     pub const Payload = struct {
         tag: Tag,
 
-        pub const Tag = enum {
-
+        pub const U32 = struct {
+            base: Payload = .{ .tag = .u32 },
+            int: u32,
         };
-    };
 
-    pub const ints = [_]type{
-        .{.i1, i1},
-        .{.i8, i8},
-        .{.u8, u8},
-        .{.i16, i16},
-        .{.u16, u16},
-        .{.i32, i32},
-        .{.u32, u32},
-        .{.i64, i64},
-        .{.u64, u64},
-    };
-};
+        pub const U64 = struct {
+            base: Payload = .{ .tag = .u64 },
+            int: u64,
+        };
 
-pub const TypedValue = struct {
-    ty: Type,
-    val: Value,
+        pub const F64 = struct {
+            base: Payload = .{ .tag = .f64 },
+            float: f64,
+        };
 
-    pub fn coerce(tv: *TypedValue, ty: Type) ?TypedValue {
-        switch (tv.ty.tag) {
-            .comptime_int => {
-                inline for (Type.ints) |int| {
-                    const val = tv.val.int;
-                    if (ty.tag == int[0]) {
-                        if ((val >= std.math.minInt(int[1])) and (val <= std.math.maxInt(int[1]))) {
-                            return @intCast(int[1], val);
-                        } else {
-                            return null;
-                        }
-                    }
-                }
-            }
+        pub const Function = struct {
+            base: Payload,
+            func: *Decl.Function,
+        };
+
+        pub inline fn cast(base: *const Payload, comptime T: type) ?*const T {
+            return @fieldParentPtr(T, "base", base);
         }
+    };
+
+    pub inline fn kind(val: Value) Tag {
+        return if (@bitCast(u64, val) < tagged_length) val.tag else val.payload.tag;
     }
 };
-
-fn tvInt(val: anytype) TypedValue {
-    return TypedValue {
-        .ty = .{ .tag = .comptime_int },
-        .val = .{ .int = @bitCast(u64, val) },
-    };
-}
-
-// fn testIntCoerce(val: anytype) !void {
-//     try std.testing.expectEqual(tvInt(val).coerce())
-// }
-
-// test "comptime_int coersion" {
-//     try std.testing.expectEqual(tvInt(123).coerce(123));
-// }

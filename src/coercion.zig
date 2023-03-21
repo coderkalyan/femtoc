@@ -29,14 +29,14 @@ fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir
         .comptime_uint => {
             const val: u64 = analyzer.refToInt(src);
             if ((val >= dest_ty.minInt()) and (val <= dest_ty.maxInt())) {
-                const index = try b.addConstant(dest_ty, .{ .int = val });
+                const index = try b.addIntConstant(dest_ty, val);
                 return Mir.indexToRef(index);
             } else return error.Truncated;
         },
         .comptime_sint => {
             const val: i64 = @bitCast(i64, analyzer.refToInt(src));
             if ((val >= dest_ty.minInt()) and (val <= dest_ty.maxInt())) {
-                const index = try b.addConstant(dest_ty, .{ .int = @bitCast(u64, val) });
+                const index = try b.addIntConstant(dest_ty, @bitCast(u64, val));
                 return Mir.indexToRef(index);
             } else return error.Truncated;
         },
@@ -71,7 +71,7 @@ fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Ty
             .comptime_sint => {
                 const val: i64 = @bitCast(i64, analyzer.refToInt(src));
                 if (val < 0) return error.Truncated;
-                const index = try b.addConstant(dest_ty, .{ .int = @bitCast(u64, val) });
+                const index = try b.addIntConstant(dest_ty, @bitCast(u64, val));
                 return Mir.indexToRef(index);
             },
             else => unreachable,
@@ -80,7 +80,7 @@ fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Ty
             .comptime_uint => {
                 const val: u64 = analyzer.refToInt(src);
                 if (val > std.math.maxInt(i64)) return error.Truncated;
-                const index = try b.addConstant(dest_ty, .{ .int = val });
+                const index = try b.addIntConstant(dest_ty, val);
                 return Mir.indexToRef(index);
             },
             .comptime_sint => return src,
@@ -124,7 +124,7 @@ pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type
     if (dest_ty.basic.width == 64) {
         if (src_ty.kind() == .comptime_float) {
             const val = analyzer.refToFloat(src);
-            const index = try b.addConstant(dest_ty, .{ .float = val });
+            const index = try b.addFloatConstant(dest_ty, val);
             return Mir.indexToRef(index);
         } else if (src_ty.basic.width == 32) {
             const index = try b.addInst(.{
@@ -136,7 +136,7 @@ pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type
     } else {
         if (src_ty.kind() == .comptime_float) {
             const val = analyzer.refToFloat(src);
-            const index = try b.addConstant(dest_ty, .{ .float = val });
+            const index = try b.addFloatConstant(dest_ty, val);
             return Mir.indexToRef(index);
         } else return error.InvalidCoercion;
     }

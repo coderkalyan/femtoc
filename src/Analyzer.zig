@@ -2,7 +2,7 @@ const std = @import("std");
 const Hir = @import("Hir.zig");
 const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
-const TypedValue = @import("typing.zig").TypedValue;
+const Value = @import("value.zig").Value;
 const MirGen = @import("MirGen.zig");
 const MirMap = @import("MirMap.zig");
 const Interner = @import("interner.zig").Interner;
@@ -11,7 +11,6 @@ const coercion = @import("coercion.zig");
 
 const Allocator = std.mem.Allocator;
 const Analyzer = @This();
-const Value = Mir.Value;
 
 const Error = Allocator.Error || Mir.Error || coercion.Error || error {
     InvalidRef,
@@ -103,6 +102,27 @@ pub const Block = struct {
             }
         });
         return index;
+    }
+
+    pub fn addIntConstant(b: *Block, ty: Type, int: u64) !u32 {
+        std.debug.assert(ty.basic.width <= 64);
+        if (int == 0) return b.addConstant(ty, .{ .tag = .zero });
+        if (int == 1) return b.addConstant(ty, .{ .tag = .one });
+        if (ty.basic.width <= 32) {
+            var payload = try b.analyzer.gpa.create(Value.Payload.U32);
+            payload.* = .{ .int = @truncate(u32, int) };
+            return b.addConstant(ty, .{ .payload = &payload.base });
+        } else {
+            var payload = try b.analyzer.gpa.create(Value.Payload.U64);
+            payload.* = .{ .int = int };
+            return b.addConstant(ty, .{ .payload = &payload.base });
+        }
+    }
+
+    pub fn addFloatConstant(b: *Block, ty: Type, f: f64) !u32 {
+        var payload = try b.analyzer.gpa.create(Value.Payload.F64);
+        payload.* = .{ .float = f };
+        return b.addConstant(ty, .{ .payload = &payload.base });
     }
 
     pub fn addType(b: *Block, ty: Type) !u32 {
@@ -302,6 +322,14 @@ pub fn resolveTy(analyzer: *Analyzer, b: *Block, ref: Mir.Ref) !Type {
     return analyzer.getTempMir().resolveTy(ref);
 }
 
+pub inline fn refToInt(analyzer: *Analyzer, ref: Mir.Ref) u64 {
+    return analyzer.getTempMir().refToInt(ref);
+}
+
+pub inline fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
+    return analyzer.getTempMir().refToFloat(ref);
+}
+
 pub fn param(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const data = analyzer.hir.extraData(pl, Hir.Inst.Param);
@@ -330,13 +358,13 @@ pub fn param(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 
 pub fn integer(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const index = try b.addConstant(Type.initComptimeInt(false), .{ .int = data.int });
+    const index = try b.addIntConstant(Type.initComptimeInt(false), data.int);
     return Mir.indexToRef(index);
 }
 
 fn float(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const index = try b.addConstant(Type.initComptimeFloat(), .{ .float = data.float });
+    const index = try b.addFloatConstant(Type.initComptimeFloat(), data.float);
     return Mir.indexToRef(index);
 }
 
@@ -550,30 +578,13 @@ fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     } else return error.TypeMismatch;
 }
 
-pub fn refToFloat(analyzer: *Analyzer, ref: Mir.Ref) f64 {
-    const index = Mir.refToIndex(ref).?;
-    const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
-    return analyzer.values.items[pl].float;
-}
-
-pub fn refToInt(analyzer: *Analyzer, ref: Mir.Ref) u64 {
-    switch (ref) {
-        .zero_val => return 0,
-        .one_val => return 1,
-        else => {
-            const index = Mir.refToIndex(ref).?;
-            const pl = analyzer.instructions.items(.data)[index].ty_pl.pl;
-            return analyzer.values.items[pl].int;
-        },
-    }
-}
 
 fn addUnsignedValue(b: *Block, val: u64) !Mir.Ref {
     switch (val) {
         0 => return Mir.Ref.zero_val,
         1 => return Mir.Ref.one_val,
         else => {
-            const index = try b.addConstant(Type.initComptimeInt(false), .{ .int = val });
+            const index = try b.addIntConstant(Type.initComptimeInt(false), val);
             return Mir.indexToRef(index);
         }
     }
@@ -585,7 +596,7 @@ fn addSignedValue(b: *Block, val: u64) !Mir.Ref {
         1 => return Mir.Ref.one_val,
         else => {
             const sign = alu.isNegative(val);
-            const index = try b.addConstant(Type.initComptimeInt(sign), .{ .int = val });
+            const index = try b.addIntConstant(Type.initComptimeInt(sign), val);
             return Mir.indexToRef(index);
         }
     }
