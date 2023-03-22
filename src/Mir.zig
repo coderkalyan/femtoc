@@ -4,7 +4,6 @@ const NodeIndex = @import("Ast.zig").Node.Index;
 const Interner = @import("interner.zig").Interner;
 const Value = @import("value.zig").Value;
 
-// const Interner = @import("interner.zig").Interner;
 const Mir = @This();
 pub const Error = error { NotImplemented };
 pub const UserError = struct {
@@ -33,9 +32,6 @@ pub const Inst = struct {
     data: Data,
 
     pub const Tag = enum(u8) {
-        module,
-        proto,
-        function,
         block,
 
         constant, // data contains type

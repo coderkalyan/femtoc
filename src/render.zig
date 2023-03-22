@@ -538,31 +538,6 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             var lbuf: [32]u8 = [_]u8{0} ** 32;
             var rbuf: [32]u8 = [_]u8{0} ** 32;
             switch (ir.insts.items(.tag)[index]) {
-                .proto => {
-                    const data = ir.insts.items(.data)[index];
-                    const ty = ir.refToType(data.ty_pl.ty);
-                    const function_ty = ty.extended.cast(Type.Function).?;
-                    const mir_index = data.ty_pl.pl;
-                    try writer.print("proto((", .{});
-                    if (function_ty.params.len > 0) {
-                        for (function_ty.params[0..function_ty.params.len - 1]) |param| {
-                            try self.formatTy(param, &lbuf);
-                            try writer.print("{s}, ", .{lbuf});
-                        }
-                        try self.formatTy(function_ty.params[function_ty.params.len - 1], &lbuf);
-                    }
-                    try self.formatTy(function_ty.return_ty, &rbuf);
-                    try writer.print("{s}) -> {s}, body=@{})", .{lbuf, rbuf, mir_index});
-                },
-                .function => {
-                    const data = ir.insts.items(.data)[index];
-                    try writer.print("function(proto=@{}, body={{", .{data.bin_pl.l});
-                    self.stream.indent();
-                    try self.stream.newline();
-                    try self.renderInst(data.bin_pl.r);
-                    self.stream.dedent();
-                    try writer.print("}})", .{});
-                },
                 .block => {
                     const pl = ir.insts.items(.data)[index].pl;
                     const block = ir.extraData(pl, Mir.Inst.Block);

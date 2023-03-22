@@ -107,12 +107,12 @@ pub const Type = extern union {
     pub const Function = struct {
         const base_kind: Kind = .function;
         base: Payload = .{ .kind = base_kind },
-        params: []Type,
-        return_ty: Type,
+        param_types: []Type,
+        return_type: Type,
 
-        pub fn init(gpa: Allocator, return_ty: Type, params: []Type) !Type {
+        pub fn init(gpa: Allocator, return_type: Type, param_types: []Type) !Type {
             const function = try gpa.create(Function);
-            function.* = Function { .params = params, .return_ty = return_ty };
+            function.* = Function { .param_types = param_types, .return_type = return_type };
             return .{ .extended = &function.base };
         }
     };

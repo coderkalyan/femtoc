@@ -1,12 +1,5 @@
 const std = @import("std");
 const clap = @import("clap");
-const parse = @import("parse.zig");
-const HirGen = @import("HirGen.zig");
-const MirGen = @import("MirGen.zig");
-const MirMap = @import("MirMap.zig");
-const Mir = @import("Mir.zig");
-const render = @import("render.zig");
-const CodeGen = @import("CodeGen.zig");
 const Driver = @import("Driver.zig");
 
 const debug = std.debug;
@@ -15,6 +8,14 @@ const io = std.io;
 fn fatal(msg: []const u8) noreturn {
     debug.print("{s}\n", .{msg});
     std.process.exit(1);
+}
+
+fn stem(path: []const u8) []const u8 {
+    var start = path.len - 1;
+    while (path[start] != '/') : (start -= 1) {}
+    var end = path.len - 1;
+    while (path[end] != '.') : (end -= 1) {}
+    return path[start+1..end];
 }
 
 pub fn main() !void {
@@ -53,30 +54,35 @@ pub fn main() !void {
         .verbose_hir = res.args.@"verbose-hir",
         .verbose_mir = res.args.@"verbose-mir",
         .verbose_llvm_ir = res.args.@"verbose-llvm-ir",
+        .emit_llvm = res.args.@"emit-llvm",
     };
 
-    const input_stem = std.fs.path.basename(config.input);
+    const input_stem = stem(config.input);
+    var extension: []const u8 = "o";
     if (res.args.compile) {
         if (res.args.assemble) {
             fatal("-c cannot be used along with -S");
         }
-        config.output = try std.fmt.allocPrint(allocator, "{s}.o", .{input_stem});
+        extension = "o";
         config.stage = .object;
     } else if (res.args.assemble) {
-        config.output = try std.fmt.allocPrint(allocator, "{s}.s", .{input_stem});
+        extension = "s";
         config.stage = .assembly;
     }
 
     if (res.args.@"emit-llvm") {
         if (res.args.assemble) {
             allocator.free(config.output);
-            config.output = try std.fmt.allocPrint(allocator, "{s}.ll", .{input_stem});
+            extension = "ll";
             config.stage = .llvm_ll;
         } else {
-            config.output = try std.fmt.allocPrint(allocator, "{s}.bc", .{input_stem});
+            extension = "bc";
             config.stage = .llvm_bc;
         }
     }
+    const chunks: [2][]const u8 = .{ input_stem, extension };
+    config.output = try std.mem.joinZ(allocator, ".", &chunks);
+    defer allocator.free(config.output);
 
     try Driver.build(allocator, &config);
 }

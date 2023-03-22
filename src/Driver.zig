@@ -1,8 +1,7 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 const HirGen = @import("HirGen.zig");
-const MirGen = @import("MirGen.zig");
-const CodeGen = @import("CodeGen.zig");
+const Compilation = @import("Compilation.zig");
 const render = @import("render.zig");
 
 const Allocator = std.mem.Allocator;
@@ -23,6 +22,7 @@ pub const Configuration = struct {
     verbose_hir: bool,
     verbose_mir: bool,
     verbose_llvm_ir: bool,
+    emit_llvm: bool,
 };
 
 pub fn build(gpa: Allocator, config: *Configuration) !void {
@@ -55,7 +55,5 @@ pub fn build(gpa: Allocator, config: *Configuration) !void {
         try buffered_out.flush();
     }
 
-    const compilation = try MirGen.generate(gpa, &hir, config);
-
-    try CodeGen.generate(gpa, &compilation);
+    try Compilation.compile(gpa, &hir, config);
 }

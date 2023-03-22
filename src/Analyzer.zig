@@ -3,7 +3,8 @@ const Hir = @import("Hir.zig");
 const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
 const Value = @import("value.zig").Value;
-const MirGen = @import("MirGen.zig");
+// const MirGen = @import("MirGen.zig");
+const Compilation = @import("Compilation.zig");
 const MirMap = @import("MirMap.zig");
 const Interner = @import("interner.zig").Interner;
 const alu = @import("alu.zig");
@@ -23,8 +24,10 @@ const Error = Allocator.Error || Mir.Error || coercion.Error || error {
     UnspecificType,
 };
 
-mg: *MirGen,
-map: MirMap,
+// mg: *MirGen,
+comp: *Compilation,
+// map: MirMap,
+map: std.AutoHashMapUnmanaged(Hir.Index, Mir.Ref),
 hir: *const Hir,
 instructions: std.MultiArrayList(Mir.Inst),
 extra: std.ArrayListUnmanaged(u32),
@@ -161,6 +164,36 @@ pub const Block = struct {
     }
 };
 
+fn resolveRef(analyzer: *Analyzer, ref: Hir.Ref) Mir.Ref {
+    return switch (ref) {
+        .zero_val => .zero_val,
+        .one_val => .one_val,
+        .void_val => .void_val,
+        .btrue_val => .one_val,
+        .bfalse_val => .zero_val,
+        .u8_ty => .u8_ty,
+        .u16_ty => .u16_ty,
+        .u32_ty => .u32_ty,
+        .u64_ty => .u64_ty,
+        .i8_ty => .i8_ty,
+        .i16_ty => .i16_ty,
+        .i32_ty => .i32_ty,
+        .i64_ty => .i64_ty,
+        .f32_ty => .f32_ty,
+        .f64_ty => .f64_ty,
+        .bool_ty => .u1_ty,
+        .void_ty => .void_ty,
+        else => {
+            if (analyzer.map.get(Hir.Inst.refToIndex(ref).?)) |mapping| {
+                return mapping;
+            } else {
+                std.debug.print("unable to find ref {}\n", .{ref});
+                return Mir.indexToRef(0);
+            }
+        },
+    };
+}
+
 pub fn addBlock(block: *Block) !u32 {
     const analyzer = block.analyzer;
     const insts = block.instructions.items;
@@ -212,6 +245,7 @@ pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !u32 {
 }
 
 pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir {
+    if (true) unreachable;
     const pl = analyzer.hir.insts.items(.data)[inst].pl_node.pl;
     const fn_decl = analyzer.hir.extraData(pl, Hir.Inst.FnDecl);
     const mir = analyzer.getTempMir();
@@ -219,7 +253,7 @@ pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mi
     var block = try analyzer.arena.create(Block);
     defer analyzer.arena.destroy(block);
     block.* = Block {
-        .parent = b,
+        .parent = null,
         .analyzer = analyzer,
         .instructions = .{},
     };
@@ -236,11 +270,11 @@ pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mi
     }
 
     const block_index = try analyzer.analyzeBlock(block, fn_decl.body);
-    const return_ty = mir.refToType(analyzer.map.resolveRef(fn_decl.return_ty));
+    const return_ty = mir.refToType(analyzer.resolveRef(fn_decl.return_ty));
 
     const function_ty = try Type.Function.init(analyzer.gpa, return_ty, param_tys);
 
-    const mir_index = @intCast(u32, analyzer.mg.mir.items.len);
+    const mir_index = @intCast(u32, 0); //analyzer.mg.mir.items.len);
     const proto = try b.addInst(.{
         .tag = .proto,
         .data = .{ .ty_pl = .{ .ty = try b.typeToRef(function_ty), .pl = mir_index } },
@@ -265,7 +299,7 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!u32 {
     const block = b;
 
     const hir_insts = analyzer.hir.extra_data[pl + 1..pl + 1 + block_data.len];
-    try analyzer.map.ensureSliceCapacity(analyzer.arena, hir_insts);
+    // try analyzer.map.ensureSliceCapacity(analyzer.arena, hir_insts);
     for (hir_insts) |index| {
         const ref = switch (analyzer.hir.insts.items(.tag)[index]) {
             .int => try analyzer.integer(block, index),
@@ -300,9 +334,10 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!u32 {
             },
             else => Mir.indexToRef(0),
         };
-        analyzer.map.putAssumeCapacity(index, ref);
+        try analyzer.map.put(analyzer.gpa, index, ref);
     }
-    for (hir_insts) |index| analyzer.map.remove(index);
+    // TODO: remove things from map
+    // for (hir_insts) |index| _ = analyzer.map.remove(index);
 
     const index = try addBlock(block);
     return index;
@@ -371,23 +406,23 @@ fn float(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 fn loadInline(analyzer: *Analyzer, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const ref = analyzer.hir.resolution_map.get(data.pl_node.pl).?;
-    return analyzer.map.resolveRef(ref);
+    return analyzer.resolveRef(ref);
 }
 
 fn load(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const index = try b.addInst(.{
         .tag = .load,
-        .data = .{ .un_op = analyzer.map.resolveRef(data.un_node.operand) },
+        .data = .{ .un_op = analyzer.resolveRef(data.un_node.operand) },
     });
     return Mir.indexToRef(index);
 }
 
 fn store(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const store_data = analyzer.mg.hir.extraData(data.pl_node.pl, Hir.Inst.Store);
-    const addr = analyzer.map.resolveRef(Hir.Inst.indexToRef(store_data.addr));
-    const val = analyzer.map.resolveRef(store_data.val);
+    const store_data = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Store);
+    const addr = analyzer.resolveRef(Hir.Inst.indexToRef(store_data.addr));
+    const val = analyzer.resolveRef(store_data.val);
     const index = try b.addInst(.{
         .tag = .store,
         .data = .{ .bin_op = .{ .lref = addr, .rref = val } },
@@ -397,7 +432,7 @@ fn store(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 
 fn alloc(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const ref = analyzer.map.resolveRef(data.un_node.operand);
+    const ref = analyzer.resolveRef(data.un_node.operand);
     const ty = try analyzer.resolveTy(b, ref);
     const index = try b.addInst(.{
         .tag = .alloc,
@@ -415,16 +450,16 @@ fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const validate_ty = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.ValidateTy);
     const mir = analyzer.getTempMir();
 
-    const src = analyzer.map.resolveRef(validate_ty.ref);
-    const dest_ty = mir.refToType(analyzer.map.resolveRef(validate_ty.ty));
+    const src = analyzer.resolveRef(validate_ty.ref);
+    const dest_ty = mir.refToType(analyzer.resolveRef(validate_ty.ty));
     return coercion.coerce(analyzer, b, src, dest_ty);
 }
 
 fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
-    const lref = analyzer.map.resolveRef(binary.lref);
-    const rref = analyzer.map.resolveRef(binary.rref);
+    const lref = analyzer.resolveRef(binary.lref);
+    const rref = analyzer.resolveRef(binary.rref);
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
 
@@ -455,8 +490,8 @@ fn binaryArithOp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref 
 fn binaryCmp(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
-    const lref = analyzer.map.resolveRef(binary.lref);
-    const rref = analyzer.map.resolveRef(binary.rref);
+    const lref = analyzer.resolveRef(binary.lref);
+    const rref = analyzer.resolveRef(binary.rref);
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
     const lkind = lty.kind();
@@ -612,8 +647,8 @@ fn addSignedValue(b: *Block, val: u64) !Mir.Ref {
 fn analyzeComptimeArithmetic(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const binary = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
-    const lref = analyzer.map.resolveRef(binary.lref);
-    const rref = analyzer.map.resolveRef(binary.rref);
+    const lref = analyzer.resolveRef(binary.lref);
+    const rref = analyzer.resolveRef(binary.rref);
     const lty = try analyzer.resolveTy(b, lref);
     const rty = try analyzer.resolveTy(b, rref);
 
@@ -664,7 +699,7 @@ fn emitUserError(analyzer: *Analyzer, node: u32, tag: Mir.UserError.Tag) !void {
 
 fn retNode(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const ref = analyzer.map.resolveRef(data.un_node.operand);
+    const ref = analyzer.resolveRef(data.un_node.operand);
     const index = try b.addInst(.{
         .tag = .ret,
         .data = .{ .un_op = ref },
@@ -674,7 +709,7 @@ fn retNode(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 
 fn retImplicit(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const ref = analyzer.map.resolveRef(data.un_tok.operand);
+    const ref = analyzer.resolveRef(data.un_tok.operand);
     const index = try b.addInst(.{
         .tag = .ret,
         .data = .{ .un_op = ref },
@@ -684,7 +719,7 @@ fn retImplicit(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 
 fn yieldNode(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const ref = analyzer.map.resolveRef(data.un_node.operand);
+    const ref = analyzer.resolveRef(data.un_node.operand);
     const index = try b.addInst(.{
         .tag = .yield,
         .data = .{ .un_op = ref },
@@ -694,7 +729,7 @@ fn yieldNode(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 
 fn yieldImplicit(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const ref = analyzer.map.resolveRef(data.un_tok.operand);
+    const ref = analyzer.resolveRef(data.un_tok.operand);
     const index = try b.addInst(.{
         .tag = .yield,
         .data = .{ .un_op = ref },
@@ -705,7 +740,7 @@ fn yieldImplicit(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
 fn branchSingle(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const branch_single = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.BranchSingle);
-    const condition = analyzer.map.resolveRef(branch_single.condition);
+    const condition = analyzer.resolveRef(branch_single.condition);
 
     const body = block: {
         const block = &Block {
@@ -726,7 +761,7 @@ fn branchSingle(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
 fn branchDouble(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const branch_double = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.BranchDouble);
-    const condition = analyzer.map.resolveRef(branch_double.condition);
+    const condition = analyzer.resolveRef(branch_double.condition);
 
     const exec_true = block: {
         const block = &Block {
@@ -790,13 +825,15 @@ fn loop(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
 }
 
 fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
-    const mg = parent.mg;
+    if (true) unreachable;
     var arena = std.heap.ArenaAllocator.init(parent.gpa);
     defer arena.deinit();
 
     var analyzer = Analyzer {
-        .mg = mg,
-        .map = MirMap.init(&mg.map),
+        .comp = parent.comp,
+        // .mg = mg,
+        // .map = MirMap.init(&mg.map),
+        .map = .{},
         .hir = parent.hir,
         .gpa = parent.gpa,
         .arena = arena.allocator(),
@@ -808,7 +845,7 @@ fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
         .interner = parent.interner,
     };
 
-    const mir_index = @intCast(u32, parent.mg.mir.items.len);
+    const mir_index = @intCast(u32, 0); //parent.comp.mir.items.len);
     const mir = try analyzer.analyzeFunction(b, inst);
     try parent.mg.mir.append(parent.gpa, mir);
 
@@ -822,11 +859,11 @@ fn call(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const scratch_top = analyzer.scratch.items.len;
     defer analyzer.scratch.shrinkRetainingCapacity(scratch_top);
 
-    const addr = analyzer.map.resolveRef(call_data.addr);
+    const addr = analyzer.resolveRef(call_data.addr);
     var arg_index: u32 = 0;
     while (arg_index < call_data.args_len) : (arg_index += 1) {
         const arg = analyzer.hir.extra_data[data.pl_node.pl + 2 + arg_index];
-        const ref = analyzer.map.resolveRef(@intToEnum(Hir.Ref, arg));
+        const ref = analyzer.resolveRef(@intToEnum(Hir.Ref, arg));
         try analyzer.scratch.append(analyzer.arena, @enumToInt(ref));
     }
 
@@ -847,7 +884,7 @@ fn dbgValue(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
     const dbg_value = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.DebugValue);
 
-    const ref = analyzer.map.resolveRef(dbg_value.value);
+    const ref = analyzer.resolveRef(dbg_value.value);
     const index = try b.addInst(.{
         .tag = .dbg_value,
         .data = .{ .op_pl = .{ .op = ref, .pl = dbg_value.name } },
