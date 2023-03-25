@@ -12,6 +12,7 @@ insts: std.MultiArrayList(Inst).Slice,
 extra_data: []const u32,
 interner: Interner,
 resolution_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
+// tree: *const Ast,
 
 pub const Inst = struct {
     tag: Tag,
@@ -139,6 +140,8 @@ pub const Inst = struct {
         params_end: ExtraIndex,
         return_ty: Ref,
         body: Index,
+        hash_lower: u32,
+        hash_upper: u32,
     };
 
     pub const Param = struct {

@@ -22,6 +22,7 @@ pub const Value = extern union {
         u64,
         f64,
         function,
+        reference,
     };
 
     pub const Payload = struct {
@@ -45,6 +46,11 @@ pub const Value = extern union {
         pub const Function = struct {
             base: Payload = .{ .tag = .function },
             func: *Decl.Function,
+        };
+
+        pub const Reference = struct {
+            base: Payload = .{ .tag = .reference },
+            ref: Decl.Index,
         };
 
         pub inline fn cast(base: *const Payload, comptime T: type) ?*const T {

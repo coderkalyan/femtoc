@@ -267,6 +267,7 @@ pub fn analyzeFunction(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!Mi
         try analyzer.map.ensureSliceCapacity(analyzer.arena, &.{param_index});
         analyzer.map.putAssumeCapacity(param_index, ref);
         param_tys[extra_index - fn_decl.params_start] = try analyzer.resolveTy(block, ref);
+        std.debug.print("{}\n", .{param_index});
     }
 
     const block_index = try analyzer.analyzeBlock(block, fn_decl.body);

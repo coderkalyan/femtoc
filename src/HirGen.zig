@@ -69,6 +69,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .extra_data = hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
         .resolution_map = hirgen.forward_map,
+        // .tree = tree,
     };
 }
 
@@ -303,6 +304,30 @@ fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return index;
 }
 
+fn computeFunctionHash(tree: *const Ast, node: Node.Index, hash: []u8) void {
+    const mainToken = tree.mainToken(node);
+    const token_start = tree.tokens.items(.start)[mainToken];
+    var hasher = std.crypto.hash.Blake3.init(.{});
+
+    var brace_depth: u32 = 0;
+    var seen_brace: bool = false;
+    var token_index: u32 = token_start;
+    while (!seen_brace or brace_depth > 0) : (token_index += 1) {
+        const char: []const u8 = tree.source[token_index..token_index + 1];
+        hasher.update(char);
+        switch (char[0]) {
+            '{' => {
+                seen_brace = true;
+                brace_depth += 1;
+            },
+            '}' => brace_depth -= 1,
+            else => {},
+        }
+    }
+
+    hasher.final(hash);
+}
+
 fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const arena = hg.arena;
@@ -353,6 +378,8 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
 
     const return_ty = try ty(&block_scope, s, signature.return_ty);
     const body = try block(&block_scope, s, fn_decl.body);
+    var hash: u64 = undefined;
+    computeFunctionHash(hg.tree, node, std.mem.asBytes(&hash));
 
     // unwind and free scope objects
     while (s != scope) {
@@ -366,6 +393,8 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         .params_end = @intCast(u32, param_top),
         .return_ty = return_ty,
         .body = body,
+        .hash_lower = @truncate(u32, hash),
+        .hash_upper = @truncate(u32, hash >> 32),
     });
     const index = try b.addInst(.{
         .tag = .fn_decl,
