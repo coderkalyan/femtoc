@@ -22,14 +22,11 @@ const Error = Allocator.Error || @import("../../interner.zig").Error || error { 
 const c = llvm.c;
 
 pub fn generate(codegen: *CodeGen) !void {
-    // const data = mir.insts.items(.data)[mir.insts.len - 1];
-    // std.debug.print("{}\n", .{mir.insts.items(.tag)[mir.insts.len - 1]});
     const block_inst = @intCast(u32, codegen.mir.insts.len - 1);
 
-    codegen.alloc_block = c.LLVMAppendBasicBlock(codegen.function, "alloc");
-    const entry = c.LLVMAppendBasicBlock(codegen.function, "entry");
+    codegen.alloc_block = c.LLVMAppendBasicBlock(codegen.function, "common.alloca");
+    const entry = c.LLVMAppendBasicBlock(codegen.function, "common.entry");
     c.LLVMPositionBuilderAtEnd(codegen.builder, entry);
-    // _ = try codegen.block(data.bin_pl.r);
     _ = try codegen.block(block_inst);
     c.LLVMPositionBuilderAtEnd(codegen.builder, codegen.alloc_block);
     _ = c.LLVMBuildBr(codegen.builder, entry);
@@ -267,8 +264,8 @@ fn branchSingle(codegen: *CodeGen, inst: Mir.Index) Error!void {
     const data = mir.insts.items(.data)[inst];
 
     const condition = codegen.resolveRef(data.op_pl.op);
-    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "exec_true");
-    const exit = c.LLVMAppendBasicBlock(codegen.function, "exit");
+    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "if.true");
+    const exit = c.LLVMAppendBasicBlock(codegen.function, "if.exit");
     _ = c.LLVMBuildCondBr(codegen.builder, condition, exec_true, exit);
 
     c.LLVMPositionBuilderAtEnd(codegen.builder, exec_true);
@@ -286,9 +283,9 @@ fn branchDouble(codegen: *CodeGen, inst: Mir.Index) Error!void {
     const condbr = mir.extraData(data.op_pl.pl, Mir.Inst.CondBr);
 
     const condition = codegen.resolveRef(data.op_pl.op);
-    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "exec_true");
-    const exec_false = c.LLVMAppendBasicBlock(codegen.function, "exec_false");
-    const exit = c.LLVMAppendBasicBlock(codegen.function, "exit");
+    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "ifelse.true");
+    const exec_false = c.LLVMAppendBasicBlock(codegen.function, "ifelse.false");
+    const exit = c.LLVMAppendBasicBlock(codegen.function, "ifelse.exit");
     _ = c.LLVMBuildCondBr(codegen.builder, condition, exec_true, exec_false);
 
     c.LLVMPositionBuilderAtEnd(codegen.builder, exec_true);
@@ -365,8 +362,8 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     const data = mir.insts.items(.data)[inst];
     const loop_data = mir.extraData(data.pl, Mir.Inst.Loop);
     
-    const entry_block = c.LLVMAppendBasicBlock(codegen.function, "loop_entry");
-    const condition_block = c.LLVMAppendBasicBlock(codegen.function, "loop_condition");
+    const entry_block = c.LLVMAppendBasicBlock(codegen.function, "loop.entry");
+    const condition_block = c.LLVMAppendBasicBlock(codegen.function, "loop.cond");
     _ = c.LLVMBuildBr(codegen.builder, condition_block);
 
     c.LLVMPositionBuilderAtEnd(codegen.builder, condition_block);
@@ -374,7 +371,7 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     // const yield_block = c.LLVMGetInsertBlock(codegen.builder);
     // const name = "loop_yield";
     // c.LLVMSetValueName2(c.LLVMBasicBlockAsValue(yield_block), name, name.len);
-    const exit_block = c.LLVMAppendBasicBlock(codegen.function, "loop_exit");
+    const exit_block = c.LLVMAppendBasicBlock(codegen.function, "loop.exit");
     _ = c.LLVMBuildCondBr(codegen.builder, condition_ref, entry_block, exit_block);
 
     c.LLVMPositionBuilderAtEnd(codegen.builder, entry_block);
