@@ -241,6 +241,7 @@ fn fnDecl(comp: *Compilation, function_inst: Hir.Index) !void {
         .map = .{},
         .function = llvm.c.LLVMGetNamedFunction(comp.backend.module, decl.name),
         .builder = builder,
+        .alloc_block = null,
     };
     try codegen.generate();
 }

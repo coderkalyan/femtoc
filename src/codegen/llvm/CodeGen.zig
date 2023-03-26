@@ -16,6 +16,7 @@ module: llvm.Module,
 map: std.AutoHashMapUnmanaged(Mir.Index, llvm.Value),
 function: llvm.Value,
 builder: llvm.Builder,
+alloc_block: llvm.c.LLVMBasicBlockRef,
 
 const Error = Allocator.Error || @import("../../interner.zig").Error || error { NotImplemented };
 const c = llvm.c;
@@ -25,10 +26,13 @@ pub fn generate(codegen: *CodeGen) !void {
     // std.debug.print("{}\n", .{mir.insts.items(.tag)[mir.insts.len - 1]});
     const block_inst = @intCast(u32, codegen.mir.insts.len - 1);
 
+    codegen.alloc_block = c.LLVMAppendBasicBlock(codegen.function, "alloc");
     const entry = c.LLVMAppendBasicBlock(codegen.function, "entry");
     c.LLVMPositionBuilderAtEnd(codegen.builder, entry);
     // _ = try codegen.block(data.bin_pl.r);
     _ = try codegen.block(block_inst);
+    c.LLVMPositionBuilderAtEnd(codegen.builder, codegen.alloc_block);
+    _ = c.LLVMBuildBr(codegen.builder, entry);
 }
 
 fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) llvm.Value {
@@ -192,7 +196,11 @@ fn alloc(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
 
     const ty = try llvm.getType(codegen.gpa, data.ty);
-    return c.LLVMBuildAlloca(codegen.builder, ty, "");
+    const bb = llvm.c.LLVMGetInsertBlock(codegen.builder);
+    llvm.c.LLVMPositionBuilderAtEnd(codegen.builder, codegen.alloc_block);
+    const alloca = c.LLVMBuildAlloca(codegen.builder, ty, "");
+    llvm.c.LLVMPositionBuilderAtEnd(codegen.builder, bb);
+    return alloca;
 }
 
 fn store(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
