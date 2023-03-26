@@ -33,7 +33,18 @@ pub fn generate(codegen: *CodeGen) !void {
 
 fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) llvm.Value {
     if (Mir.refToIndex(mirref)) |index| {
-        return codegen.map.get(index).?;
+        // TODO: we probably still have forward declaration issues
+        const mir = codegen.mir;
+        if (mir.insts.items(.tag)[index] == .load_decl) {
+            const pl = mir.insts.items(.data)[index].pl;
+            const decl = codegen.comp.decls.at(pl);
+            std.debug.print("{s}\n", .{decl.name});
+            // TODO: figure out this global vs function nonsense
+            // return llvm.c.LLVMGetNamedGlobal(codegen.module, decl.name);
+            return llvm.c.LLVMGetNamedFunction(codegen.module, decl.name);
+        } else {
+            return codegen.map.get(index).?;
+        }
     } else {
         return switch (mirref) {
             .zero_val => c.LLVMConstInt(c.LLVMInt64Type(), 0, 0),
@@ -70,6 +81,7 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
             .sext => try codegen.sext(inst),
             .fpext => try codegen.fpext(inst),
             .param => try codegen.functionParam(inst, @intCast(u32, i)),
+            .call => try codegen.call(inst),
             .branch_single => {
                 try codegen.branchSingle(inst);
                 continue;
@@ -362,4 +374,21 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     _ = c.LLVMBuildBr(codegen.builder, condition_block);
     
     c.LLVMPositionBuilderAtEnd(codegen.builder, exit_block);
+}
+
+fn call(codegen: *CodeGen, inst: Mir.Index) !llvm.Value {
+    const mir = codegen.mir;
+    const data = mir.insts.items(.data)[inst].op_pl;
+    const call_data = mir.extraData(data.pl, Mir.Inst.Call);
+    const addr = codegen.resolveRef(data.op);
+    const args = try codegen.gpa.alloc(llvm.Value, call_data.args_len);
+    defer codegen.gpa.free(args);
+    const mir_args = mir.extra[data.pl + 1..data.pl + 1 + call_data.args_len];
+    for (mir_args) |arg, i| {
+        args[i] = codegen.resolveRef(@intToEnum(Mir.Ref, arg));
+    }
+    const llvm_type = try llvm.getType(codegen.gpa, mir.resolveTy(data.op));
+    const val = c.LLVMBuildCall2(codegen.builder, llvm_type, addr,
+                                 args.ptr, @intCast(c_uint, args.len), "");
+    return val;
 }

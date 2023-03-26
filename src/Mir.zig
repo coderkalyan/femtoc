@@ -3,6 +3,7 @@ const Type = @import("typing.zig").Type;
 const NodeIndex = @import("Ast.zig").Node.Index;
 const Interner = @import("interner.zig").Interner;
 const Value = @import("value.zig").Value;
+const Compilation = @import("Compilation.zig");
 
 const Mir = @This();
 pub const Error = error { NotImplemented };
@@ -26,6 +27,7 @@ insts: std.MultiArrayList(Inst).Slice,
 extra: []const u32,
 values: []const Value,
 interner: *const Interner,
+comp: *Compilation,
 
 pub const Inst = struct {
     tag: Tag,
@@ -62,6 +64,7 @@ pub const Inst = struct {
         load,
         store,
         param,
+        load_decl,
 
         call,
         branch_single,
@@ -232,7 +235,12 @@ pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) Type {
             .load => mir.resolveTy(data.un_op),
             .store => mir.resolveTy(data.un_op),
             .param => mir.refToType(data.ty_pl.ty),
-            .call => mir.resolveTy(data.op_pl.op),
+            .load_decl => mir.comp.declPtr(data.pl).ty,
+            .call => ty: {
+                const ty = mir.resolveTy(data.op_pl.op);
+                const fn_type = ty.extended.cast(Type.Function).?;
+                break :ty fn_type.return_type;
+            },
             .zext, .sext, .fpext => mir.refToType(data.ty_op.ty),
             else => {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[index]});

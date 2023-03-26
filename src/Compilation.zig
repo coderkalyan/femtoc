@@ -207,6 +207,7 @@ fn fnDecl(comp: *Compilation, function_inst: Hir.Index) !void {
         .extra = analyzer.extra.toOwnedSlice(analyzer.gpa),
         .values = analyzer.values.toOwnedSlice(analyzer.gpa),
         .interner = &hir.interner,
+        .comp = analyzer.comp,
     };
 
     if (comp.config.verbose_mir) {

@@ -621,6 +621,12 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(ref, &lbuf);
                     try writer.print("load({s})", .{lbuf});
                 },
+                .load_decl => {
+                    const pl = ir.insts.items(.data)[index].pl;
+                    const decl = ir.comp.declPtr(pl);
+                    try self.formatTy(decl.ty, &lbuf);
+                    try writer.print("load_decl({s}, {s})", .{lbuf, decl.name});
+                },
                 .branch_single => {
                     const condition = ir.insts.items(.data)[index].op_pl.op;
                     const pl = ir.insts.items(.data)[index].op_pl.pl;

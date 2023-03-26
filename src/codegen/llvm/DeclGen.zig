@@ -43,6 +43,6 @@ fn reference(dg: *DeclGen) !void {
     // TODO: use Alias2
     // const val = llvm.c.LLVMAddAlias(dg.module, llvm_type, ref, decl.name);
     const val = llvm.c.LLVMAddGlobal(dg.module, llvm_type, decl.name);
-    llvm.c.LLVMSetInitializer(val, llvm.c.LLVMGetInitializer(ref));
+    llvm.c.LLVMSetInitializer(val, ref);
     try dg.comp.backend.globals.put(dg.gpa, decl, val);
 }
