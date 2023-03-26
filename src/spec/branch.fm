@@ -4,7 +4,7 @@ let main = fn () void {
     // it easier to debug IR
     let cond = true;
     let dummy = 123;
-    if (cond) {
+    if cond {
         let a: i32 = 1;
         let b: i32 = 2;
         let mut c = a + b;
@@ -14,7 +14,7 @@ let main = fn () void {
     let mut y: u32 = 234;
     let mut z: u32 = x + y;
     let mut limit: u64 = 64;
-    if (z < limit) {
+    if z < limit {
         let a: i32 = 3;
         let b: i32 = 4;
         let mut c = a + b;
@@ -27,7 +27,7 @@ let main = fn () void {
 
     let f: f32 = 1.23;
     let mut g: f64 = 2.34;
-    if (f < g) {
+    if f < g {
         let mut h = f + g;
     }
 }
