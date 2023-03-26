@@ -59,6 +59,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .scratch = .{},
         .hg = &hirgen,
         .force_comptime = true,
+        .return_ty = @intToEnum(Hir.Ref, 0),
     };
     // post order format guarantees that the module node will be the last
     const module_node = @intCast(u32, tree.nodes.len - 1);
@@ -373,10 +374,11 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     var block_scope = Block.init(b, s);
     defer block_scope.deinit();
     s = &block_scope.base;
-    var body_scope = Scope.Body { .parent = s };
+    var body_scope = Scope.Body { .parent = s, .fn_node = node };
     s = &body_scope.base;
 
     const return_ty = try ty(&block_scope, s, signature.return_ty);
+    block_scope.return_ty = return_ty;
     const body = try block(&block_scope, s, fn_decl.body);
     var hash: u64 = undefined;
     computeFunctionHash(hg.tree, node, std.mem.asBytes(&hash));
@@ -498,6 +500,26 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     });
 }
 
+fn coerce(b: *Block, s: *Scope, val: Ref, dest_ty: Ref, node: Node.Index) !Ref {
+    _ = s;
+    const hg = b.hg;
+    const coerce_data = try hg.addExtra(Inst.Coerce {
+        .val = val,
+        .ty = dest_ty,
+    });
+
+    // generate a "type validation" marker instruction
+    // this is a passthrough which takes in the above value reference
+    // and the type reference and returns the value reference
+    // semantic analysis will validate that the type is as it should be
+    // and then remove this instruction in the mir
+    const coerce_inst = try b.addInst(.{
+        .tag = .coerce,
+        .data = .{ .pl_node = .{ .node = node, .pl = coerce_data, } },
+    });
+    return indexToRef(coerce_inst);
+}
+
 fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     // "initializes" constant variables
     // this doesn't actually create any instructions for declaring the constant
@@ -525,22 +547,13 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
         // untyped (inferred) declaration
         return ref;
     } else {
-        const validate_data = try hg.addExtra(Inst.ValidateTy {
-            .ref = ref,
-            .ty = try ty(b, s, const_decl.ty),
-        });
-
         // generate a "type validation" marker instruction
         // this is a passthrough which takes in the above value reference
         // and the type reference and returns the value reference
         // semantic analysis will validate that the type is as it should be
         // and then remove this instruction in the mir
-        const validate_ty = try b.addInst(.{
-            .tag = .validate_ty,
-            .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
-        });
-
-        return indexToRef(validate_ty);
+        const dest_ty = try ty(b, s, const_decl.ty);
+        return coerce(b, s, ref, dest_ty, node);
     }
 }
 
@@ -560,25 +573,17 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
         return indexToRef(alloc);
     } else {
         // type annotated declaration
-        const ref = try expr(b, s, var_decl.val);
-
         // generate a "type validation" marker instruction
         // this is a passthrough which takes in the above value reference
         // and the type reference and returns the value reference
         // semantic analysis will validate that the type is as it should be
         // and then remove this instruction in the mir
-        const validate_data = try b.hg.addExtra(Inst.ValidateTy {
-            .ref = ref,
-            .ty = try ty(b, s, var_decl.ty),
-        });
-        const validate_ty = try b.addInst(.{
-            .tag = .validate_ty,
-            .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
-        });
-
+        const val = try expr(b, s, var_decl.val);
+        const dest_ty = try ty(b, s, var_decl.ty);
+        const ref = try coerce(b, s, val, dest_ty, node);
         const alloc = try b.addInst(.{
             .tag = .alloc,
-            .data = .{ .un_node = .{ .node = node, .operand = indexToRef(validate_ty), } },
+            .data = .{ .un_node = .{ .node = node, .operand = ref, } },
         });
         return indexToRef(alloc);
     }
@@ -641,17 +646,8 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 }
 
 fn branchCondition(b: *Block, scope: *Scope, node: Node.Index) !Ref {
-    const condition_ref = try expr(b, scope, node);
-    const validate_data = try b.hg.addExtra(Inst.ValidateTy {
-        .ref = condition_ref,
-        .ty = Ref.bool_ty,
-    });
-    // TODO: should be implicit not node
-    const validate_ty = try b.addInst(.{
-        .tag = .validate_ty,
-        .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
-    });
-    return indexToRef(validate_ty);
+    const ref = try expr(b, scope, node);
+    return coerce(b, scope, ref, Ref.bool_ty, node);
 }
 
 fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -744,10 +740,15 @@ fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const return_val = b.hg.tree.data(node).return_val;
 
-    const ref = if (return_val.val == 0) Ref.void_val else try expr(b, scope, return_val.val);
+    const operand = if (return_val.val == 0) op: {
+        break :op Ref.void_val;
+    } else op: {
+        const ref = try expr(b, scope, return_val.val);
+        break :op try coerce(b, scope, ref, b.return_ty, node);
+    };
     return b.addInst(.{
         .tag = .ret_node,
-        .data = .{ .un_node = .{ .node = node, .operand = ref, } },
+        .data = .{ .un_node = .{ .node = node, .operand = operand, } },
     });
 }
 
@@ -760,18 +761,11 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const condition = block: {
         var block_scope = Scope.Block.init(b, scope);
         defer block_scope.deinit();
-        const validate_data = try block_scope.hg.addExtra(Inst.ValidateTy {
-            .ref = Ref.btrue_val,
-            .ty = Ref.bool_ty,
-        });
         // TODO: should be implicit not node
-        const validate_ty = try block_scope.addInst(.{
-            .tag = .validate_ty,
-            .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
-        });
+        const condition_ref = try coerce(b, scope, Ref.btrue_val, Ref.bool_ty, node);
         _ = try block_scope.addInst(.{
             .tag = .yield_implicit,
-            .data = .{ .un_tok = .{ .tok = undefined, .operand = indexToRef(validate_ty) } },
+            .data = .{ .un_tok = .{ .tok = undefined, .operand = condition_ref } },
         });
 
         const data = try block_scope.hg.addExtra(Inst.Block {

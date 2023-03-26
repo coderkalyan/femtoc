@@ -40,7 +40,7 @@ pub const Inst = struct {
         asl,
         asr,
 
-        validate_ty,
+        coerce,
         load_inline,
         alloc,
         load,
@@ -159,8 +159,8 @@ pub const Inst = struct {
         val: Ref,
     };
 
-    pub const ValidateTy = struct {
-        ref: Ref,
+    pub const Coerce = struct {
+        val: Ref,
         ty: Ref,
     };
 

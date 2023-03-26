@@ -280,12 +280,12 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(bin.rref, &rbuf);
                     try writer.print("({s}, {s})", .{lbuf, rbuf});
                 },
-                .validate_ty => {
+                .coerce => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const validate_ty = ir.extraData(pl, Hir.Inst.ValidateTy);
-                    try self.formatRef(validate_ty.ty, &lbuf);
-                    try self.formatRef(validate_ty.ref, &rbuf);
-                    try writer.print("validate_ty({s}, {s})", .{lbuf, rbuf});
+                    const coerce = ir.extraData(pl, Hir.Inst.Coerce);
+                    try self.formatRef(coerce.ty, &lbuf);
+                    try self.formatRef(coerce.val, &rbuf);
+                    try writer.print("coerce({s}, {s})", .{lbuf, rbuf});
                 },
                 .alloc => {
                     try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);

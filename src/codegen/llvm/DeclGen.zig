@@ -41,8 +41,8 @@ fn reference(dg: *DeclGen) !void {
     const llvm_type = llvm.c.LLVMTypeOf(ref);
     // const llvm_type = try llvm.getType(dg.gpa, decl.ty);
     // TODO: use Alias2
-    const val = llvm.c.LLVMAddAlias(dg.module, llvm_type, ref, decl.name);
-    // const val = llvm.c.LLVMAddGlobal(dg.module, llvm_type, decl.name);
-    // llvm.c.LLVMSetInitializer(val, llvm.c.LLVMGetInitializer(ref));
+    // const val = llvm.c.LLVMAddAlias(dg.module, llvm_type, ref, decl.name);
+    const val = llvm.c.LLVMAddGlobal(dg.module, llvm_type, decl.name);
+    llvm.c.LLVMSetInitializer(val, llvm.c.LLVMGetInitializer(ref));
     try dg.comp.backend.globals.put(dg.gpa, decl, val);
 }

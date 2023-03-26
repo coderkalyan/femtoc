@@ -230,7 +230,7 @@ pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !u32 {
             .load => try analyzer.load(block, index),
             .load_inline => try analyzer.loadInline(index),
             .store => try analyzer.store(block, index),
-            .validate_ty => try analyzer.validateTy(block, index),
+            .coerce => try analyzer.coerce(block, index),
             .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
             .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge,
             .cmp_lt, .cmp_gt => try analyzer.binaryCmp(block, index),
@@ -309,7 +309,7 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!u32 {
             .load => try analyzer.load(block, index),
             .load_inline => try analyzer.loadInline(index),
             .store => try analyzer.store(block, index),
-            .validate_ty => try analyzer.validateTy(block, index),
+            .coerce => try analyzer.coerce(block, index),
             .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
             .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge,
             .cmp_lt, .cmp_gt => try analyzer.binaryCmp(block, index),
@@ -446,13 +446,13 @@ fn alloc(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     return Mir.indexToRef(index);
 }
 
-fn validateTy(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+fn coerce(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     const data = analyzer.hir.insts.items(.data)[inst];
-    const validate_ty = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.ValidateTy);
+    const coerce_data = analyzer.hir.extraData(data.pl_node.pl, Hir.Inst.Coerce);
     const mir = analyzer.getTempMir();
 
-    const src = analyzer.resolveRef(validate_ty.ref);
-    const dest_ty = mir.refToType(analyzer.resolveRef(validate_ty.ty));
+    const src = analyzer.resolveRef(coerce_data.val);
+    const dest_ty = mir.refToType(analyzer.resolveRef(coerce_data.ty));
     return coercion.coerce(analyzer, b, src, dest_ty);
 }
 

@@ -71,6 +71,7 @@ pub const Scope = struct {
         hg: *HirGen,
 
         force_comptime: bool,
+        return_ty: Hir.Ref,
 
         pub fn init(b: *Block, s: *Scope) Block {
             return .{
@@ -79,6 +80,7 @@ pub const Scope = struct {
                 .scratch = .{},
                 .hg = b.hg,
                 .force_comptime = b.force_comptime,
+                .return_ty = b.return_ty,
             };
         }
 
@@ -104,6 +106,7 @@ pub const Scope = struct {
         base: Scope = .{ .tag = base_tag },
 
         parent: *Scope,
+        fn_node: Node.Index,
     };
 
     pub const LocalVal = struct {
