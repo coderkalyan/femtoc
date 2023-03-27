@@ -3,10 +3,12 @@ const Compilation = @import("../../Compilation.zig");
 const llvm = @import("llvm.zig");
 const Value = @import("../../value.zig").Value;
 const Mir = @import("../../Mir.zig");
+const typing = @import("../../typing.zig");
 
 const Allocator = std.mem.Allocator;
 // const Decl = Compilation.Decl;
 const CodeGen = @This();
+const Type = typing.Type;
 
 gpa: Allocator,
 comp: *const Compilation,
@@ -23,13 +25,14 @@ const c = llvm.c;
 
 pub fn generate(codegen: *CodeGen) !void {
     const block_inst = @intCast(u32, codegen.mir.insts.len - 1);
+    var builder = codegen.builder;
 
-    codegen.alloc_block = c.LLVMAppendBasicBlock(codegen.function, "common.alloca");
-    const entry = c.LLVMAppendBasicBlock(codegen.function, "common.entry");
-    c.LLVMPositionBuilderAtEnd(codegen.builder, entry);
+    codegen.alloc_block = builder.appendBlock("common.alloca");
+    const entry = builder.appendBlock("common.entry");
+    builder.positionAtEnd(entry);
     _ = try codegen.block(block_inst);
-    c.LLVMPositionBuilderAtEnd(codegen.builder, codegen.alloc_block);
-    _ = c.LLVMBuildBr(codegen.builder, entry);
+    builder.positionAtEnd(codegen.alloc_block);
+    builder.addBranch(entry);
 }
 
 fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) llvm.Value {
@@ -42,14 +45,14 @@ fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) llvm.Value {
             std.debug.print("{s}\n", .{decl.name});
             // TODO: figure out this global vs function nonsense
             // return llvm.c.LLVMGetNamedGlobal(codegen.module, decl.name);
-            return llvm.c.LLVMGetNamedFunction(codegen.module, decl.name);
+            return llvm.c.LLVMGetNamedFunction(codegen.module.module, decl.name);
         } else {
             return codegen.map.get(index).?;
         }
     } else {
         return switch (mirref) {
-            .zero_val => c.LLVMConstInt(c.LLVMInt64Type(), 0, 0),
-            .one_val => c.LLVMConstInt(c.LLVMInt64Type(), 1, 0),
+            .zero_val => codegen.builder.addUint(Type.initInt(64, false), 0),
+            .one_val => codegen.builder.addUint(Type.initInt(64, false), 1),
             else => unreachable,
         };
     }
@@ -60,7 +63,7 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
     const data = mir.insts.items(.data)[block_inst];
     const block_data = mir.extraData(data.pl, Mir.Inst.Block);
 
-    const after_block = c.LLVMAppendBasicBlock(codegen.function, "");
+    const after_block = codegen.builder.appendBlock("yield.exit");
     var yield_val: c.LLVMValueRef = null;
     var yield_jump: bool = false;
 
@@ -111,10 +114,10 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
     }
 
     if (yield_jump) {
-        _ = c.LLVMBuildBr(codegen.builder, after_block);
-        c.LLVMPositionBuilderAtEnd(codegen.builder, after_block);
+        codegen.builder.addBranch(after_block);
+        codegen.builder.positionAtEnd(after_block);
     } else {
-        c.LLVMDeleteBasicBlock(after_block);
+        codegen.builder.deleteBlock(after_block);
     }
 
     return yield_val;
@@ -123,19 +126,15 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
 fn constant(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst].ty_pl;
-    const mir_ty = mir.refToType(data.ty);
-    switch (mir_ty.kind()) {
-        .comptime_uint,
-        .comptime_sint,
-        .comptime_float => return c.LLVMConstPointerNull(c.LLVMInt32Type()),
-        else => {},
-    }
+    const ty = mir.refToType(data.ty);
 
-    const ty = try llvm.getType(codegen.gpa, mir_ty);
-    switch (mir_ty.kind()) {
-        .uint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, mir.valToInt(data.pl)), 0),
-        .sint => return c.LLVMConstInt(ty, @intCast(c_ulonglong, mir.valToInt(data.pl)), 1),
-        .float => return c.LLVMConstReal(ty, mir.valToFloat(data.pl)),
+    var builder = codegen.builder;
+    switch (ty.kind()) {
+        .comptime_uint, .comptime_sint, .comptime_float => return null,
+
+        .uint => return builder.addUint(ty, mir.valToInt(data.pl)),
+        .sint => return builder.addSint(ty, mir.valToInt(data.pl)),
+        .float => return builder.addFloat(ty, mir.valToFloat(data.pl)),
         else => unreachable,
     }
 }
@@ -145,59 +144,56 @@ fn binaryOp(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const data = mir.insts.items(.data)[inst];
     const lref = codegen.resolveRef(data.bin_op.lref);
     const rref = codegen.resolveRef(data.bin_op.rref);
+    var builder = codegen.builder;
     
     const lty = mir.resolveTy(data.bin_op.lref);
     return switch (lty.kind()) {
         .uint => switch (mir.insts.items(.tag)[inst]) {
-            .add => c.LLVMBuildAdd(codegen.builder, lref, rref, ""),
-            .sub => c.LLVMBuildSub(codegen.builder, lref, rref, ""),
-            .mul => c.LLVMBuildMul(codegen.builder, lref, rref, ""),
-            .div => c.LLVMBuildUDiv(codegen.builder, lref, rref, ""),
-            .mod => return c.LLVMBuildURem(codegen.builder, lref, rref, ""), // TODO: this is not correct
+            .add => c.LLVMBuildAdd(builder.builder, lref, rref, ""),
+            .sub => c.LLVMBuildSub(builder.builder, lref, rref, ""),
+            .mul => c.LLVMBuildMul(builder.builder, lref, rref, ""),
+            .div => c.LLVMBuildUDiv(builder.builder, lref, rref, ""),
+            .mod => return c.LLVMBuildURem(builder.builder, lref, rref, ""), // TODO: this is not correct
             else => unreachable,
         },
         .sint => switch (mir.insts.items(.tag)[inst]) {
-            .add => c.LLVMBuildAdd(codegen.builder, lref, rref, ""),
-            .sub => c.LLVMBuildSub(codegen.builder, lref, rref, ""),
-            .mul => c.LLVMBuildMul(codegen.builder, lref, rref, ""),
-            .div => c.LLVMBuildSDiv(codegen.builder, lref, rref, ""),
-            .mod => return c.LLVMBuildSRem(codegen.builder, lref, rref, ""), // TODO: this is not correct
+            .add => c.LLVMBuildAdd(builder.builder, lref, rref, ""),
+            .sub => c.LLVMBuildSub(builder.builder, lref, rref, ""),
+            .mul => c.LLVMBuildMul(builder.builder, lref, rref, ""),
+            .div => c.LLVMBuildSDiv(builder.builder, lref, rref, ""),
+            .mod => return c.LLVMBuildSRem(builder.builder, lref, rref, ""), // TODO: this is not correct
             else => unreachable,
         },
         .float => switch (mir.insts.items(.tag)[inst]) {
-            .add => c.LLVMBuildFAdd(codegen.builder, lref, rref, ""),
-            .sub => c.LLVMBuildFSub(codegen.builder, lref, rref, ""),
-            .mul => c.LLVMBuildFMul(codegen.builder, lref, rref, ""),
-            .div => c.LLVMBuildFDiv(codegen.builder, lref, rref, ""),
-            .mod => c.LLVMBuildFRem(codegen.builder, lref, rref, ""),
+            .add => c.LLVMBuildFAdd(builder.builder, lref, rref, ""),
+            .sub => c.LLVMBuildFSub(builder.builder, lref, rref, ""),
+            .mul => c.LLVMBuildFMul(builder.builder, lref, rref, ""),
+            .div => c.LLVMBuildFDiv(builder.builder, lref, rref, ""),
+            .mod => c.LLVMBuildFRem(builder.builder, lref, rref, ""),
             else => unreachable,
         },
         else => unreachable,
     };
 }
 
-fn ret(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
-    const mir = codegen.mir;
-    const data = mir.insts.items(.data)[inst];
-    
-    if (data.un_op == Mir.Ref.void_val) {
-        return c.LLVMBuildRetVoid(codegen.builder);
-    } else {
-        const ref = codegen.resolveRef(data.un_op);
-        return c.LLVMBuildRet(codegen.builder, ref);
-    }
-}
 
 fn alloc(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
+    var builder = codegen.builder;
 
-    const ty = try llvm.getType(codegen.gpa, data.ty);
-    const bb = llvm.c.LLVMGetInsertBlock(codegen.builder);
-    llvm.c.LLVMPositionBuilderAtEnd(codegen.builder, codegen.alloc_block);
-    const alloca = c.LLVMBuildAlloca(codegen.builder, ty, "");
-    llvm.c.LLVMPositionBuilderAtEnd(codegen.builder, bb);
+    const bb = builder.getInsertBlock();
+    builder.positionAtEnd(codegen.alloc_block);
+    const alloca = builder.addAlloca(data.ty);
+    builder.positionAtEnd(bb);
     return alloca;
+}
+
+fn load(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
+    const data = codegen.mir.insts.items(.data)[inst];
+
+    const addr = codegen.resolveRef(data.un_op);
+    return codegen.builder.addLoad(addr);
 }
 
 fn store(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
@@ -205,15 +201,7 @@ fn store(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
 
     const addr = codegen.resolveRef(data.bin_op.lref);
     const val = codegen.resolveRef(data.bin_op.rref);
-    return c.LLVMBuildStore(codegen.builder, val, addr);
-}
-
-fn load(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
-    const data = codegen.mir.insts.items(.data)[inst];
-
-    const addr = codegen.resolveRef(data.un_op);
-    const ty = c.LLVMGetAllocatedType(addr);
-    return c.LLVMBuildLoad2(codegen.builder, ty, addr, "");
+    return codegen.builder.addStore(addr, val);
 }
 
 fn cmp(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
@@ -223,83 +211,102 @@ fn cmp(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
 
     const lref = codegen.resolveRef(data.bin_op.lref);
     const rref = codegen.resolveRef(data.bin_op.rref);
-    return switch (tag) {
+    const kind: llvm.Builder.Cmp = switch (tag) {
         .cmp_eq => ref: {
             const ty = c.LLVMTypeOf(lref);
             break :ref switch (c.LLVMGetTypeKind(ty)) {
-                c.LLVMIntegerTypeKind => c.LLVMBuildICmp(codegen.builder, c.LLVMIntEQ, lref, rref, ""),
-                c.LLVMFloatTypeKind => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOEQ, lref, rref, ""),
+                c.LLVMIntegerTypeKind => .cmp_ieq,
+                c.LLVMFloatTypeKind => .cmp_feq,
                 else => unreachable,
             };
         },
         .cmp_ne => ref: {
             const ty = c.LLVMTypeOf(lref);
             break :ref switch (c.LLVMGetTypeKind(ty)) {
-                c.LLVMIntegerTypeKind => c.LLVMBuildICmp(codegen.builder, c.LLVMIntNE, lref, rref, ""),
-                c.LLVMFloatTypeKind => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealONE, lref, rref, ""),
+                c.LLVMIntegerTypeKind => .cmp_ine,
+                c.LLVMFloatTypeKind => .cmp_fne,
                 else => unreachable,
             };
         },
 
-        .cmp_ule => c.LLVMBuildICmp(codegen.builder, c.LLVMIntULE, lref, rref, ""),
-        .cmp_uge => c.LLVMBuildICmp(codegen.builder, c.LLVMIntUGE, lref, rref, ""),
-        .cmp_ult => c.LLVMBuildICmp(codegen.builder, c.LLVMIntULT, lref, rref, ""),
-        .cmp_ugt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntUGT, lref, rref, ""),
+        .cmp_ule => .cmp_ule,
+        .cmp_uge => .cmp_uge,
+        .cmp_ult => .cmp_ult,
+        .cmp_ugt => .cmp_ugt,
 
-        .cmp_sle => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSLE, lref, rref, ""),
-        .cmp_sge => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSGE, lref, rref, ""),
-        .cmp_slt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSLT, lref, rref, ""),
-        .cmp_sgt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSGT, lref, rref, ""),
+        .cmp_sle => .cmp_sle,
+        .cmp_sge => .cmp_sge,
+        .cmp_slt => .cmp_slt,
+        .cmp_sgt => .cmp_sgt,
 
-        .cmp_fle => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOLE, lref, rref, ""),
-        .cmp_fge => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOGE, lref, rref, ""),
-        .cmp_flt => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOLT, lref, rref, ""),
-        .cmp_fgt => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOGT, lref, rref, ""),
+        .cmp_fle => .cmp_fle,
+        .cmp_fge => .cmp_fge,
+        .cmp_flt => .cmp_flt,
+        .cmp_fgt => .cmp_fgt,
+
+        // .cmp_ule => c.LLVMBuildICmp(codegen.builder, c.LLVMIntULE, lref, rref, ""),
+        // .cmp_uge => c.LLVMBuildICmp(codegen.builder, c.LLVMIntUGE, lref, rref, ""),
+        // .cmp_ult => c.LLVMBuildICmp(codegen.builder, c.LLVMIntULT, lref, rref, ""),
+        // .cmp_ugt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntUGT, lref, rref, ""),
+
+        // .cmp_sle => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSLE, lref, rref, ""),
+        // .cmp_sge => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSGE, lref, rref, ""),
+        // .cmp_slt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSLT, lref, rref, ""),
+        // .cmp_sgt => c.LLVMBuildICmp(codegen.builder, c.LLVMIntSGT, lref, rref, ""),
+
+        // .cmp_fle => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOLE, lref, rref, ""),
+        // .cmp_fge => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOGE, lref, rref, ""),
+        // .cmp_flt => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOLT, lref, rref, ""),
+        // .cmp_fgt => c.LLVMBuildFCmp(codegen.builder, c.LLVMRealOGT, lref, rref, ""),
         else => unreachable,
     };
+
+    return codegen.builder.addCmp(kind, lref, rref);
 }
 
 fn branchSingle(codegen: *CodeGen, inst: Mir.Index) Error!void {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
+    var builder = codegen.builder;
 
     const condition = codegen.resolveRef(data.op_pl.op);
-    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "if.true");
-    const exit = c.LLVMAppendBasicBlock(codegen.function, "if.exit");
-    _ = c.LLVMBuildCondBr(codegen.builder, condition, exec_true, exit);
+    const exec_true = builder.appendBlock("if.true");
+    const exit = builder.appendBlock("if.exit");
+    builder.addCondBranch(condition, exec_true, exit);
 
-    c.LLVMPositionBuilderAtEnd(codegen.builder, exec_true);
+    builder.positionAtEnd(exec_true);
     // TODO: branch expressions
     _ = try codegen.block(data.op_pl.pl);
     if (c.LLVMGetBasicBlockTerminator(exec_true) == null)
-        _ = c.LLVMBuildBr(codegen.builder, exit);
+        builder.addBranch(exit);
 
-    c.LLVMPositionBuilderAtEnd(codegen.builder, exit);
+    builder.positionAtEnd(exit);
 }
 
 fn branchDouble(codegen: *CodeGen, inst: Mir.Index) Error!void {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
     const condbr = mir.extraData(data.op_pl.pl, Mir.Inst.CondBr);
+    var builder = codegen.builder;
 
     const condition = codegen.resolveRef(data.op_pl.op);
-    const exec_true = c.LLVMAppendBasicBlock(codegen.function, "ifelse.true");
-    const exec_false = c.LLVMAppendBasicBlock(codegen.function, "ifelse.false");
-    const exit = c.LLVMAppendBasicBlock(codegen.function, "ifelse.exit");
-    _ = c.LLVMBuildCondBr(codegen.builder, condition, exec_true, exec_false);
+    const exec_true = builder.appendBlock("ifelse.true");
+    const exec_false = builder.appendBlock("ifelse.false");
+    const exit = builder.appendBlock("ifelse.exit");
+    builder.addCondBranch(condition, exec_true, exec_false);
 
-    c.LLVMPositionBuilderAtEnd(codegen.builder, exec_true);
+    builder.positionAtEnd(exec_true);
     // TODO: branch expressions
     _ = try codegen.block(condbr.exec_true);
     if (c.LLVMGetBasicBlockTerminator(exec_true) == null)
-        _ = c.LLVMBuildBr(codegen.builder, exit);
+        builder.addBranch(exit);
 
-    c.LLVMPositionBuilderAtEnd(codegen.builder, exec_false);
+    builder.positionAtEnd(exec_false);
     _ = try codegen.block(condbr.exec_false);
     if (c.LLVMGetBasicBlockTerminator(exec_false) == null)
-        _ = c.LLVMBuildBr(codegen.builder, exit);
+        builder.addBranch(exit);
 
-    c.LLVMPositionBuilderAtEnd(codegen.builder, exit);
+    builder.positionAtEnd(exit);
 }
 
 fn functionParam(codegen: *CodeGen, inst: Mir.Index, index: u32) !c.LLVMValueRef {
@@ -320,7 +327,9 @@ fn dbgValue(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const id = data.op_pl.pl;
     const ident_str = try mir.interner.get(id);
     const ref = codegen.resolveRef(data.op_pl.op);
-    c.LLVMSetValueName2(ref, ident_str.ptr, ident_str.len);
+    // TODO: fix, change dbgValue to an actual export decl
+    _ = ident_str;
+    // c.LLVMSetValueName2(ref, ident_str.ptr, ident_str.len);
     return ref;
 }
 
@@ -328,27 +337,27 @@ fn zext(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
 
-    const ty = try llvm.getType(codegen.gpa, mir.refToType(data.ty_op.ty));
+    const ty = mir.refToType(data.ty_op.ty);
     const ref = codegen.resolveRef(data.ty_op.op);
-    return c.LLVMBuildZExt(codegen.builder, ref, ty, "");
+    return codegen.builder.addZext(ty, ref);
 }
 
 fn sext(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
 
-    const ty = try llvm.getType(codegen.gpa, mir.refToType(data.ty_op.ty));
+    const ty = mir.refToType(data.ty_op.ty);
     const ref = codegen.resolveRef(data.ty_op.op);
-    return c.LLVMBuildSExt(codegen.builder, ref, ty, "");
+    return codegen.builder.addSext(ty, ref);
 }
 
 fn fpext(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
 
-    const ty = try llvm.getType(codegen.gpa, mir.refToType(data.ty_op.ty));
+    const ty = mir.refToType(data.ty_op.ty);
     const ref = codegen.resolveRef(data.ty_op.op);
-    return c.LLVMBuildFPExt(codegen.builder, ref, ty, "");
+    return codegen.builder.addFpext(ty, ref);
 }
 
 fn yield(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
@@ -361,30 +370,29 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
     const loop_data = mir.extraData(data.pl, Mir.Inst.Loop);
+    var builder = codegen.builder;
     
-    const entry_block = c.LLVMAppendBasicBlock(codegen.function, "loop.entry");
-    const condition_block = c.LLVMAppendBasicBlock(codegen.function, "loop.cond");
-    _ = c.LLVMBuildBr(codegen.builder, condition_block);
+    const entry_block = builder.appendBlock("loop.entry");
+    const condition_block = builder.appendBlock("loop.cond");
+    builder.addBranch(condition_block);
 
-    c.LLVMPositionBuilderAtEnd(codegen.builder, condition_block);
+    builder.positionAtEnd(condition_block);
     const condition_ref = try codegen.block(loop_data.condition);
-    // const yield_block = c.LLVMGetInsertBlock(codegen.builder);
-    // const name = "loop_yield";
-    // c.LLVMSetValueName2(c.LLVMBasicBlockAsValue(yield_block), name, name.len);
-    const exit_block = c.LLVMAppendBasicBlock(codegen.function, "loop.exit");
-    _ = c.LLVMBuildCondBr(codegen.builder, condition_ref, entry_block, exit_block);
+    const exit_block = builder.appendBlock("loop.exit");
+    builder.addCondBranch(condition_ref, entry_block, exit_block);
 
-    c.LLVMPositionBuilderAtEnd(codegen.builder, entry_block);
+    builder.positionAtEnd(entry_block);
     _ = try codegen.block(loop_data.body);
-    _ = c.LLVMBuildBr(codegen.builder, condition_block);
+    builder.addBranch(condition_block);
     
-    c.LLVMPositionBuilderAtEnd(codegen.builder, exit_block);
+    builder.positionAtEnd(exit_block);
 }
 
 fn call(codegen: *CodeGen, inst: Mir.Index) !llvm.Value {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst].op_pl;
     const call_data = mir.extraData(data.pl, Mir.Inst.Call);
+
     const addr = codegen.resolveRef(data.op);
     const args = try codegen.gpa.alloc(llvm.Value, call_data.args_len);
     defer codegen.gpa.free(args);
@@ -392,8 +400,15 @@ fn call(codegen: *CodeGen, inst: Mir.Index) !llvm.Value {
     for (mir_args) |arg, i| {
         args[i] = codegen.resolveRef(@intToEnum(Mir.Ref, arg));
     }
-    const llvm_type = try llvm.getType(codegen.gpa, mir.resolveTy(data.op));
-    const val = c.LLVMBuildCall2(codegen.builder, llvm_type, addr,
-                                 args.ptr, @intCast(c_uint, args.len), "");
-    return val;
+
+    const ty = mir.resolveTy(data.op);
+    return codegen.builder.addCall(ty, addr, args);
+}
+
+fn ret(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
+    const mir = codegen.mir;
+    const data = mir.insts.items(.data)[inst];
+    
+    const ref = if (data.un_op == Mir.Ref.void_val) null else codegen.resolveRef(data.un_op);
+    return codegen.builder.addReturn(ref);
 }

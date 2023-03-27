@@ -39,15 +39,11 @@ hir: *const Hir,
 
 decls: std.SegmentedList(Decl, 0),
 globals: std.AutoHashMapUnmanaged(Hir.Index, Decl.Index),
-backend: struct {
-    module: llvm.Module,
-    globals: std.AutoHashMapUnmanaged(*Decl, llvm.Value),
-},
-hash: std.crypto.hash.Blake3,
+backend: *llvm.Backend,
 
 pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !void {
-    const backend_module = llvm.createModule("femto_main");
-    defer llvm.destroyModule(backend_module);
+    var backend = llvm.Backend.create(gpa, "femto_main");
+    defer backend.destroy();
 
     var comp = Compilation {
         .gpa = gpa,
@@ -55,44 +51,20 @@ pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !
         .hir = hir,
         .decls = .{},
         .globals = .{},
-        .backend = .{
-            .module = backend_module,
-            .globals = .{},
-        },
-        .hash = std.crypto.hash.Blake3.init(.{}),
+        .backend = &backend,
     };
 
     const module_index = @intCast(u32, hir.insts.len - 1);
     try comp.compileModule(module_index);
 
-    var err = @intToPtr([*c]u8, 0);
-    {
-        const result = llvm.verifyModule(comp.backend.module, llvm.c.LLVMPrintMessageAction, &err);
-        if (result != 0) {
-            std.debug.print("analysis failed\n", .{});
-            llvm.c.LLVMDisposeMessage(err);
-        }
-    }
+    try backend.module.verify();
 
-    if (comp.config.verbose_llvm_ir) {
-        llvm.dumpModule(comp.backend.module);
-    }
-
-    if (comp.config.emit_llvm) {
-        if (comp.config.stage == .assembly) {
-            const name = comp.config.output.ptr;
-            const result = llvm.c.LLVMWriteBitcodeToFile(comp.backend.module, name);
-            if (result != 0) {
-                std.debug.print("llvm assembly failed\n", .{});
-                llvm.c.LLVMDisposeMessage(err);
-            }
+    if (config.verbose_llvm_ir) backend.module.print();
+    if (config.emit_llvm) {
+        if (config.stage == .assembly) {
+            try backend.module.writeBitcode(config.output);
         } else {
-            const name = comp.config.output.ptr;
-            const result = llvm.c.LLVMPrintModuleToFile(comp.backend.module, name, &err);
-            if (result != 0) {
-                std.debug.print("llvm emit failed\n", .{});
-                llvm.c.LLVMDisposeMessage(err);
-            }
+            try backend.module.writeIR(config.output);
         }
     }
 }
@@ -223,23 +195,27 @@ fn fnDecl(comp: *Compilation, function_inst: Hir.Index) !void {
     function_val.* = .{ .func = function_decl };
     decl.val = .{ .payload = &function_val.base };
 
-    var dg = DeclGen {
-        .gpa = comp.gpa,
-        .comp = comp,
-        .decl = decl,
-        .module = comp.backend.module,
-    };
-    try dg.generate();
+
+    try comp.backend.updateDecl(decl);
+    // var dg = DeclGen {
+    //     .gpa = comp.gpa,
+    //     // .comp = comp,
+    //     .decl = decl,
+    //     // .module = comp.backend.module,
+    //     .backend = comp.backend,
+    // };
+    // try dg.generate();
     
-    const builder = llvm.createBuilder();
-    defer llvm.destroyBuilder(builder);
+    const builder = llvm.Builder.create(comp.backend, llvm.c.LLVMGetNamedFunction(comp.backend.module.module, decl.name));
+    defer builder.destroy();
+
     var codegen = CodeGen {
         .gpa = comp.gpa,
         .comp = comp,
         .mir = &mir,
         .module = comp.backend.module,
         .map = .{},
-        .function = llvm.c.LLVMGetNamedFunction(comp.backend.module, decl.name),
+        .function = llvm.c.LLVMGetNamedFunction(comp.backend.module.module, decl.name),
         .builder = builder,
         .alloc_block = null,
     };
@@ -293,11 +269,12 @@ fn declName(comp: *Compilation, inst: Hir.Index) !void {
     decl.ty = decl_ptr.ty;
     decl.val = .{ .payload = &ref_val.base };
 
-    var dg = DeclGen {
-        .gpa = comp.gpa,
-        .comp = comp,
-        .decl = decl,
-        .module = comp.backend.module,
-    };
-    try dg.generate();
+    try comp.backend.updateDecl(decl);
+    // var dg = DeclGen {
+    //     .gpa = comp.gpa,
+    //     .comp = comp,
+    //     .decl = decl,
+    //     .module = comp.backend.module,
+    // };
+    // try dg.generate();
 }

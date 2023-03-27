@@ -11,7 +11,7 @@ const max_file_size = std.math.maxInt(u32);
 
 pub const Configuration = struct {
     input: []const u8,
-    output: []const u8,
+    output: [:0]const u8,
     stage: enum {
         object,
         assembly,
