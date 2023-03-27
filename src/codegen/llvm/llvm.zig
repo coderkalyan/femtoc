@@ -84,15 +84,17 @@ pub const Module = struct {
 
 pub const Backend = struct {
     gpa: Allocator,
+    comp: *const Compilation,
     context: Context,
     module: Module,
     // TODO: change to Decl.Index
     globals: std.AutoHashMapUnmanaged(*Decl, c.LLVMValueRef),
 
-    pub fn create(gpa: Allocator, name: [:0]const u8) Backend {
+    pub fn create(gpa: Allocator, comp: *const Compilation, name: [:0]const u8) Backend {
         const context = Context.create();
         return .{
             .gpa = gpa,
+            .comp = comp,
             .context = context,
             .module = Module.create(context, name),
             .globals = .{},
@@ -111,8 +113,23 @@ pub const Backend = struct {
             .decl = decl,
             .backend = backend,
         };
-        const val = try dg.generate();
-        try backend.globals.put(backend.gpa, decl, val);
+        try dg.generate();
+    }
+
+    pub fn generateBody(backend: *Backend, decl: *Decl, mir: *const Mir) !void {
+        const function = c.LLVMGetNamedFunction(backend.module.module, decl.name);
+        const builder = Builder.create(backend, function);
+        defer builder.destroy();
+
+        var codegen = CodeGen {
+            .gpa = backend.gpa,
+            .mir = mir,
+            .comp = backend.comp,
+            .map = .{},
+            .builder = builder,
+            .alloc_block = null,
+        };
+        try codegen.generate();
     }
 };
 

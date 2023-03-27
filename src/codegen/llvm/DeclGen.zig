@@ -14,14 +14,22 @@ decl: *Decl,
 // TODO: is LLVM thread safe?
 backend: *llvm.Backend,
 
-pub fn generate(dg: *DeclGen) !llvm.c.LLVMValueRef {
+pub fn generate(dg: *DeclGen) !void {
     const decl = dg.decl;
-    return switch (decl.val.kind()) {
-        .function => try dg.function(),
-        .reference => null,
-        // .reference => try dg.reference(),
-        else => unreachable,
-    };
+    if (dg.backend.globals.get(decl)) |val| {
+        // already exists, update
+        // currently, only thing to update is the name
+        llvm.c.LLVMSetValueName2(val, decl.name, std.mem.len(decl.name));
+    } else {
+        // create the decl
+        const val = switch (decl.val.kind()) {
+            .function => try dg.function(),
+            // .reference => try dg.reference(),
+            // else => unreachable,
+            else => return,
+        };
+        try dg.backend.globals.put(dg.gpa, decl, val);
+    }
 }
 
 fn function(dg: *DeclGen) !llvm.c.LLVMValueRef {

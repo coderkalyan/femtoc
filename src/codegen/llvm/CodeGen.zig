@@ -14,9 +14,9 @@ gpa: Allocator,
 comp: *const Compilation,
 mir: *const Mir,
 // TODO: is LLVM thread safe?
-module: llvm.Module,
+// module: llvm.Module,
 map: std.AutoHashMapUnmanaged(Mir.Index, llvm.Value),
-function: llvm.Value,
+// function: llvm.Value,
 builder: llvm.Builder,
 alloc_block: llvm.c.LLVMBasicBlockRef,
 
@@ -45,7 +45,8 @@ fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) llvm.Value {
             std.debug.print("{s}\n", .{decl.name});
             // TODO: figure out this global vs function nonsense
             // return llvm.c.LLVMGetNamedGlobal(codegen.module, decl.name);
-            return llvm.c.LLVMGetNamedFunction(codegen.module.module, decl.name);
+            const backend = codegen.builder.backend;
+            return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
         } else {
             return codegen.map.get(index).?;
         }
@@ -315,7 +316,7 @@ fn functionParam(codegen: *CodeGen, inst: Mir.Index, index: u32) !c.LLVMValueRef
 
     const id = data.ty_pl.pl;
     const param_str = try mir.interner.get(id);
-    const param_ref = c.LLVMGetParam(codegen.function, index);
+    const param_ref = c.LLVMGetParam(codegen.builder.function, index);
     c.LLVMSetValueName2(param_ref, param_str.ptr, param_str.len);
     return param_ref;
 }
