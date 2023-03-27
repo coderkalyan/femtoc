@@ -72,7 +72,6 @@ pub fn main() !void {
 
     if (res.args.@"emit-llvm") {
         if (res.args.assemble) {
-            allocator.free(config.output);
             extension = "ll";
             config.stage = .llvm_ll;
         } else {
