@@ -102,15 +102,23 @@ fn compileModule(comp: *Compilation, module_inst: Hir.Index) !void {
     const pl = hir.insts.items(.data)[module_inst].pl_node.pl;
     const module = hir.extraData(pl, Hir.Inst.Module);
 
-    const insts = hir.extra_data[pl + 1..pl + 1 + module.len];
+    const ids = hir.extra_data[pl + 1..pl + 1 + module.len];
+    const insts = hir.extra_data[pl + 1 + module.len..pl + 1 + 2 * module.len];
     for (insts) |inst| {
         const index = try comp.allocateDecl();
         try comp.globals.put(comp.gpa, inst, index);
     }
 
-    for (insts) |inst| {
+    // todo: zig 0.11 multi object for loops
+    for (insts) |inst, i| {
         const decl_index = comp.globals.get(inst).?;
+        const decl_ptr = comp.declPtr(decl_index);
         try comp.blockInline(inst, decl_index);
+        const member_str = try hir.interner.get(ids[i]);
+        // TODO: figure out memory lifetimes for previous and current name
+        const name = try std.mem.joinZ(comp.gpa, "", &.{member_str});
+        decl_ptr.name = name.ptr;
+        try comp.backend.updateDecl(decl_ptr);
     }
 }
 

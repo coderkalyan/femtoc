@@ -1080,42 +1080,42 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
     const data = b.hg.tree.data(node).module;
     var namespace = Scope.Namespace.init(scope);
 
+    const scratch_top = b.scratch.items.len;
+    defer b.scratch.shrinkRetainingCapacity(scratch_top);
+
     // first pass through statements - "forward declare" all identifiers
     // in the toplevel namespace so that forward-referencing and recursive
     // function calls resolve
     // note that since we link to the node id, we can resolve identifiers
     // that haven't been irgen'ed yet
-    var extra_index = data.stmts_start;
-    while (extra_index < data.stmts_end) : (extra_index += 1) {
-        var stmt = hg.tree.extra_data[extra_index];
-        switch (hg.tree.data(stmt)) {
-            .const_decl => {
+    var stmts = hg.tree.extra_data[data.stmts_start..data.stmts_end];
+    for (stmts) |stmt| {
+        const id = switch (hg.tree.data(stmt)) {
+            .const_decl => id: {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
-                const id = try hg.interner.intern(ident);
-                try namespace.decls.put(hg.arena, id, stmt);
+                break :id try hg.interner.intern(ident);
             },
-            .const_decl_attr => {
+            .const_decl_attr => id: {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
-                const id = try hg.interner.intern(ident);
-                try namespace.decls.put(hg.arena, id, stmt);
+                break :id try hg.interner.intern(ident);
             },
-            .var_decl => {
+            .var_decl => id: {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 2);
-                const id = try hg.interner.intern(ident);
-                try namespace.decls.put(hg.arena, id, stmt);
+                break :id try hg.interner.intern(ident);
             },
             else => {
                 std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
-        }
+        };
+
+        try namespace.decls.put(hg.arena, id, stmt);
+        try b.scratch.append(hg.arena, id);
     }
 
     // second pass - generate the value/expression and update the resolution map
     // so we can link node ids to instructions
-    extra_index = data.stmts_start;
-    while (extra_index < data.stmts_end) : (extra_index += 1) {
-        var stmt = hg.tree.extra_data[extra_index];
+    for (stmts) |stmt| {
         const inst = try global_statement(b, &namespace.base, stmt);
         const ref = indexToRef(inst);
         switch (hg.tree.data(stmt)) {
@@ -1124,12 +1124,23 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
             .var_decl => try hg.forward_map.put(hg.gpa, stmt, ref),
             else => {},
         }
+
+        try b.scratch.append(hg.arena, inst);
     }
 
+    const len = b.scratch.items.len - scratch_top;
+    const half = len / 2;
     const ref = try hg.addExtra(Inst.Module {
-        .len = @intCast(u32, b.instructions.items.len),
+        .len = @intCast(u32, half),
     });
-    try hg.extra.appendSlice(hg.gpa, b.instructions.items);
+    // try hg.extra.appendSlice(hg.gpa, b.instructions.items);
+    try hg.extra.appendSlice(hg.gpa, b.scratch.items[scratch_top..]);
+    // var index: u32 = 0;
+    // while (index < half) : (index += 1) {
+    //     const id = b.scratch.items[scratch_top + index];
+    //     const stmt = b.scratch.items[scratch_top + index + half];
+    //     try hg.extra.appendSlice(hg.gpa, &.{id, stmt});
+    // }
 
     _ = try b.addInst(.{
         .tag = .module,
