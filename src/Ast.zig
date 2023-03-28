@@ -146,12 +146,24 @@ pub const Node = struct {
             ty: Index,
             val: Index,
         },
+
         // var declaration 'let mut x[: ty] = 1'
         // main_token = 'let'
         // ty = type node
         // val = value node
         var_decl: struct {
             ty: Index,
+            val: Index,
+        },
+
+        attribute: struct {
+            args_start: ExtraIndex,
+            args_end: ExtraIndex,
+        },
+
+        // constant declaration with attribute(s) '@export let x[: ty] = ...';
+        const_decl_attr: struct {
+            metadata: ExtraIndex,
             val: Index,
         },
 
@@ -291,6 +303,12 @@ pub const Node = struct {
         binding: Index,
         condition: Index,
         afterthought: Index,
+    };
+    
+    pub const DeclMetadata = struct {
+        ty: Index,
+        attrs_start: ExtraIndex,
+        attrs_end: ExtraIndex,
     };
 };
 

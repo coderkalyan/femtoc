@@ -32,8 +32,10 @@ pub const Decl = struct {
 
 
 const Compilation = @This();
+const InlineMap = std.AutoHashMapUnmanaged(Hir.Index, Decl.Index);
 
 gpa: Allocator,
+arena: Allocator,
 config: *Driver.Configuration,
 hir: *const Hir,
 
@@ -42,11 +44,18 @@ globals: std.AutoHashMapUnmanaged(Hir.Index, Decl.Index),
 backend: *llvm.Backend,
 
 pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !void {
-    var backend = llvm.Backend.create(gpa, "femto_main");
+    var comp = try gpa.create(Compilation);
+    defer gpa.destroy(comp);
+
+    var backend = llvm.Backend.create(gpa, comp, "femto_main");
     defer backend.destroy();
 
-    var comp = Compilation {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    comp.* = Compilation {
         .gpa = gpa,
+        .arena = arena.allocator(),
         .config = config,
         .hir = hir,
         .decls = .{},
@@ -57,9 +66,9 @@ pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !
     const module_index = @intCast(u32, hir.insts.len - 1);
     try comp.compileModule(module_index);
 
+    if (config.verbose_llvm_ir) backend.module.print();
     try backend.module.verify();
 
-    if (config.verbose_llvm_ir) backend.module.print();
     if (config.emit_llvm) {
         if (config.stage == .assembly) {
             try backend.module.writeBitcode(config.output);
@@ -95,11 +104,13 @@ fn compileModule(comp: *Compilation, module_inst: Hir.Index) !void {
 
     const insts = hir.extra_data[pl + 1..pl + 1 + module.len];
     for (insts) |inst| {
-        switch (hir.insts.items(.tag)[inst]) {
-            .fn_decl => try comp.fnDecl(inst),
-            .dbg_value => try comp.declName(inst),
-            else => {},
-        }
+        const index = try comp.allocateDecl();
+        try comp.globals.put(comp.gpa, inst, index);
+    }
+
+    for (insts) |inst| {
+        const decl_index = comp.globals.get(inst).?;
+        try comp.blockInline(inst, decl_index);
     }
 }
 
@@ -130,25 +141,32 @@ pub fn refToType(ref: Hir.Ref) Type {
     }
 }
 
-fn fnDecl(comp: *Compilation, function_inst: Hir.Index) !void {
+fn blockInline(comp: *Compilation, block_inst: Hir.Index, decl_index: Decl.Index) !void {
     const hir = comp.hir;
-    const pl = hir.insts.items(.data)[function_inst].pl_node.pl;
-    const fn_decl = hir.extraData(pl, Hir.Inst.FnDecl);
+    const pl = hir.insts.items(.data)[block_inst].pl_node.pl;
+    const data = hir.extraData(pl, Hir.Inst.Block);
 
-    const decl_index = try comp.allocateDecl();
-    const decl = comp.declPtr(decl_index);
-    try comp.globals.put(comp.gpa, function_inst, decl_index);
-    var hash: [16]u8 = undefined;
-    _ = try std.fmt.bufPrint(&hash, "{x}{x}", .{fn_decl.hash_upper, fn_decl.hash_lower});
-    const name = try std.mem.joinZ(comp.gpa, "_", &[_][]const u8{ "f", &hash });
-    decl.name = name.ptr;
-    decl.ty = try comp.initFunctionType(function_inst);
+    const insts = hir.extra_data[pl + 1..pl + 1 + data.len];
+    for (insts) |inst| {
+        const decl = switch (hir.insts.items(.tag)[inst]) {
+            .fn_decl => try comp.fnDecl(inst, decl_index),
+            .yield_inline => comp.yieldInline(inst),
+            else => unreachable,
+        };
+        try comp.globals.put(comp.arena, inst, decl);
+    }
+}
 
-    const function_decl = try comp.gpa.create(Decl.Function);
-    function_decl.* = .{ .decl = decl_index, .hir_inst = function_inst };
+fn yieldInline(comp: *Compilation, inst: Hir.Index) Decl.Index {
+    const data = comp.hir.insts.items(.data)[inst];
+    const index = Hir.Inst.refToIndex(data.un_node.operand).?; // TODO: non-index refs
+    return comp.globals.get(index).?;
+}
 
+fn fnBody(comp: *Compilation, fn_decl: *const Hir.Inst.FnDecl) !Mir {
     var arena = std.heap.ArenaAllocator.init(comp.gpa);
     defer arena.deinit();
+
     var analyzer = Analyzer {
         .comp = comp,
         .gpa = comp.gpa,
@@ -160,13 +178,15 @@ fn fnDecl(comp: *Compilation, function_inst: Hir.Index) !void {
         .values = .{},
         .scratch = .{},
         .errors = .{},
-        .interner = &hir.interner,
+        .interner = &comp.hir.interner,
     };
     var block = Analyzer.Block {
         .parent = null,
         .analyzer = &analyzer,
         .instructions = .{},
     };
+
+    // prepend params before analyzing the block
     var params = analyzer.hir.extra_data[fn_decl.params_start..fn_decl.params_end];
     for (params) |inst| {
         const ref = try analyzer.param(&block, inst);
@@ -178,10 +198,40 @@ fn fnDecl(comp: *Compilation, function_inst: Hir.Index) !void {
         .insts = analyzer.instructions.toOwnedSlice(),
         .extra = analyzer.extra.toOwnedSlice(analyzer.gpa),
         .values = analyzer.values.toOwnedSlice(analyzer.gpa),
-        .interner = &hir.interner,
+        .interner = &comp.hir.interner,
         .comp = analyzer.comp,
     };
+    return mir;
+}
 
+fn fnDecl(comp: *Compilation, function_inst: Hir.Index, decl_index: Decl.Index) !Decl.Index {
+    const hir = comp.hir;
+    const pl = hir.insts.items(.data)[function_inst].pl_node.pl;
+    const fn_decl = hir.extraData(pl, Hir.Inst.FnDecl);
+
+    const name = name: {
+        var hash: [16]u8 = undefined;
+        _ = try std.fmt.bufPrint(&hash, "{x}{x}", .{fn_decl.hash_upper, fn_decl.hash_lower});
+        break :name try std.mem.joinZ(comp.gpa, "_", &[_][]const u8{ "f", &hash });
+    };
+
+    // this needs to be run before fnBody
+    const fn_type = try comp.initFunctionType(function_inst);
+
+    const function_decl = try comp.gpa.create(Decl.Function);
+    function_decl.* = .{ .decl = decl_index, .hir_inst = function_inst };
+    const function_val = try comp.gpa.create(Value.Payload.Function);
+    function_val.* = .{ .func = function_decl };
+
+    const decl = Decl {
+        .name = name.ptr,
+        .ty = fn_type,
+        .val = .{ .payload = &function_val.base },
+    };
+    const decl_ptr = comp.declPtr(decl_index);
+    decl_ptr.* = decl;
+
+    const mir = try comp.fnBody(&fn_decl);
     if (comp.config.verbose_mir) {
         const out = std.io.getStdOut();
         var buffered_out = std.io.bufferedWriter(out.writer());
@@ -191,35 +241,10 @@ fn fnDecl(comp: *Compilation, function_inst: Hir.Index) !void {
         try buffered_out.flush();
     }
 
-    const function_val = try comp.gpa.create(Value.Payload.Function);
-    function_val.* = .{ .func = function_decl };
-    decl.val = .{ .payload = &function_val.base };
+    try comp.backend.updateDecl(decl_ptr);
+    try comp.backend.generateBody(decl_ptr, &mir);
 
-
-    try comp.backend.updateDecl(decl);
-    // var dg = DeclGen {
-    //     .gpa = comp.gpa,
-    //     // .comp = comp,
-    //     .decl = decl,
-    //     // .module = comp.backend.module,
-    //     .backend = comp.backend,
-    // };
-    // try dg.generate();
-    
-    const builder = llvm.Builder.create(comp.backend, llvm.c.LLVMGetNamedFunction(comp.backend.module.module, decl.name));
-    defer builder.destroy();
-
-    var codegen = CodeGen {
-        .gpa = comp.gpa,
-        .comp = comp,
-        .mir = &mir,
-        .module = comp.backend.module,
-        .map = .{},
-        .function = llvm.c.LLVMGetNamedFunction(comp.backend.module.module, decl.name),
-        .builder = builder,
-        .alloc_block = null,
-    };
-    try codegen.generate();
+    return decl_index;
 }
 
 fn initFunctionType(comp: *Compilation, function_inst: Hir.Index) !Type {
@@ -249,16 +274,6 @@ fn declName(comp: *Compilation, inst: Hir.Index) !void {
     const value = Hir.Inst.refToIndex(dbg_value.value).?;
     const owned_decl = comp.globals.get(value).?;
     const decl_ptr = comp.declPtr(owned_decl);
-    // const owned_decl = ptr: {
-        // const decl = comp.declPtr(decl_index);
-        // std.debug.print("{}\n", .{decl});
-        // break :index decl;
-
-        // const base = decl.val.payload;
-        // const function_val = Value.Payload.cast(base, Value.Payload.Function).?;
-        // const function_decl = function_val.func;
-        // break :index function_decl.decl;
-    // } else unreachable;
 
     const decl_index = try comp.allocateDecl();
     const decl = comp.declPtr(decl_index);
@@ -270,11 +285,4 @@ fn declName(comp: *Compilation, inst: Hir.Index) !void {
     decl.val = .{ .payload = &ref_val.base };
 
     try comp.backend.updateDecl(decl);
-    // var dg = DeclGen {
-    //     .gpa = comp.gpa,
-    //     .comp = comp,
-    //     .decl = decl,
-    //     .module = comp.backend.module,
-    // };
-    // try dg.generate();
 }

@@ -423,8 +423,15 @@ fn expr(b: *Block, scope: *Scope, node: Node.Index) !Ref {
 
 fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
     const data = b.hg.tree.data(node);
+    // const is_toplevel = found: {
+
+    // };
+    // const is_toplevel = (scope.tag == .namespace) and (scope.cast(Scope.Namespace).?.parent.tag == .module);
+    // std.debug.print("toplevel: {}\n", .{is_toplevel});
+    // std.debug.print("{}\n", .{scope.parent.tag});
     _ = try switch (data) {
         .const_decl => return try constDecl(b, scope, node),
+        .const_decl_attr => return try constDeclAttr(b, scope, node),
         .var_decl => return try varDecl(b, scope, node),
         .assign_simple => assignSimple(b, scope, node),
         .if_simple => ifSimple(b, scope, node),
@@ -444,6 +451,19 @@ fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
     return null;
 }
 
+fn global_statement(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const data = b.hg.tree.data(node);
+    return try switch (data) {
+        .const_decl => globalConst(b, scope, node),
+        // .const_decl_attr => return try constDeclAttr(b, scope, node),
+        .var_decl => globalVar(b, scope, node),
+        else => {
+            std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+            return GenError.NotImplemented;
+        },
+    };
+}
+
 fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const data = hg.tree.data(node).block;
@@ -455,7 +475,7 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const stmt = hg.tree.extra_data[extra_index];
         const ref = try statement(b, s, stmt);
         switch (hg.tree.data(stmt)) {
-            .const_decl => {
+            .const_decl, .const_decl_attr => {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
                 const id = try hg.interner.intern(ident);
                 const var_scope = try hg.arena.create(Scope.LocalVal);
@@ -557,6 +577,44 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     }
 }
 
+fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Ref {
+    // "initializes" constant variables
+    // this doesn't actually create any instructions for declaring the constant
+    // instead, the value to set the constant to is computed, and the resulting
+    // instruction return value is stored in the scope such that future
+    // code that needs to access this constant can simply look up the identifier
+    // and refer to the associated value instruction
+    const hg = b.hg;
+    const const_decl = hg.tree.data(node).const_decl_attr;
+    const metadata = hg.tree.extraData(const_decl.metadata, Node.DeclMetadata);
+
+    const ident_index = hg.tree.mainToken(node);
+    const ident_str = hg.tree.tokenString(ident_index + 1);
+    const id = try hg.interner.intern(ident_str);
+    const ref = try expr(b, s, const_decl.val);
+    const dbg_data = try hg.addExtra(Inst.DebugValue {
+        .name = id,
+        .value = ref,
+    });
+    _ = try b.addInst(.{
+        .tag = .dbg_value,
+        .data = .{ .pl_node = .{ .node = node, .pl = dbg_data } },
+    });
+
+    if (metadata.ty == 0) {
+        // untyped (inferred) declaration
+        return ref;
+    } else {
+        // generate a "type validation" marker instruction
+        // this is a passthrough which takes in the above value reference
+        // and the type reference and returns the value reference
+        // semantic analysis will validate that the type is as it should be
+        // and then remove this instruction in the mir
+        const dest_ty = try ty(b, s, metadata.ty);
+        return coerce(b, s, ref, dest_ty, node);
+    }
+}
+
 fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     // "initializes" mutable variables
     // unlike constant declarations, mutable variables are stored in "memory"
@@ -587,6 +645,124 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
         });
         return indexToRef(alloc);
     }
+}
+
+fn globalConst(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
+    // "initializes" constant variables
+    // this doesn't actually create any instructions for declaring the constant
+    // instead, the value to set the constant to is computed, and the resulting
+    // instruction return value is stored in the scope such that future
+    // code that needs to access this constant can simply look up the identifier
+    // and refer to the associated value instruction
+    const hg = b.hg;
+    const const_decl = hg.tree.data(node).const_decl;
+
+    const ident_index = hg.tree.mainToken(node);
+    const ident_str = hg.tree.tokenString(ident_index + 1);
+    const id = try hg.interner.intern(ident_str);
+    _ = id;
+
+    var block_inline = Block.init(b, s);
+    const scope = &block_inline.base;
+    defer block_inline.deinit();
+
+    const ref = try expr(&block_inline, scope, const_decl.val);
+    const val = if (const_decl.ty == 0) ref: {
+        // untyped (inferred) declaration
+        break :ref ref;
+    } else ref: {
+        // generate a "type validation" marker instruction
+        // this is a passthrough which takes in the above value reference
+        // and the type reference and returns the value reference
+        // semantic analysis will validate that the type is as it should be
+        // and then remove this instruction in the mir
+        const dest_ty = try ty(&block_inline, scope, const_decl.ty);
+        break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
+    };
+
+    const yield_val = val: {
+        if (refToIndex(val)) |index| {
+            if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
+        }
+
+        const var_inst = try block_inline.addInst(.{
+            .tag = .constant,
+            .data = .{ .un_node = .{ .node = node, .operand = val } },
+        });
+        break :val indexToRef(var_inst);
+    };
+
+    _ = try block_inline.addInst(.{
+        .tag = .yield_inline,
+        .data = .{ .un_node = .{ .node = node, .operand = yield_val } },
+    });
+    const data = try hg.addExtra(Inst.Block {
+        .len = @intCast(u32, block_inline.instructions.items.len),
+    });
+    try hg.extra.appendSlice(hg.gpa, block_inline.instructions.items);
+
+    return b.addInst(.{
+        .tag = .block_inline,
+        .data = .{ .pl_node = .{ .node = node, .pl = data, } },
+    });
+}
+
+fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
+    // "initializes" mutable variables
+    // unlike constant declarations, mutable variables are stored in "memory"
+    // so we have to create alloc instructions in addition to computing the value
+    // otherwise, this function operates like constDecl
+    const hg = b.hg;
+    const const_decl = hg.tree.data(node).const_decl;
+
+    const ident_index = hg.tree.mainToken(node);
+    const ident_str = hg.tree.tokenString(ident_index + 1);
+    const id = try hg.interner.intern(ident_str);
+    _ = id;
+
+    var block_inline = Block.init(b, s);
+    const scope = &block_inline.base;
+    defer block_inline.deinit();
+
+    const ref = try expr(&block_inline, scope, const_decl.val);
+    const val = if (const_decl.ty == 0) ref: {
+        // untyped (inferred) declaration
+        break :ref ref;
+    } else ref: {
+        // generate a "type validation" marker instruction
+        // this is a passthrough which takes in the above value reference
+        // and the type reference and returns the value reference
+        // semantic analysis will validate that the type is as it should be
+        // and then remove this instruction in the mir
+        const dest_ty = try ty(&block_inline, scope, const_decl.ty);
+        break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
+    };
+
+    const yield_val = val: {
+        if (refToIndex(val)) |index| {
+            if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
+        }
+
+        const var_inst = try block_inline.addInst(.{
+            .tag = .variable,
+            .data = .{ .un_node = .{ .node = node, .operand = val } },
+        });
+        break :val indexToRef(var_inst);
+    };
+
+    _ = try block_inline.addInst(.{
+        .tag = .yield_inline,
+        .data = .{ .un_node = .{ .node = node, .operand = yield_val } },
+    });
+    const data = try hg.addExtra(Inst.Block {
+        .len = @intCast(u32, block_inline.instructions.items.len),
+    });
+    try hg.extra.appendSlice(hg.gpa, block_inline.instructions.items);
+
+    return b.addInst(.{
+        .tag = .block_inline,
+        .data = .{ .pl_node = .{ .node = node, .pl = data, } },
+    });
 }
 
 fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -918,6 +1094,11 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
                 const id = try hg.interner.intern(ident);
                 try namespace.decls.put(hg.arena, id, stmt);
             },
+            .const_decl_attr => {
+                const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
+                const id = try hg.interner.intern(ident);
+                try namespace.decls.put(hg.arena, id, stmt);
+            },
             .var_decl => {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 2);
                 const id = try hg.interner.intern(ident);
@@ -935,10 +1116,12 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
     extra_index = data.stmts_start;
     while (extra_index < data.stmts_end) : (extra_index += 1) {
         var stmt = hg.tree.extra_data[extra_index];
-        var ref = try statement(b, &namespace.base, stmt);
+        const inst = try global_statement(b, &namespace.base, stmt);
+        const ref = indexToRef(inst);
         switch (hg.tree.data(stmt)) {
-            .const_decl => try hg.forward_map.put(hg.gpa, stmt, ref.?),
-            .var_decl => try hg.forward_map.put(hg.gpa, stmt, ref.?),
+            .const_decl,
+            .const_decl_attr,
+            .var_decl => try hg.forward_map.put(hg.gpa, stmt, ref),
             else => {},
         }
     }

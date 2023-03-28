@@ -48,9 +48,13 @@ pub const Inst = struct {
 
         fn_decl,
         param,
+        
+        constant,
+        variable,
 
         block,
-        jump,
+        block_inline,
+
         branch_single,
         branch_double,
         loop,
@@ -62,6 +66,7 @@ pub const Inst = struct {
         ret_node,
         yield_implicit,
         yield_node,
+        yield_inline,
 
         dbg_value,
         dbg_declare,

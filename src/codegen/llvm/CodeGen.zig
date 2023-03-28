@@ -42,7 +42,6 @@ fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) llvm.Value {
         if (mir.insts.items(.tag)[index] == .load_decl) {
             const pl = mir.insts.items(.data)[index].pl;
             const decl = codegen.comp.decls.at(pl);
-            std.debug.print("{s}\n", .{decl.name});
             // TODO: figure out this global vs function nonsense
             // return llvm.c.LLVMGetNamedGlobal(codegen.module, decl.name);
             const backend = codegen.builder.backend;
@@ -106,6 +105,7 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
                 continue;
             },
             .block => try codegen.block(inst),
+            .load_decl => continue,
             else => {
                 std.debug.print("{}\n", .{mir.insts.items(.tag)[inst]});
                 continue;

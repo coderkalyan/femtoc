@@ -233,17 +233,28 @@ pub fn analyzeModule(analyzer: *Analyzer, inst: Hir.Index) !u32 {
     try analyzer.map.ensureSliceCapacity(analyzer.arena, hir_insts);
     for (hir_insts) |index| {
         const ref = switch (analyzer.hir.insts.items(.tag)[index]) {
-            .int => try analyzer.integer(block, index),
-            .float => try analyzer.float(block, index),
-            .alloc => try analyzer.alloc(block, index),
-            .load => try analyzer.load(block, index),
-            .load_inline => try analyzer.loadInline(block, index),
-            .store => try analyzer.store(block, index),
-            .coerce => try analyzer.coerce(block, index),
-            .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
-            .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge,
-            .cmp_lt, .cmp_gt => try analyzer.binaryCmp(block, index),
-            .fn_decl => try analyzer.fnDecl(block, index),
+            .block_inline => ref: {
+                // var block = try analyzer.arena.create(Block);
+                // defer analyzer.arena.destroy(block);
+                var block_inline = Block {
+                    .parent = block,
+                    .analyzer = analyzer,
+                    .instructions = .{},
+                };
+                std.debug.print("{}\n", .{index});
+                const block_index = try analyzer.analyzeBlock(block_inline, index);
+                break :ref Mir.indexToRef(block_index);
+            },
+            // .int => try analyzer.integer(block, index),
+            // .float => try analyzer.float(block, index),
+            // .alloc => try analyzer.alloc(block, index),
+            // .load => try analyzer.load(block, index),
+            // .load_inline => try analyzer.loadInline(block, index),
+            // .store => try analyzer.store(block, index),
+            // .coerce => try analyzer.coerce(block, index),
+            // .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
+            // .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge,
+            // .cmp_lt, .cmp_gt => try analyzer.binaryCmp(block, index),
             else => Mir.indexToRef(std.math.maxInt(u32) - @intCast(u32, @typeInfo(Mir.Ref).Enum.fields.len)),
         };
         analyzer.map.putAssumeCapacity(index, ref);

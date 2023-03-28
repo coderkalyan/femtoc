@@ -61,6 +61,7 @@ const Parser = struct {
     nodes: std.MultiArrayList(Node),
     extra: std.ArrayListUnmanaged(Node.Index),
     scratch: std.ArrayList(Node.Index),
+    attributes: std.ArrayListUnmanaged(Node.Index),
     // errors: std.ArrayListUnmanaged(Ast.Error),
 
     pub fn init(gpa: Allocator, source: []const u8, tokens: *Ast.TokenList) Parser {
@@ -73,6 +74,7 @@ const Parser = struct {
             .nodes = .{},
             .extra = .{},
             .scratch = std.ArrayList(Node.Index).init(gpa),
+            .attributes = .{},
         };
     }
 
@@ -155,6 +157,10 @@ const Parser = struct {
             const node = switch (p.token_tags[p.index]) {
                 .eof => break,
                 .k_let => try p.parseDecl(),
+                .a_export => { 
+                    try p.parseExport();
+                    continue;
+                },
                 else => {
                     std.debug.print("{}\n", .{p.token_tags[p.index]});
                     unreachable;
@@ -531,10 +537,26 @@ const Parser = struct {
             _ = try p.expectToken(.equal);
 
             const val = try p.expectExpr();
-            return p.addNode(.{
-                .main_token = let_token,
-                .data = .{ .const_decl = .{ .ty = ty, .val = val } },
-            });
+            if (p.attributes.items.len > 0) {
+                const attrs_start = @intCast(u32, p.extra.items.len);
+                try p.extra.appendSlice(p.gpa, p.attributes.items);
+                const attrs_end = @intCast(u32, p.extra.items.len);
+
+                const data = try p.addExtra(Node.DeclMetadata {
+                    .ty = ty,
+                    .attrs_start = attrs_start,
+                    .attrs_end = attrs_end,
+                });
+                return p.addNode(.{
+                    .main_token = let_token,
+                    .data = .{ .const_decl_attr = .{ .metadata = data, .val = val } },
+                });
+            } else {
+                return p.addNode(.{
+                    .main_token = let_token,
+                    .data = .{ .const_decl = .{ .ty = ty, .val = val } },
+                });
+            }
         }
     }
     
@@ -679,6 +701,44 @@ const Parser = struct {
             .main_token = break_token,
             .data = .{ .loop_break = {} },
         });
+    }
+    
+    fn parseExport(p: *Parser) !void {
+        const export_token = try p.expectToken(.a_export);
+        
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+        if (p.token_tags[p.index] == .l_paren) {
+            _ = try p.expectToken(.l_paren);
+            while (true) {
+                switch (p.token_tags[p.index]) {
+                    .r_paren => {
+                        _ = try p.expectToken(.r_paren);
+                        break;
+                    },
+                    else => {
+                        const arg = try p.expectExpr();
+                        try p.scratch.append(arg);
+                    },
+                }
+            }
+        }
+        
+        const args = p.scratch.items[scratch_top..];
+        const args_start = @intCast(u32, p.extra.items.len);
+        try p.extra.appendSlice(p.gpa, args);
+        const args_end = @intCast(u32, p.extra.items.len);
+
+        const attribute = try p.addNode(.{
+            .main_token = export_token,
+            .data = .{
+                .attribute = .{
+                    .args_start = args_start,
+                    .args_end = args_end,
+                },
+            }
+        });
+        try p.attributes.append(p.gpa, attribute);
     }
 };
 

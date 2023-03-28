@@ -357,6 +357,23 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     self.stream.dedent();
                     try writer.print("}})", .{});
                 },
+                .block_inline => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const block = ir.extraData(pl, Hir.Inst.Block);
+
+                    try writer.print("block_inline({{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+
+                    var extra_index: u32 = 0;
+                    while (extra_index < block.len) : (extra_index += 1) {
+                        const inst = self.hir.extra_data[pl + 1 + extra_index];
+                        try self.renderInst(inst);
+                    }
+
+                    self.stream.dedent();
+                    try writer.print("}})", .{});
+                },
                 .branch_single => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
                     const branch_single = ir.extraData(pl, Hir.Inst.BranchSingle);
@@ -413,6 +430,11 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const operand = ir.insts.items(.data)[index].un_node.operand;
                     try self.formatRef(operand, &lbuf);
                     try writer.print("yield_node({s})", .{lbuf});
+                },
+                .yield_inline => {
+                    const operand = ir.insts.items(.data)[index].un_node.operand;
+                    try self.formatRef(operand, &lbuf);
+                    try writer.print("yield_inline({s})", .{lbuf});
                 },
                 .loop => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
