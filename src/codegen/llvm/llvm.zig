@@ -75,6 +75,7 @@ pub const Module = struct {
     pub fn verify(module: Module) !void {
         var err = @intToPtr([*c]u8, 0);
         const result = c.LLVMVerifyModule(module.module, c.LLVMPrintMessageAction, &err);
+        defer c.LLVMDisposeMessage(err);
         if (result != 0) {
             std.debug.print("{s}\n", .{err});
             return Error.VerificationFailed;

@@ -22,11 +22,18 @@ pub fn generate(dg: *DeclGen) !void {
         llvm.c.LLVMSetValueName2(val, decl.name, std.mem.len(decl.name));
     } else {
         // create the decl
+        // TODO: switch from value kind to decl kind (need to create that enum)
         const val = switch (decl.val.kind()) {
             .function => try dg.function(),
+            else => try dg.global(),
+            // .zero,
+            // .one,
+            // .u32,
+            // .u64,
+            // .f64 => try dg.,
             // .reference => try dg.reference(),
             // else => unreachable,
-            else => return,
+            // else => return,
         };
         try dg.backend.globals.put(dg.gpa, decl, val);
     }
@@ -43,6 +50,21 @@ fn function(dg: *DeclGen) !llvm.c.LLVMValueRef {
     return func;
 }
 
+fn global(dg: *DeclGen) !llvm.c.LLVMValueRef {
+    const decl = dg.decl;
+    const llvm_type = try llvm.getType(dg.gpa, dg.backend.context.context, decl.ty);
+    const g = llvm.c.LLVMAddGlobal(dg.backend.module.module, llvm_type, decl.name);
+    llvm.c.LLVMSetGlobalConstant(g, @boolToInt(!decl.mut));
+
+    const val = switch (decl.ty.kind()) {
+        .uint => llvm.c.LLVMConstInt(llvm_type, @intCast(c_ulonglong, decl.val.toInt()), 0),
+        .sint => llvm.c.LLVMConstInt(llvm_type, @intCast(c_ulonglong, decl.val.toInt()), 1),
+        .float => llvm.c.LLVMConstReal(llvm_type, decl.val.toFloat()),
+        else => unreachable,
+    };
+    llvm.c.LLVMSetInitializer(g, val);
+    return g;
+}
 // fn reference(dg: *DeclGen) !void {
 //     const decl = dg.decl;
 //     const ref_val = decl.val.payload.cast(Value.Payload.Reference).?;

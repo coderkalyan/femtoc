@@ -42,14 +42,16 @@ pub const Inst = struct {
 
         coerce,
         load_inline,
-        alloc,
+        alloc_push,
         load,
         store,
 
         fn_decl,
         param,
         
-        constant,
+        decl_const,
+        decl_mut,
+        // constant,
         variable,
 
         block,

@@ -65,6 +65,7 @@ pub const Inst = struct {
         store,
         param,
         load_decl,
+        load_inline,
 
         call,
         branch_single,
@@ -254,6 +255,13 @@ pub fn resolveTy(mir: *const Mir, ref: Mir.Ref) Type {
             else => unreachable,
             // else => error.NotImplemented,
         };
+    }
+}
+
+pub fn resolveValue(mir: *const Mir, index: u32) Value {
+    switch (mir.insts.items(.tag)[index]) {
+        .constant => return mir.values[mir.insts.items(.data)[index].ty_pl.pl],
+        else => unreachable, // not yet implemented, maybe unecessary?
     }
 }
 

@@ -293,9 +293,9 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(coerce.val, &rbuf);
                     try writer.print("coerce({s}, {s})", .{lbuf, rbuf});
                 },
-                .alloc => {
+                .alloc_push => {
                     try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);
-                    try writer.print("alloc({s})", .{lbuf});
+                    try writer.print("alloc_push({s})", .{lbuf});
                 },
                 .store => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;

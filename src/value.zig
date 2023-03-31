@@ -61,4 +61,25 @@ pub const Value = extern union {
     pub inline fn kind(val: Value) Tag {
         return if (@bitCast(u64, val) < tagged_length) val.tag else val.payload.tag;
     }
+
+    pub fn toInt(val: *Value) u64 {
+        switch (val.kind()) {
+            .zero => return 0,
+            .one => return 1,
+            .u32 => {
+                const payload = val.payload.cast(Value.Payload.U32).?;
+                return @intCast(u64, payload.int);
+            },
+            .u64 => {
+                const payload = val.payload.cast(Value.Payload.U64).?;
+                return payload.int;
+            },
+            else => unreachable,
+        }
+    }
+
+    pub fn toFloat(val: Value) f64 {
+        const f = val.payload.cast(Value.Payload.F64).?;
+        return f.float;
+    }
 };

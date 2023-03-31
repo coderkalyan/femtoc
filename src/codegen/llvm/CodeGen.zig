@@ -42,10 +42,12 @@ fn resolveRef(codegen: *CodeGen, mirref: Mir.Ref) llvm.Value {
         if (mir.insts.items(.tag)[index] == .load_decl) {
             const pl = mir.insts.items(.data)[index].pl;
             const decl = codegen.comp.decls.at(pl);
-            // TODO: figure out this global vs function nonsense
-            // return llvm.c.LLVMGetNamedGlobal(codegen.module, decl.name);
             const backend = codegen.builder.backend;
-            return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
+            if (decl.val.kind() == .function) {
+                return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
+            } else {
+                return llvm.c.LLVMGetNamedGlobal(backend.module.module, decl.name);
+            }
         } else {
             return codegen.map.get(index).?;
         }

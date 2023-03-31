@@ -625,7 +625,7 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
         // untyped (inferred) declaration
         const ref = try expr(b, s, var_decl.val);
         const alloc = try b.addInst(.{
-            .tag = .alloc,
+            .tag = .alloc_push,
             .data = .{ .un_node = .{ .node = node, .operand = ref } },
         });
         return indexToRef(alloc);
@@ -640,7 +640,7 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
         const dest_ty = try ty(b, s, var_decl.ty);
         const ref = try coerce(b, s, val, dest_ty, node);
         const alloc = try b.addInst(.{
-            .tag = .alloc,
+            .tag = .alloc_push,
             .data = .{ .un_node = .{ .node = node, .operand = ref, } },
         });
         return indexToRef(alloc);
@@ -686,7 +686,7 @@ fn globalConst(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
         }
 
         const var_inst = try block_inline.addInst(.{
-            .tag = .constant,
+            .tag = .decl_const,
             .data = .{ .un_node = .{ .node = node, .operand = val } },
         });
         break :val indexToRef(var_inst);
@@ -713,10 +713,10 @@ fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
     // so we have to create alloc instructions in addition to computing the value
     // otherwise, this function operates like constDecl
     const hg = b.hg;
-    const const_decl = hg.tree.data(node).const_decl;
+    const var_decl = hg.tree.data(node).var_decl;
 
     const ident_index = hg.tree.mainToken(node);
-    const ident_str = hg.tree.tokenString(ident_index + 1);
+    const ident_str = hg.tree.tokenString(ident_index + 2);
     const id = try hg.interner.intern(ident_str);
     _ = id;
 
@@ -724,8 +724,8 @@ fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
     const scope = &block_inline.base;
     defer block_inline.deinit();
 
-    const ref = try expr(&block_inline, scope, const_decl.val);
-    const val = if (const_decl.ty == 0) ref: {
+    const ref = try expr(&block_inline, scope, var_decl.val);
+    const val = if (var_decl.ty == 0) ref: {
         // untyped (inferred) declaration
         break :ref ref;
     } else ref: {
@@ -734,7 +734,7 @@ fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
         // and the type reference and returns the value reference
         // semantic analysis will validate that the type is as it should be
         // and then remove this instruction in the mir
-        const dest_ty = try ty(&block_inline, scope, const_decl.ty);
+        const dest_ty = try ty(&block_inline, scope, var_decl.ty);
         break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
     };
 
@@ -744,7 +744,7 @@ fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
         }
 
         const var_inst = try block_inline.addInst(.{
-            .tag = .variable,
+            .tag = .decl_mut,
             .data = .{ .un_node = .{ .node = node, .operand = val } },
         });
         break :val indexToRef(var_inst);
