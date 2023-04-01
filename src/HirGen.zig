@@ -644,13 +644,10 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     switch (var_scope.tag) {
         .local_val => return error.ConstAssign,
         .local_ptr => {
-            // const local_ptr = var_scope.cast(Scope.LocalPtr).?;
             const valref = try expr(b, scope, assign.val);
             return assignLocalPtr(b, scope, node, id, valref);
         },
         .namespace => {
-            // const namespace = var_scope.cast(Scope.Namespace).?;
-            // const decl = namespace.decls.get(id).?;
             const valref = try expr(b, scope, assign.val);
             return assignNamespace(b, scope, node, id, valref);
         },
