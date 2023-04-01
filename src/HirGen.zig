@@ -258,38 +258,41 @@ fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     }
 
     const args = b.scratch.items[scratch_top..];
-    const pl = try hg.addExtra(Inst.Call {
+    const pl = try hg.addExtra(Inst.Call{
         .addr = addr_ref,
         .args_len = @intCast(u32, args.len),
     });
     try hg.extra.appendSlice(hg.gpa, args);
 
-    const index = try b.addInst(.{ 
+    const index = try b.addInst(.{
         .tag = .call,
-        .data = .{ .pl_node = .{ .node = node, .pl = pl, } },
+        .data = .{ .pl_node = .{
+            .node = node,
+            .pl = pl,
+        } },
     });
     return index;
 }
 
-fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn binaryRaw(b: *Block, node: Node.Index, op: Ast.TokenIndex, lref: Ref, rref: Ref) Error!Hir.Index {
     const hg = b.hg;
-    const binary_expr = hg.tree.data(node).binary_expr;
-
-    const lref = try expr(b, scope, binary_expr.left);
-    const rref = try expr(b, scope, binary_expr.right);
-    const bin = try hg.addExtra(Inst.Binary {
+    const bin = try hg.addExtra(Inst.Binary{
         .lref = lref,
         .rref = rref,
     });
 
-    const operator_token = hg.tree.mainToken(node);
     const index = try b.addInst(.{
-        .tag = switch (hg.tree.tokenTag(operator_token)) {
+        .tag = switch (hg.tree.tokenTag(op)) {
             .plus => .add,
+            .plus_equal => .add,
             .minus => .sub,
+            .minus_equal => .sub,
             .asterisk => .mul,
+            .asterisk_equal => .mul,
             .slash => .div,
+            .slash_equal => .div,
             .percent => .mod,
+            .percent_equal => .mod,
             .equal_equal => .cmp_eq,
             .bang_equal => .cmp_ne,
             .l_angle_equal => .cmp_le,
@@ -298,9 +301,19 @@ fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
             .r_angle => .cmp_gt,
             else => return Error.UnexpectedToken,
         },
-        .data = .{ .pl_node = .{ .node = node, .pl = bin, } },
+        .data = .{ .pl_node = .{
+            .node = node,
+            .pl = bin,
+        } },
     });
     return index;
+}
+
+fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const binary_expr = hg.tree.data(node).binary_expr;
+    const operator_token = hg.tree.mainToken(node);
+    return binaryRaw(b, node, operator_token, try expr(b, scope, binary_expr.left), try expr(b, scope, binary_expr.right));
 }
 
 fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
@@ -396,6 +409,7 @@ fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
         .const_decl => return try constDecl(b, scope, node),
         .var_decl => return try varDecl(b, scope, node),
         .assign_simple => assignSimple(b, scope, node),
+        .assign_binary => assignBinary(b, scope, node),
         .if_simple => ifSimple(b, scope, node),
         .if_else => ifElse(b, scope, node),
         .if_chain => ifChain(b, scope, node),
@@ -524,20 +538,71 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
         // and the type reference and returns the value reference
         // semantic analysis will validate that the type is as it should be
         // and then remove this instruction in the mir
-        const validate_data = try b.hg.addExtra(Inst.ValidateTy {
+        const validate_data = try b.hg.addExtra(Inst.ValidateTy{
             .ref = ref,
             .ty = try ty(b, s, var_decl.ty),
         });
         const validate_ty = try b.addInst(.{
             .tag = .validate_ty,
-            .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
+            .data = .{ .pl_node = .{
+                .node = node,
+                .pl = validate_data,
+            } },
         });
 
         const alloc = try b.addInst(.{
             .tag = .alloc,
-            .data = .{ .un_node = .{ .node = node, .operand = indexToRef(validate_ty), } },
+            .data = .{ .un_node = .{
+                .node = node,
+                .operand = indexToRef(validate_ty),
+            } },
         });
         return indexToRef(alloc);
+    }
+}
+
+fn assignLocalPtr(b: *Block, scope: *Scope, node: Node.Index, id: Node.Index, valref: Ref) !Hir.Index {
+    const hg = b.hg;
+    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+    const local_ptr = var_scope.cast(Scope.LocalPtr).?;
+    const store = try hg.addExtra(Inst.Store{
+        .addr = refToIndex(local_ptr.ptr).?,
+        .val = valref,
+    });
+    return b.addInst(.{
+        .tag = .store,
+        .data = .{ .pl_node = .{ .node = node, .pl = store } },
+    });
+}
+
+fn assignNamespace(b: *Block, scope: *Scope, node: Node.Index, id: Node.Index, valref: Ref) !Hir.Index {
+    const hg = b.hg;
+    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+    const namespace = var_scope.cast(Scope.Namespace).?;
+    const decl = namespace.decls.get(id).?;
+
+    if (hg.forward_map.get(decl)) |ref| {
+        const store = try hg.addExtra(Inst.Store{
+            .addr = refToIndex(ref).?,
+            .val = valref,
+        });
+        return b.addInst(.{
+            .tag = .store,
+            .data = .{ .pl_node = .{ .node = node, .pl = store } },
+        });
+    } else {
+        const index = try b.addInst(.{
+            .tag = .load_inline,
+            .data = .{ .pl_node = .{ .node = node, .pl = decl } },
+        });
+        const store = try hg.addExtra(Inst.Store{
+            .addr = index,
+            .val = valref,
+        });
+        return b.addInst(.{
+            .tag = .store,
+            .data = .{ .pl_node = .{ .node = node, .pl = store } },
+        });
     }
 }
 
@@ -553,48 +618,61 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     switch (var_scope.tag) {
         .local_val => return error.ConstAssign,
         .local_ptr => {
-            const local_ptr = var_scope.cast(Scope.LocalPtr).?;
+            // const local_ptr = var_scope.cast(Scope.LocalPtr).?;
             const valref = try expr(b, scope, assign.val);
-            const store = try hg.addExtra(Inst.Store {
-                .addr = refToIndex(local_ptr.ptr).?,
-                .val = valref,
-            });
-            return b.addInst(.{
-                .tag = .store,
-                .data = .{ .pl_node = .{ .node = node, .pl = store } },
-            });
+            return assignLocalPtr(b, scope, node, id, valref);
         },
         .namespace => {
-            const namespace = var_scope.cast(Scope.Namespace).?;
-            const decl = namespace.decls.get(id).?;
+            // const namespace = var_scope.cast(Scope.Namespace).?;
+            // const decl = namespace.decls.get(id).?;
             const valref = try expr(b, scope, assign.val);
-
-            if (hg.forward_map.get(decl)) |ref| {
-                const store = try hg.addExtra(Inst.Store {
-                    .addr = refToIndex(ref).?,
-                    .val = valref,
-                });
-                return b.addInst(.{
-                    .tag = .store,
-                    .data = .{ .pl_node = .{ .node = node, .pl = store } },
-                });
-            } else {
-                const index = try b.addInst(.{
-                    .tag = .load_inline,
-                    .data = .{ .pl_node = .{ .node = node, .pl = decl } },
-                });
-                const store = try hg.addExtra(Inst.Store {
-                    .addr = index,
-                    .val = valref,
-                });
-                return b.addInst(.{
-                    .tag = .store,
-                    .data = .{ .pl_node = .{ .node = node, .pl = store } },
-                });
-            }
+            return assignNamespace(b, scope, node, id, valref);
         },
         else => unreachable,
     }
+}
+
+fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+    const hg = b.hg;
+    const assign = hg.tree.data(node).assign_binary;
+
+    const ident_index = hg.tree.mainToken(node);
+    const ident_str = hg.tree.tokenString(ident_index);
+    const id = try hg.interner.intern(ident_str);
+    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+    switch (var_scope.tag) {
+        .local_val => return error.ConstAssign,
+        .local_ptr => {
+            const val = try variable(b, scope, node);
+            const op = hg.tree.mainToken(node) + 1;
+            const binIndex = try binaryRaw(b, node, op, val, try expr(b, scope, assign.val));
+            return assignLocalPtr(b, scope, node, id, indexToRef(binIndex));
+        },
+        .namespace => {
+            const val = try variable(b, scope, node);
+            const op = hg.tree.mainToken(node) + 1;
+            const binIndex = try binaryRaw(b, node, op, val, try expr(b, scope, assign.val));
+            return assignNamespace(b, scope, node, id, indexToRef(binIndex));
+        },
+        else => unreachable,
+    }
+}
+
+fn branchCondition(b: *Block, scope: *Scope, node: Node.Index) !Ref {
+    const condition_ref = try expr(b, scope, node);
+    const validate_data = try b.hg.addExtra(Inst.ValidateTy{
+        .ref = condition_ref,
+        .ty = Ref.bool_ty,
+    });
+    // TODO: should be implicit not node
+    const validate_ty = try b.addInst(.{
+        .tag = .validate_ty,
+        .data = .{ .pl_node = .{
+            .node = node,
+            .pl = validate_data,
+        } },
+    });
+    return indexToRef(validate_ty);
 }
 
 fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -603,23 +681,26 @@ fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     defer block_scope.deinit();
     const s = &block_scope.base;
 
-    const condition_ref = try expr(b, s, if_simple.condition);
+    const condition_ref = try branchCondition(b, scope, if_simple.condition);
     const exec_ref = try block(&block_scope, s, if_simple.exec_true);
-    const branch = try b.hg.addExtra(Inst.BranchSingle {
+    const branch = try b.hg.addExtra(Inst.BranchSingle{
         .condition = condition_ref,
         .exec_true = exec_ref,
     });
 
     return b.addInst(.{
         .tag = .branch_single,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch, } },
+        .data = .{ .pl_node = .{
+            .node = node,
+            .pl = branch,
+        } },
     });
 }
 
 fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_else = b.hg.tree.data(node).if_else;
 
-    const condition_ref = try expr(b, scope, if_else.condition);
+    const condition_ref = try branchCondition(b, scope, if_else.condition);
     const exec = b.hg.tree.extraData(if_else.exec, Node.IfElse);
     const exec_true = block: {
         var block_scope = Block.init(b, scope);
