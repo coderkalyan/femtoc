@@ -1,0 +1,4 @@
+let main = fn() void {
+    let mut c: u8 = 2;
+    c += 3;
+}
