@@ -1089,7 +1089,7 @@ fn initFunctionType(analyzer: *Analyzer, b: *Block, function_inst: Hir.Index) !T
         param_types[i] = mir.refToType(try analyzer.resolveRef(b, param_data.ty));
     }
 
-    const return_type = mir.refToType(try analyzer.resolveRef(b, fn_decl.return_ty));
+    const return_type = mir.refToType(try analyzer.resolveRef(b, fn_decl.return_type));
     return Type.Function.init(analyzer.gpa, return_type, param_types);
 }
 

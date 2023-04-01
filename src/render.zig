@@ -319,7 +319,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
                     const fn_decl = ir.extraData(pl, Hir.Inst.FnDecl);
 
-                    try self.formatRef(fn_decl.return_ty, &lbuf);
+                    try self.formatRef(fn_decl.return_type, &lbuf);
                     try writer.print("func(ret_ty={s}, params={{", .{lbuf});
                     self.stream.indent();
                     self.stream.indent();

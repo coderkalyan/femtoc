@@ -12,22 +12,29 @@ insts: std.MultiArrayList(Inst).Slice,
 extra_data: []const u32,
 interner: Interner,
 resolution_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
-// tree: *const Ast,
 
 pub const Inst = struct {
     tag: Tag,
     data: Data,
 
     pub const Tag = enum(u8) {
+        // load an integer literal (immediate)
+        // data.int = int value
         int,
+        // load a float literal (immediate)
+        // data.float = float value
         float,
-        call,
+
+        // binary arithmetic operations
+        // data.pl_node.pl = Inst.Binary
         add,
         sub,
         mul,
         div,
         mod,
 
+        // binary comparison operations
+        // data.pl_node.pl = Inst.Binary
         cmp_eq,
         cmp_ne,
         cmp_gt,
@@ -35,41 +42,83 @@ pub const Inst = struct {
         cmp_lt,
         cmp_le,
 
+        // TODO
         lsl,
         lsr,
         asl,
         asr,
 
+        // coerces (expands to constant, cast, or noop in mir)
+        // data.pl_node.pl = Inst.Coerce
         coerce,
+        // loads a module decl that is forward declared
+        // that is, ref is not available during generation but will
+        // be by the time the entire hir is generated and mir is running
+        // data.pl_node.pl = decl
         load_inline,
+        // pushes a value onto the stack and returns the memory address
+        // data.un_node.operand = ref to push
         alloc_push,
+        // loads data from a memory address and returns a ref to the value
+        // data.un_node.operand = memory address (ref to alloc_push or decl)
         load,
+        // stores data to a memory address
+        // data.pl_node.pl = Inst.Store
         store,
 
+        // TODO
         fn_decl,
         param,
+        // calls a function at an address (ref) and a list of arguments
+        // data.pl_node.pl = Inst.Call
+        call,
         
         decl_const,
         decl_mut,
-        // constant,
-        variable,
 
+        // scope block - body of function, loop, branch, etc
+        // data.pl_node.pl = Inst.Block
         block,
+        // same as block, but doesn't generate a block in mir
+        // used only for grouping of related hir instructions
+        // ends in yield_inline emitting the value calculated in the block
+        // data.pl_node.pl = Inst.Block
         block_inline,
 
+        // conditional execution that jumps below if false (if statement)
+        // data.pl_node.pl = Inst.BranchSingle
         branch_single,
+        // conditional execution that branches both ways (if/else)
+        // data.pl_node.pl = Inst.BranchDouble
         branch_double,
+        // loops an execution block as long as a condition is true
+        // data.pl_node.pl = Inst.Loop
         loop,
+        // breaks out of a loop
         loop_break,
-        // returns control flow to the function's callee
+
+        // returns control flow to the function's callee (not explicitly stated in src code)
         // includes an operand as the return value
-        // includes the instruction
+        // data.un_tok.tok = token that caused the *implicit* return to be generated
+        // data.un_tok.operand = ref to data to return
         ret_implicit,
+        // same as ret_implicit, but generated explicitly from src code (return statement)
+        // data.un_node.node = return node
+        // data.un_node.operand = ref to data to return
         ret_node,
+
+        // jumps out a block, emitting a value to be used outside the block expression
+        // data.un_tok.tok = token that caused the implicit yield to be generated
+        // data.un_tok.operand = ref to data to emit
         yield_implicit,
+        // same as yield_implicit, but generated explicitly from src code (yield statement)
+        // data.un_node.node = yield node
+        // data.un_node.operand = ref to data to emit
         yield_node,
+        // same as yield_implicit, but for inline blocks
         yield_inline,
 
+        // TODO
         dbg_value,
         dbg_declare,
         dbg_assign,
@@ -116,11 +165,6 @@ pub const Inst = struct {
         },
     };
 
-    pub const Extra = union {
-        index: u32,
-        ref: Ref,
-    };
-
     pub fn indexToRef(index: Hir.Index) Hir.Ref {
         const ref_len = @intCast(u32, @typeInfo(Hir.Ref).Enum.fields.len);
         return @intToEnum(Hir.Ref, ref_len + index);
@@ -145,7 +189,7 @@ pub const Inst = struct {
     pub const FnDecl = struct {
         params_start: ExtraIndex,
         params_end: ExtraIndex,
-        return_ty: Ref,
+        return_type: Ref,
         body: Index,
         hash_lower: u32,
         hash_upper: u32,
@@ -231,13 +275,11 @@ pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
     const fields = std.meta.fields(T);
     var result: T = undefined;
     inline for (fields) |field, i| {
-        if (field.field_type == ExtraIndex) {
-            @field(result, field.name) = hir.extra_data[index + i];
-        } else if (field.field_type == Hir.Ref) {
-            @field(result, field.name) = @intToEnum(Hir.Ref, hir.extra_data[index + i]);
-        } else {
-            unreachable;
-        }
+        @field(result, field.name) = switch (field.field_type) {
+            u32 => hir.extra_data[index + i],
+            Ref => @intToEnum(Ref, hir.extra_data[index + i]),
+            else => unreachable,
+        };
     }
     return result;
 }

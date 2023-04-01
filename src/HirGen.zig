@@ -61,6 +61,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .force_comptime = true,
         .return_ty = @intToEnum(Hir.Ref, 0),
     };
+
     // post order format guarantees that the module node will be the last
     const module_node = @intCast(u32, tree.nodes.len - 1);
     try module(&b, &b.base, module_node);
@@ -70,7 +71,6 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .extra_data = hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
         .resolution_map = hirgen.forward_map,
-        // .tree = tree,
     };
 }
 
@@ -89,74 +89,290 @@ const builtin_types = std.ComptimeStringMap(Hir.Ref, .{
     .{ "void", .void_ty },
 });
 
-fn parseNumberToken(hg: *HirGen, index: Token.Index) !union { int: u64, float: f64 } {
-    const source = hg.tree.source;
-    const start = hg.tree.tokens.items(.start)[@intCast(u32, index)];
-    var lexer = lex.Lexer {
-        .buffer = source,
-        .index = start,
-        .pending_invalid_token = null,
-    };
-    const token = lexer.next();
-    return switch (token.tag) {
-        .int_lit => parseInt(source[start..token.loc.end]),
-        .float_lit => parseFloat(source[start..token.loc.end]),
-        else => GenError.UnexpectedToken,
-    };
-}
-
 fn addExtra(hg: *HirGen, extra: anytype) !Hir.ExtraIndex {
     const fields = std.meta.fields(@TypeOf(extra));
     try hg.extra.ensureUnusedCapacity(hg.gpa, fields.len);
     const len = @intCast(u32, hg.extra.items.len);
     inline for (fields) |field| {
-        if (field.field_type == Hir.ExtraIndex) {
-            hg.extra.appendAssumeCapacity(@field(extra, field.name));
-        } else if (field.field_type == Hir.Ref) {
-            hg.extra.appendAssumeCapacity(@enumToInt(@field(extra, field.name)));
-        } else {
-            unreachable;
+        switch (field.field_type) {
+            u32 => hg.extra.appendAssumeCapacity(@field(extra, field.name)),
+            Hir.Ref => hg.extra.appendAssumeCapacity(@enumToInt(@field(extra, field.name))),
+            else => unreachable,
         }
     }
     return len;
 }
 
-fn integerLiteral(b: *Block, node: Node.Index) !Ref {
-    const hg = b.hg;
-    const int_token = hg.tree.mainToken(node);
-    const int_str = hg.tree.tokenString(int_token);
-    const value = try parseInt(int_str);
+fn addInt(b: *Block, int: u64) !Hir.Index {
+    return b.addInst(.{
+        .tag = .int,
+        .data = .{ .int = int },
+    });
+}
 
-    return switch (value) {
+fn addFloat(b: *Block, float: f64) !Hir.Index {
+    return b.addInst(.{
+        .tag = .float,
+        .data = .{ .float = float },
+    });
+}
+
+fn addBinary(b: *Block, l: Hir.Ref, r: Hir.Ref, tag: Inst.Tag, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Inst.Binary {
+        .lref = l,
+        .rref = r,
+    });
+
+    return b.addInst(.{
+        .tag = tag,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addBlock(b: *Block, insts: []Hir.Index, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Inst.Block {
+        .len = @intCast(u32, insts.len),
+    });
+    try b.hg.extra.appendSlice(b.hg.gpa, insts);
+
+    return b.addInst(.{
+        .tag = .block,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addBlockInline(b: *Block, insts: []Hir.Index, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Inst.Block {
+        .len = @intCast(u32, insts.len),
+    });
+    try b.hg.extra.appendSlice(b.hg.gpa, insts);
+
+    return b.addInst(.{
+        .tag = .block_inline,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addCall(b: *Block, addr: Hir.Ref, args: []u32, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Inst.Call {
+        .addr = addr,
+        .args_len = @intCast(u32, args.len),
+    });
+    try b.hg.extra.appendSlice(b.hg.gpa, args);
+
+    return b.addInst(.{
+        .tag = .call,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addFnDecl(b: *Block, params: []u32, return_type: Hir.Ref,
+             body: Hir.Index, hash: u64, node: Node.Index) !Hir.Index {
+    const params_start = @intCast(u32, b.hg.extra.items.len);
+    try b.hg.extra.appendSlice(b.hg.gpa, params);
+    const params_end = @intCast(u32, b.hg.extra.items.len);
+
+    const pl = try b.hg.addExtra(Inst.FnDecl {
+        .params_start = params_start,
+        .params_end = params_end,
+        .return_type = return_type,
+        .body = body,
+        .hash_lower = @truncate(u32, hash),
+        .hash_upper = @truncate(u32, hash >> 32),
+    });
+
+    return b.addInst(.{
+        .tag = .fn_decl,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addParam(b: *Block, name: u32, ty_ref: Hir.Ref, node: Node.Index) !Hir.Index {
+    const hg = b.hg;
+    const pl = try hg.addExtra(Inst.Param {
+        .name = name,
+        .ty = ty_ref,
+    });
+
+    const index = @intCast(u32, hg.instructions.len);
+    try hg.instructions.append(hg.gpa, .{
+        .tag = .param,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+    return index;
+}
+
+fn addDebugValue(b: *Block, val: Hir.Ref, name: u32, node: Node.Index) !Hir.Index {
+    // TODO: enum and member naming
+    const pl = try b.hg.addExtra(Inst.DebugValue {
+        .name = name,
+        .value = val,
+    });
+
+    return b.addInst(.{
+        .tag = .dbg_value,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addAllocPush(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .alloc_push,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+fn addLoad(b: *Block, addr: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .load,
+        .data = .{ .un_node = .{ .operand = addr, .node = node } },
+    });
+}
+
+fn addLoadInline(b: *Block, decl: u32, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .load_inline,
+        .data = .{ .pl_node = .{ .pl = decl, .node = node } },
+    });
+}
+
+fn addStore(b: *Block, addr: Hir.Index, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    // TODO: why is this addr an index not a ref?
+    const pl = try b.hg.addExtra(Inst.Store {
+        .addr = addr,
+        .val = val,
+    });
+
+    return b.addInst(.{
+        .tag = .store,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addBranchSingle(b: *Block, cond: Hir.Ref, exec: Hir.Index, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Inst.BranchSingle {
+        .condition = cond,
+        .exec_true = exec,
+    });
+
+    return b.addInst(.{
+        .tag = .branch_single,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addBranchDouble(b: *Block, cond: Hir.Ref,
+                   x: Hir.Index, y: Hir.Index, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Inst.BranchDouble {
+        .condition = cond,
+        .exec_true = x,
+        .exec_false = y,
+    });
+
+    return b.addInst(.{
+        .tag = .branch_double,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addRetNode(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .ret_node,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+fn addRetImplicit(b: *Block, val: Hir.Ref, tok: Ast.TokenIndex) !Hir.Index {
+    return b.addInst(.{
+        .tag = .ret_implicit,
+        .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
+    });
+}
+
+fn addYieldImplicit(b: *Block, val: Hir.Ref, tok: Ast.TokenIndex) !Hir.Index {
+    return b.addInst(.{
+        .tag = .yield_implicit,
+        .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
+    });
+}
+
+fn addYieldInline(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .yield_inline,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+fn addLoop(b: *Block, cond: Hir.Index, body: Hir.Index, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Inst.Loop {
+        .condition = cond,
+        .body = body,
+    });
+
+    return b.addInst(.{
+        .tag = .loop,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn addBreak(b: *Block, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .loop_break,
+        .data = .{ .node = node },
+    });
+}
+
+fn addDeclConst(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .decl_const,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+fn addDeclMut(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .decl_mut,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+fn addModule(b: *Block, members: []u32, node: Node.Index) !Hir.Index {
+    std.debug.assert(members.len % 2 == 0);
+    const pl = try b.hg.addExtra(Inst.Module {
+        .len = @intCast(u32, members.len / 2),
+    });
+    try b.hg.extra.appendSlice(b.hg.gpa, members);
+
+    return b.addInst(.{
+        .tag = .module,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+fn integerLiteral(b: *Block, node: Node.Index) !Ref {
+    const int_token = b.hg.tree.mainToken(node);
+    const int_str = b.hg.tree.tokenString(int_token);
+    const int = try parseInt(int_str);
+
+    return switch (int) {
         0 => .zero_val,
         1 => .one_val,
-        else => {
-            const index = try b.addInst(.{
-                .tag = .int,
-                .data = .{ .int = value },
-            });
-            return indexToRef(index);
-        },
+        else => indexToRef(try addInt(b, int)),
     };
 }
 
 fn floatLiteral(b: *Block, node: Node.Index) !Ref {
-    const hg = b.hg;
-    const float_token = hg.tree.mainToken(node);
-    const float_str = hg.tree.tokenString(float_token);
-    const value = try parseFloat(float_str);
+    const float_token = b.hg.tree.mainToken(node);
+    const float_str = b.hg.tree.tokenString(float_token);
+    const float = try parseFloat(float_str);
 
-    const index = try b.addInst(.{
-        .tag = .float,
-        .data = .{ .float = value },
-    });
-    return indexToRef(index);
+    return indexToRef(try addFloat(b, float));
 }
 
 fn boolLiteral(b: *Block, node: Node.Index) Ref {
-    const hg = b.hg;
-    const bool_token = hg.tree.mainToken(node);
-    return switch (hg.tree.tokenTag(bool_token)) {
+    const bool_token = b.hg.tree.mainToken(node);
+
+    return switch (b.hg.tree.tokenTag(bool_token)) {
         .k_true => .btrue_val,
         .k_false => .bfalse_val,
         else => unreachable,
@@ -181,25 +397,18 @@ fn variable(b: *Block, scope: *Scope, node: Node.Index) !Ref {
         },
         .local_ptr => {
             const local_ptr = var_scope.cast(Scope.LocalPtr).?;
-            const index = try b.addInst(.{
-                .tag = .load,
-                .data = .{ .un_node = .{ .node = node, .operand = local_ptr.ptr } },
-            });
-            return indexToRef(index);
+            return indexToRef(try addLoad(b, local_ptr.ptr, node));
         },
         .namespace => {
             const namespace = var_scope.cast(Scope.Namespace).?;
             const decl = namespace.decls.get(id).?;
+            // TODO: load the declaration, don't return pointer
             // have we already generated the instruction for this identifier?
             if (hg.forward_map.get(decl)) |ref| {
                 return ref;
             } else {
                 // nope, so just create a forward declaration
-                const index = try b.addInst(.{
-                    .tag = .load_inline,
-                    .data = .{ .pl_node = .{ .node = node, .pl = decl } },
-                });
-                return indexToRef(index);
+                return indexToRef(try addLoadInline(b, decl, node));
             }
         },
         else => unreachable,
@@ -230,11 +439,7 @@ fn ty(b: *Block, scope: *Scope, node: Node.Index) !Hir.Ref {
                     return ref;
                 } else {
                     // nope, so just create a forward declaration
-                    const index = try b.addInst(.{
-                        .tag = .load_inline,
-                        .data = .{ .pl_node = .{ .node = node, .pl = decl } },
-                    });
-                    return indexToRef(index);
+                    return indexToRef(try addLoadInline(b, decl, node));
                 }
             },
             else => unreachable,
@@ -242,69 +447,31 @@ fn ty(b: *Block, scope: *Scope, node: Node.Index) !Hir.Ref {
     }
 }
 
-fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
-    const hg = b.hg;
-    const arena = hg.arena;
-    const addr_ref = try variable(b, scope, node);
-    const call_expr = hg.tree.data(node).call_expr;
-
-    const scratch_top = b.scratch.items.len;
-    defer b.scratch.shrinkRetainingCapacity(scratch_top);
-
-    var extra_index = call_expr.args_start;
-    try b.scratch.ensureUnusedCapacity(arena, call_expr.args_end - call_expr.args_start);
-    while (extra_index < call_expr.args_end) : (extra_index += 1) {
-        const arg = hg.tree.extra_data[extra_index];
-        const arg_ref = try expr(b, scope, arg);
-        b.scratch.appendAssumeCapacity(@enumToInt(arg_ref));
-    }
-
-    const args = b.scratch.items[scratch_top..];
-    const pl = try hg.addExtra(Inst.Call {
-        .addr = addr_ref,
-        .args_len = @intCast(u32, args.len),
-    });
-    try hg.extra.appendSlice(hg.gpa, args);
-
-    const index = try b.addInst(.{ 
-        .tag = .call,
-        .data = .{ .pl_node = .{ .node = node, .pl = pl, } },
-    });
-    return index;
-}
-
 fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
-    const hg = b.hg;
-    const binary_expr = hg.tree.data(node).binary_expr;
+    const binary_expr = b.hg.tree.data(node).binary_expr;
+    const operator_token = b.hg.tree.mainToken(node);
 
     const lref = try expr(b, scope, binary_expr.left);
     const rref = try expr(b, scope, binary_expr.right);
-    const bin = try hg.addExtra(Inst.Binary {
-        .lref = lref,
-        .rref = rref,
-    });
+    const tag: Inst.Tag = switch (b.hg.tree.tokenTag(operator_token)) {
+        .plus => .add,
+        .minus => .sub,
+        .asterisk => .mul,
+        .slash => .div,
+        .percent => .mod,
+        .equal_equal => .cmp_eq,
+        .bang_equal => .cmp_ne,
+        .l_angle_equal => .cmp_le,
+        .r_angle_equal => .cmp_ge,
+        .l_angle => .cmp_lt,
+        .r_angle => .cmp_gt,
+        else => return Error.UnexpectedToken,
+    };
 
-    const operator_token = hg.tree.mainToken(node);
-    const index = try b.addInst(.{
-        .tag = switch (hg.tree.tokenTag(operator_token)) {
-            .plus => .add,
-            .minus => .sub,
-            .asterisk => .mul,
-            .slash => .div,
-            .percent => .mod,
-            .equal_equal => .cmp_eq,
-            .bang_equal => .cmp_ne,
-            .l_angle_equal => .cmp_le,
-            .r_angle_equal => .cmp_ge,
-            .l_angle => .cmp_lt,
-            .r_angle => .cmp_gt,
-            else => return Error.UnexpectedToken,
-        },
-        .data = .{ .pl_node = .{ .node = node, .pl = bin, } },
-    });
-    return index;
+    return addBinary(b, lref, rref, tag, node);
 }
 
+// TODO: maybe try to get the AST to do this?
 fn computeFunctionHash(tree: *const Ast, node: Node.Index, hash: []u8) void {
     const mainToken = tree.mainToken(node);
     const token_start = tree.tokens.items(.start)[mainToken];
@@ -339,37 +506,24 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     defer b.scratch.shrinkRetainingCapacity(scratch_top);
 
     var s: *Scope = scope;
-    var extra_index = signature.params_start;
-    try b.scratch.ensureUnusedCapacity(arena, signature.params_end - signature.params_start);
-    while (extra_index < signature.params_end) : (extra_index += 1) {
-        const param = hg.tree.extra_data[extra_index];
+    const params = hg.tree.extra_data[signature.params_start..signature.params_end];
+    try b.scratch.ensureUnusedCapacity(arena, params.len);
+    for (params) |param| {
         const data = hg.tree.data(param).param;
         const param_token = hg.tree.mainToken(param);
         const param_str = hg.tree.tokenString(param_token);
         const param_id = try hg.interner.intern(param_str);
 
         const ty_ref = try ty(b, scope, data.ty);
-        const param_data = try hg.addExtra(Hir.Inst.Param {
-            .name = param_id,
-            .ty = ty_ref,
-        });
-        const param_inst = @intCast(u32, hg.instructions.len);
-        try hg.instructions.append(hg.gpa, .{
-            .tag = .param,
-            .data = .{ .pl_node = .{ .node = param, .pl = param_data } },
-        });
-        b.scratch.appendAssumeCapacity(param_inst);
+        const param_index = try addParam(b, param_id, ty_ref, param);
+        b.scratch.appendAssumeCapacity(param_index);
 
-        const ref = Inst.indexToRef(param_inst);
-        var param_scope = try hg.arena.create(Scope.LocalVal);
+        const ref = Inst.indexToRef(param_index);
+        var param_scope = try arena.create(Scope.LocalVal);
         param_scope.* = Scope.LocalVal.init(s, param_id, ref);
         s = &param_scope.base;
     }
 
-    const params = b.scratch.items[scratch_top..];
-    const param_base = hg.extra.items.len;
-    try hg.extra.appendSlice(hg.gpa, params);
-    const param_top = hg.extra.items.len;
 
     var block_scope = Block.init(b, s);
     defer block_scope.deinit();
@@ -377,8 +531,8 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     var body_scope = Scope.Body { .parent = s, .fn_node = node };
     s = &body_scope.base;
 
-    const return_ty = try ty(&block_scope, s, signature.return_ty);
-    block_scope.return_ty = return_ty;
+    const return_type = try ty(&block_scope, s, signature.return_ty);
+    block_scope.return_ty = return_type;
     const body = try block(&block_scope, s, fn_decl.body);
     var hash: u64 = undefined;
     computeFunctionHash(hg.tree, node, std.mem.asBytes(&hash));
@@ -386,23 +540,12 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     // unwind and free scope objects
     while (s != scope) {
         const parent = s.parent().?;
-        hg.arena.destroy(s);
+        arena.destroy(s);
         s = parent;
     }
 
-    const decl = try hg.addExtra(Inst.FnDecl {
-        .params_start = @intCast(u32, param_base),
-        .params_end = @intCast(u32, param_top),
-        .return_ty = return_ty,
-        .body = body,
-        .hash_lower = @truncate(u32, hash),
-        .hash_upper = @truncate(u32, hash >> 32),
-    });
-    const index = try b.addInst(.{
-        .tag = .fn_decl,
-        .data = .{ .pl_node = .{ .node = node, .pl = decl, } },
-    });
-    return index;
+    const hir_params = b.scratch.items[scratch_top..];
+    return addFnDecl(b, hir_params, return_type, body, hash, node);
 }
 
 fn expr(b: *Block, scope: *Scope, node: Node.Index) !Ref {
@@ -421,15 +564,9 @@ fn expr(b: *Block, scope: *Scope, node: Node.Index) !Ref {
     };
 }
 
+// TODO: why do some of them not return?
 fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
-    const data = b.hg.tree.data(node);
-    // const is_toplevel = found: {
-
-    // };
-    // const is_toplevel = (scope.tag == .namespace) and (scope.cast(Scope.Namespace).?.parent.tag == .module);
-    // std.debug.print("toplevel: {}\n", .{is_toplevel});
-    // std.debug.print("{}\n", .{scope.parent.tag});
-    _ = try switch (data) {
+    _ = try switch (b.hg.tree.data(node)) {
         .const_decl => return try constDecl(b, scope, node),
         .const_decl_attr => return try constDeclAttr(b, scope, node),
         .var_decl => return try varDecl(b, scope, node),
@@ -464,17 +601,33 @@ fn global_statement(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index 
     };
 }
 
+fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const addr = try variable(b, scope, node);
+    const call_expr = b.hg.tree.data(node).call_expr;
+
+    const scratch_top = b.scratch.items.len;
+    defer b.scratch.shrinkRetainingCapacity(scratch_top);
+
+    const arg_nodes = b.hg.tree.extra_data[call_expr.args_start..call_expr.args_end];
+    try b.scratch.ensureUnusedCapacity(b.hg.arena, arg_nodes.len);
+    for (arg_nodes) |arg_node| {
+        const arg = try expr(b, scope, arg_node);
+        b.scratch.appendAssumeCapacity(@enumToInt(arg));
+    }
+
+    const args = b.scratch.items[scratch_top..];
+    return addCall(b, addr, args, node);
+}
+
 fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const data = hg.tree.data(node).block;
 
     var s: *Scope = scope;
-    var extra_index = data.stmts_start;
-    try b.scratch.ensureUnusedCapacity(hg.arena, data.stmts_end - data.stmts_start);
-    while (extra_index < data.stmts_end) : (extra_index += 1) {
-        const stmt = hg.tree.extra_data[extra_index];
+    const stmts = hg.tree.extra_data[data.stmts_start..data.stmts_end];
+    for (stmts) |stmt| {
         const ref = try statement(b, s, stmt);
-        switch (hg.tree.data(stmt)) {
+        switch (b.hg.tree.data(stmt)) {
             .const_decl, .const_decl_attr => {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
                 const id = try hg.interner.intern(ident);
@@ -503,27 +656,15 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     if ((scope.tag == .body) and !blockReturns(b)) {
         // insert implicit return
         // TODO: find the closing brace as token
-        _ = try b.addInst(.{
-            .tag = .ret_implicit,
-            .data = .{ .un_tok = .{ .tok = 0, .operand = Ref.void_val, } },
-        });
+        _ = try addRetImplicit(b, Ref.void_val, undefined);
     }
 
-    const ref = try hg.addExtra(Inst.Block {
-        .len = @intCast(u32, b.instructions.items.len),
-    });
-    try hg.extra.appendSlice(hg.gpa, b.instructions.items);
-
-    return b.addInst(.{
-        .tag = .block,
-        .data = .{ .pl_node = .{ .node = node, .pl = ref, } },
-    });
+    return addBlock(b, b.instructions.items, node);
 }
 
 fn coerce(b: *Block, s: *Scope, val: Ref, dest_ty: Ref, node: Node.Index) !Ref {
     _ = s;
-    const hg = b.hg;
-    const coerce_data = try hg.addExtra(Inst.Coerce {
+    const coerce_data = try b.hg.addExtra(Inst.Coerce {
         .val = val,
         .ty = dest_ty,
     });
@@ -535,7 +676,7 @@ fn coerce(b: *Block, s: *Scope, val: Ref, dest_ty: Ref, node: Node.Index) !Ref {
     // and then remove this instruction in the mir
     const coerce_inst = try b.addInst(.{
         .tag = .coerce,
-        .data = .{ .pl_node = .{ .node = node, .pl = coerce_data, } },
+        .data = .{ .pl_node = .{ .node = node, .pl = coerce_data } },
     });
     return indexToRef(coerce_inst);
 }
@@ -544,7 +685,7 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     // "initializes" constant variables
     // this doesn't actually create any instructions for declaring the constant
     // instead, the value to set the constant to is computed, and the resulting
-    // instruction return value is stored in the scope such that future
+    // instruction return value is stored in the scope (by caller) so that future
     // code that needs to access this constant can simply look up the identifier
     // and refer to the associated value instruction
     const hg = b.hg;
@@ -554,24 +695,12 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
     const ref = try expr(b, s, const_decl.val);
-    const dbg_data = try hg.addExtra(Inst.DebugValue {
-        .name = id,
-        .value = ref,
-    });
-    _ = try b.addInst(.{
-        .tag = .dbg_value,
-        .data = .{ .pl_node = .{ .node = node, .pl = dbg_data } },
-    });
+    _ = try addDebugValue(b, ref, id, node);
 
     if (const_decl.ty == 0) {
         // untyped (inferred) declaration
         return ref;
     } else {
-        // generate a "type validation" marker instruction
-        // this is a passthrough which takes in the above value reference
-        // and the type reference and returns the value reference
-        // semantic analysis will validate that the type is as it should be
-        // and then remove this instruction in the mir
         const dest_ty = try ty(b, s, const_decl.ty);
         return coerce(b, s, ref, dest_ty, node);
     }
@@ -592,24 +721,12 @@ fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Ref {
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
     const ref = try expr(b, s, const_decl.val);
-    const dbg_data = try hg.addExtra(Inst.DebugValue {
-        .name = id,
-        .value = ref,
-    });
-    _ = try b.addInst(.{
-        .tag = .dbg_value,
-        .data = .{ .pl_node = .{ .node = node, .pl = dbg_data } },
-    });
+    _ = try addDebugValue(b, ref, id, node);
 
     if (metadata.ty == 0) {
         // untyped (inferred) declaration
         return ref;
     } else {
-        // generate a "type validation" marker instruction
-        // this is a passthrough which takes in the above value reference
-        // and the type reference and returns the value reference
-        // semantic analysis will validate that the type is as it should be
-        // and then remove this instruction in the mir
         const dest_ty = try ty(b, s, metadata.ty);
         return coerce(b, s, ref, dest_ty, node);
     }
@@ -621,29 +738,15 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     // so we have to create alloc instructions in addition to computing the value
     // otherwise, this function operates like constDecl
     const var_decl = b.hg.tree.data(node).var_decl;
+    const val = try expr(b, s, var_decl.val);
     if (var_decl.ty == 0) {
         // untyped (inferred) declaration
-        const ref = try expr(b, s, var_decl.val);
-        const alloc = try b.addInst(.{
-            .tag = .alloc_push,
-            .data = .{ .un_node = .{ .node = node, .operand = ref } },
-        });
-        return indexToRef(alloc);
+        return indexToRef(try addAllocPush(b, val, node));
     } else {
         // type annotated declaration
-        // generate a "type validation" marker instruction
-        // this is a passthrough which takes in the above value reference
-        // and the type reference and returns the value reference
-        // semantic analysis will validate that the type is as it should be
-        // and then remove this instruction in the mir
-        const val = try expr(b, s, var_decl.val);
         const dest_ty = try ty(b, s, var_decl.ty);
-        const ref = try coerce(b, s, val, dest_ty, node);
-        const alloc = try b.addInst(.{
-            .tag = .alloc_push,
-            .data = .{ .un_node = .{ .node = node, .operand = ref, } },
-        });
-        return indexToRef(alloc);
+        const coerced = try coerce(b, s, val, dest_ty, node);
+        return indexToRef(try addAllocPush(b, coerced, node));
     }
 }
 
@@ -671,11 +774,6 @@ fn globalConst(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
         // untyped (inferred) declaration
         break :ref ref;
     } else ref: {
-        // generate a "type validation" marker instruction
-        // this is a passthrough which takes in the above value reference
-        // and the type reference and returns the value reference
-        // semantic analysis will validate that the type is as it should be
-        // and then remove this instruction in the mir
         const dest_ty = try ty(&block_inline, scope, const_decl.ty);
         break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
     };
@@ -685,26 +783,11 @@ fn globalConst(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
             if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
         }
 
-        const var_inst = try block_inline.addInst(.{
-            .tag = .decl_const,
-            .data = .{ .un_node = .{ .node = node, .operand = val } },
-        });
-        break :val indexToRef(var_inst);
+        break :val indexToRef(try addDeclConst(&block_inline, val, node));
     };
 
-    _ = try block_inline.addInst(.{
-        .tag = .yield_inline,
-        .data = .{ .un_node = .{ .node = node, .operand = yield_val } },
-    });
-    const data = try hg.addExtra(Inst.Block {
-        .len = @intCast(u32, block_inline.instructions.items.len),
-    });
-    try hg.extra.appendSlice(hg.gpa, block_inline.instructions.items);
-
-    return b.addInst(.{
-        .tag = .block_inline,
-        .data = .{ .pl_node = .{ .node = node, .pl = data, } },
-    });
+    _ = try addYieldInline(&block_inline, yield_val, node);
+    return addBlockInline(b, block_inline.instructions.items, node);
 }
 
 fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
@@ -729,11 +812,6 @@ fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
         // untyped (inferred) declaration
         break :ref ref;
     } else ref: {
-        // generate a "type validation" marker instruction
-        // this is a passthrough which takes in the above value reference
-        // and the type reference and returns the value reference
-        // semantic analysis will validate that the type is as it should be
-        // and then remove this instruction in the mir
         const dest_ty = try ty(&block_inline, scope, var_decl.ty);
         break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
     };
@@ -743,26 +821,11 @@ fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
             if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
         }
 
-        const var_inst = try block_inline.addInst(.{
-            .tag = .decl_mut,
-            .data = .{ .un_node = .{ .node = node, .operand = val } },
-        });
-        break :val indexToRef(var_inst);
+        break :val indexToRef(try addDeclMut(&block_inline, val, node));
     };
 
-    _ = try block_inline.addInst(.{
-        .tag = .yield_inline,
-        .data = .{ .un_node = .{ .node = node, .operand = yield_val } },
-    });
-    const data = try hg.addExtra(Inst.Block {
-        .len = @intCast(u32, block_inline.instructions.items.len),
-    });
-    try hg.extra.appendSlice(hg.gpa, block_inline.instructions.items);
-
-    return b.addInst(.{
-        .tag = .block_inline,
-        .data = .{ .pl_node = .{ .node = node, .pl = data, } },
-    });
+    _ = try addYieldInline(&block_inline, yield_val, node);
+    return addBlockInline(b, block_inline.instructions.items, node);
 }
 
 fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -778,43 +841,21 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         .local_val => return error.ConstAssign,
         .local_ptr => {
             const local_ptr = var_scope.cast(Scope.LocalPtr).?;
-            const valref = try expr(b, scope, assign.val);
-            const store = try hg.addExtra(Inst.Store {
-                .addr = refToIndex(local_ptr.ptr).?,
-                .val = valref,
-            });
-            return b.addInst(.{
-                .tag = .store,
-                .data = .{ .pl_node = .{ .node = node, .pl = store } },
-            });
+            const addr = refToIndex(local_ptr.ptr).?;
+            const val = try expr(b, scope, assign.val);
+            return addStore(b, addr, val, node);
         },
         .namespace => {
             const namespace = var_scope.cast(Scope.Namespace).?;
             const decl = namespace.decls.get(id).?;
-            const valref = try expr(b, scope, assign.val);
+            const val = try expr(b, scope, assign.val);
 
             if (hg.forward_map.get(decl)) |ref| {
-                const store = try hg.addExtra(Inst.Store {
-                    .addr = refToIndex(ref).?,
-                    .val = valref,
-                });
-                return b.addInst(.{
-                    .tag = .store,
-                    .data = .{ .pl_node = .{ .node = node, .pl = store } },
-                });
+                const addr = refToIndex(ref).?;
+                return addStore(b, addr, val, node);
             } else {
-                const index = try b.addInst(.{
-                    .tag = .load_inline,
-                    .data = .{ .pl_node = .{ .node = node, .pl = decl } },
-                });
-                const store = try hg.addExtra(Inst.Store {
-                    .addr = index,
-                    .val = valref,
-                });
-                return b.addInst(.{
-                    .tag = .store,
-                    .data = .{ .pl_node = .{ .node = node, .pl = store } },
-                });
+                const addr = try addLoadInline(b, decl, node);
+                return addStore(b, addr, val, node);
             }
         },
         else => unreachable,
@@ -832,23 +873,15 @@ fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     defer block_scope.deinit();
     const s = &block_scope.base;
 
-    const condition_ref = try branchCondition(b, scope, if_simple.condition);
-    const exec_ref = try block(&block_scope, s, if_simple.exec_true);
-    const branch = try b.hg.addExtra(Inst.BranchSingle {
-        .condition = condition_ref,
-        .exec_true = exec_ref,
-    });
-
-    return b.addInst(.{
-        .tag = .branch_single,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch, } },
-    });
+    const condition = try branchCondition(b, scope, if_simple.condition);
+    const exec = try block(&block_scope, s, if_simple.exec_true);
+    return addBranchSingle(b, condition, exec, node);
 }
 
 fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_else = b.hg.tree.data(node).if_else;
 
-    const condition_ref = try branchCondition(b, scope, if_else.condition);
+    const condition = try branchCondition(b, scope, if_else.condition);
     const exec = b.hg.tree.extraData(if_else.exec, Node.IfElse);
     const exec_true = block: {
         var block_scope = Block.init(b, scope);
@@ -860,22 +893,13 @@ fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         defer block_scope.deinit();
         break :block try block(&block_scope, &block_scope.base, exec.exec_false);
     };
-    const branch = try b.hg.addExtra(Inst.BranchDouble {
-        .condition = condition_ref,
-        .exec_true = exec_true,
-        .exec_false = exec_false,
-    });
-
-    return b.addInst(.{
-        .tag = .branch_double,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch, } },
-    });
+    return addBranchDouble(b, condition, exec_true, exec_false, node);
 }
 
 fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_chain = b.hg.tree.data(node).if_chain;
 
-    const condition_ref = try branchCondition(b, scope, if_chain.condition);
+    const condition = try branchCondition(b, scope, if_chain.condition);
     const chain = b.hg.tree.extraData(if_chain.chain, Node.IfChain);
     const exec_true = block: {
         var block_scope = Block.init(b, scope);
@@ -891,26 +915,10 @@ fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
             else => unreachable,
         };
 
-        const ref = try b.hg.addExtra(Inst.Block {
-            .len = @intCast(u32, block_scope.instructions.items.len),
-        });
-        try b.hg.extra.appendSlice(b.hg.gpa, block_scope.instructions.items);
-
-        break :block try block_scope.addInst(.{
-            .tag = .block,
-            .data = .{ .pl_node = .{ .node = node, .pl = ref, } },
-        });
+        break :block try addBlock(b, block_scope.instructions.items, node);
     };
 
-    const branch = try b.hg.addExtra(Inst.BranchDouble {
-        .condition = condition_ref,
-        .exec_true = exec_true,
-        .exec_false = next,
-    });
-    return b.addInst(.{
-        .tag = .branch_double,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch} },
-    });
+    return addBranchDouble(b, condition, exec_true, next, node);
 }
 
 fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -922,10 +930,7 @@ fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         const ref = try expr(b, scope, return_val.val);
         break :op try coerce(b, scope, ref, b.return_ty, node);
     };
-    return b.addInst(.{
-        .tag = .ret_node,
-        .data = .{ .un_node = .{ .node = node, .operand = operand, } },
-    });
+    return addRetNode(b, operand, node);
 }
 
 fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -937,31 +942,14 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const condition = block: {
         var block_scope = Scope.Block.init(b, scope);
         defer block_scope.deinit();
-        // TODO: should be implicit not node
-        const condition_ref = try coerce(b, scope, Ref.btrue_val, Ref.bool_ty, node);
-        _ = try block_scope.addInst(.{
-            .tag = .yield_implicit,
-            .data = .{ .un_tok = .{ .tok = undefined, .operand = condition_ref } },
-        });
 
-        const data = try block_scope.hg.addExtra(Inst.Block {
-            .len = @intCast(u32, block_scope.instructions.items.len),
-        });
-        try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
-        break :block try block_scope.addInst(.{
-            .tag = .block,
-            .data = .{ .pl_node = .{ .node = node, .pl = data } },
-        });
+        // TODO: should be implicit not node
+        const condition = try coerce(b, scope, Ref.btrue_val, Ref.bool_ty, node);
+        _ = try addYieldImplicit(&block_scope, condition, undefined); // TODO: specify token
+        break :block try addBlock(&block_scope, block_scope.instructions.items, node);
     };
 
-    const data = try b.hg.addExtra(Inst.Loop {
-        .condition = condition,
-        .body = body,
-    });
-    return b.addInst(.{
-        .tag = .loop,
-        .data = .{ .pl_node = .{ .node = node, .pl = data } },
-    });
+    return addLoop(b, condition, body, node);
 }
 
 fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -970,34 +958,17 @@ fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const condition = block: {
         var block_scope = Scope.Block.init(b, scope);
         defer block_scope.deinit();
+        // TODO: coerce this to bool, waiting for test infra
         const condition = try expr(&block_scope, &block_scope.base, loop_conditional.condition);
-        _ = try block_scope.addInst(.{
-            .tag = .yield_implicit,
-            .data = .{ .un_tok = .{ .tok = undefined, .operand = condition } },
-        });
-
-        const data = try block_scope.hg.addExtra(Inst.Block {
-            .len = @intCast(u32, block_scope.instructions.items.len),
-        });
-        try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
-        break :block try block_scope.addInst(.{
-            .tag = .block,
-            .data = .{ .pl_node = .{ .node = node, .pl = data } },
-        });
+        _ = try addYieldImplicit(&block_scope, condition, undefined);
+        break :block try addBlock(&block_scope, block_scope.instructions.items, node);
     };
 
     var loop_scope = Scope.Block.init(b, scope);
     defer loop_scope.deinit();
     const body = try block(&loop_scope, &loop_scope.base, loop_conditional.body);
 
-    const data = try b.hg.addExtra(Inst.Loop {
-        .condition = condition,
-        .body = body,
-    });
-    return b.addInst(.{
-        .tag = .loop,
-        .data = .{ .pl_node = .{ .node = node, .pl = data } },
-    });
+    return addLoop(b, condition, body, node);
 }
 
 fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -1016,19 +987,8 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         var block_scope = Scope.Block.init(b, s);
         defer block_scope.deinit();
         const condition = try expr(&block_scope, &block_scope.base, signature.condition);
-        _ = try block_scope.addInst(.{
-            .tag = .yield_implicit,
-            .data = .{ .un_tok = .{ .tok = undefined, .operand = condition } },
-        });
-
-        const data = try block_scope.hg.addExtra(Inst.Block {
-            .len = @intCast(u32, block_scope.instructions.items.len),
-        });
-        try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
-        break :block try block_scope.addInst(.{
-            .tag = .block,
-            .data = .{ .pl_node = .{ .node = node, .pl = data } },
-        });
+        _ = try addYieldImplicit(&block_scope, condition, undefined);
+        break :block try addBlock(&block_scope, block_scope.instructions.items, node);
     };
 
     // we have a block (loop outer body) that contains the afterthought
@@ -1047,32 +1007,15 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
             return error.AfterthoughtDecl;
         }
 
-        const data = try block_scope.hg.addExtra(Inst.Block {
-            .len = @intCast(u32, block_scope.instructions.items.len),
-        });
-        try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
-        break :body try block_scope.addInst(.{
-            .tag = .block,
-            .data = .{ .pl_node = .{ .node = node, .pl = data } },
-        });
+        break :body try addBlock(&block_scope, block_scope.instructions.items, node);
     };
 
-    const data = try b.hg.addExtra(Inst.Loop {
-        .condition = condition,
-        .body = body,
-    });
-    return b.addInst(.{
-        .tag = .loop,
-        .data = .{ .pl_node = .{ .node = node, .pl = data } },
-    });
+    return addLoop(b, condition, body, node);
 }
 
 fn loopBreak(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     _ = scope;
-    return b.addInst(.{
-        .tag = .loop_break,
-        .data = .{ .node = node },
-    });
+    return addBreak(b, node);
 }
 
 fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
@@ -1128,24 +1071,8 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
         try b.scratch.append(hg.arena, inst);
     }
 
-    const len = b.scratch.items.len - scratch_top;
-    const half = len / 2;
-    const ref = try hg.addExtra(Inst.Module {
-        .len = @intCast(u32, half),
-    });
-    // try hg.extra.appendSlice(hg.gpa, b.instructions.items);
-    try hg.extra.appendSlice(hg.gpa, b.scratch.items[scratch_top..]);
-    // var index: u32 = 0;
-    // while (index < half) : (index += 1) {
-    //     const id = b.scratch.items[scratch_top + index];
-    //     const stmt = b.scratch.items[scratch_top + index + half];
-    //     try hg.extra.appendSlice(hg.gpa, &.{id, stmt});
-    // }
-
-    _ = try b.addInst(.{
-        .tag = .module,
-        .data = .{ .pl_node = .{ .node = node, .pl = ref } },
-    });
+    const members = b.scratch.items[scratch_top..];
+    _ = try addModule(b, members, node); // TODO: maybe just return this
 }
 
 fn instructionReturns(hg: *HirGen, inst: u32) bool {
