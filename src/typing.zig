@@ -1,48 +1,50 @@
 const std = @import("std");
 const math = std.math;
+const Allocator = std.mem.Allocator;
 
 pub const Error = error { UnspecificType };
 
+// always pass Type by value
 pub const Type = extern union {
-    tag: Tag,
-    payload: *Payload,
+    basic: Basic,
+    extended: *Payload,
 
-    pub const tagged_length = 4096;
+    pub const basic_length = 4096;
 
-    pub const Tag = enum(u64) {
+    pub const Kind = enum(u5) {
         void,
 
         comptime_uint,
         comptime_sint,
-        u1,
-        i8,
-        u8,
-        i16,
-        u16,
-        i32,
-        u32,
-        i64,
-        u64,
-
         comptime_float,
-        f32,
-        f64,
+        uint,
+        sint,
+        float,
+
+        pointer,
+        function,
+        structure,
+    };
+
+    pub const Basic = packed struct {
+        // performance hack borrowed from zigc:
+        // first page of ram is unmapped, so 0..4095 are invalid pointer values
+        // thus, anything we can fit inside 12 bits can be assumed to be basic
+        kind: Kind,
+        width: u7,
+        // and we pad the rest of the 64 - 12 = 52 bits
+        padding: u52 = 0,
     };
 
     pub const Payload = struct {
-        class: Class,
-
-        pub const Class = enum {
-            pointer,
-            structure,
-        };
+        kind: Kind,
 
         pub inline fn cast(base: *const Payload, comptime T: type) ?*const T {
             return @fieldParentPtr(T, "base", base);
         }
 
         pub fn size(p: *const Payload) !usize {
-            switch (p.class) {
+            switch (p.kind) {
                 .pointer => return 8,
                 .structure => {
                     var total: usize = 0;
@@ -58,12 +60,13 @@ pub const Type = extern union {
                     if (((total / max) * max) != total)
                         total = ((total / max) + 1) * max;
                     return total;
-                }
+                },
+                .function => return error.NotImplemented,
             }
         }
 
         pub fn alignment(p: *const Payload) !usize {
-            switch (p.class) {
+            switch (p.kind) {
                 .pointer => {
                     // TODO: this depends on architecture
                     return 8;
@@ -75,14 +78,15 @@ pub const Type = extern union {
                         max = @max(max, try member.alignment());
                     }
                     return max;
-                }
+                },
+                .function => return error.NotImplemented,
             }
         }
     };
 
     pub const Pointer = struct {
-        const base_class: Payload.Class = .pointer;
-        base: Payload = .{ .class = base_class },
+        const base_kind: Kind = .pointer;
+        base: Payload = .{ .kind = base_kind },
         pointee: Type,
 
         pub fn init(pointee: Type) Pointer {
@@ -91,8 +95,8 @@ pub const Type = extern union {
     };
 
     pub const Structure = struct {
-        const base_class: Payload.Class = .structure;
-        base: Payload = .{ .class = base_class },
+        const base_kind: Kind = .structure;
+        base: Payload = .{ .kind = base_kind },
         members: []Type,
 
         pub fn init(members: []Type) Structure {
@@ -100,112 +104,122 @@ pub const Type = extern union {
         }
     };
 
-    pub fn initTag(tag: Tag) Type {
-        return Type {
-            .tag = tag,
+    pub const Function = struct {
+        const base_kind: Kind = .function;
+        base: Payload = .{ .kind = base_kind },
+        param_types: []Type,
+        return_type: Type,
+
+        pub fn init(gpa: Allocator, return_type: Type, param_types: []Type) !Type {
+            const function = try gpa.create(Function);
+            function.* = Function { .param_types = param_types, .return_type = return_type };
+            return .{ .extended = &function.base };
+        }
+    };
+
+    pub inline fn isBasic(ty: Type) bool {
+        return @bitCast(u64, ty) < basic_length;
+    }
+
+    pub fn kind(ty: Type) Kind {
+        if (ty.isBasic()) return ty.basic.kind;
+        return ty.extended.kind;
+    }
+
+    pub fn initVoid() Type {
+        return .{ .basic = .{ .kind = .void, .width = 0 } };
+    }
+
+    pub fn initInt(width: u8, sign: bool) Type {
+        std.debug.assert(width < std.math.maxInt(u7)); // TODO: large integers
+        return .{
+            .basic = .{ .kind = if (sign) .sint else .uint, .width = @truncate(u7, width) }
         };
     }
 
-    pub inline fn isTag(ty: Type) bool {
-        return @ptrToInt(ty.payload) < tagged_length;
+    pub fn initFloat(width: u8) Type {
+        std.debug.assert(width == 32 or width == 64); // TODO: other special floats
+        return .{ .basic = .{ .kind = .float, .width = @truncate(u7, width) } };
     }
 
-    pub inline fn compareTag(ty: Type, tag: Tag) bool {
-        return isTag(ty) and ty.tag == tag;
+    pub fn initComptimeInt(sign: bool) Type {
+        return .{ 
+            .basic = .{ .kind = if (sign) .comptime_sint else .comptime_uint, .width = 64 }
+        };
     }
 
-    pub inline fn isComptimeInteger(ty: Type) bool {
-        return isTag(ty) and (ty.tag == .comptime_uint or ty.tag == .comptime_sint);
+    pub fn initComptimeFloat() Type {
+        return .{ .basic = .{ .kind = .comptime_float, .width = 64 } };
     }
 
-    pub inline fn isComptimeNumber(ty: Type) bool {
-        return isTag(ty) and (isComptimeInteger(ty) or ty.tag == .comptime_float);
+    pub fn size(ty: Type) usize {
+        return switch (ty.kind()) {
+            .void => 0,
+            .uint, .sint, .float => (ty.basic.width + 7) / 8,
+            .comptime_uint, .comptime_sint, .comptime_float => 8,
+            .pointer => 8,
+            .function, .structure => unreachable,
+        };
     }
 
-    pub fn size(t: *const Type) !usize {
-        if (@enumToInt(t.tag) < tagged_length) {
-            return switch (t.tag) {
-                .void => 0,
-                .u1 => 1,
-                .i8, .u8 => 1,
-                .i16, .u16 => 2,
-                .i32, .u32 => 4,
-                .i64, .u64 => 8,
-                .f32 => 4,
-                .f64 => 8,
-                else => Error.UnspecificType,
-            };
+    pub fn maxInt(ty: Type) u64 {
+        std.debug.assert(ty.kind() == .uint or ty.kind() == .sint);
+        std.debug.assert(ty.basic.width <= 64);
+        const width = ty.basic.width;
+        if (ty.basic.kind == .uint) {
+            if (width == 64) return std.math.maxInt(u64);
+            return @shlExact(@intCast(u64, 1), @intCast(u6, width)) - 1;
         } else {
-            return t.payload.size();
+            return @shlExact(@intCast(u64, 1), @intCast(u6, width - 1)) - 1;
         }
     }
 
-    pub fn alignment(t: Type) !usize {
-        if (t.isTag()) {
-            return switch (t.tag) {
-                .void => 0,
-                .u1, .i8, .u8 => 1,
-                .i16, .u16 => 2,
-                .i32, .u32 => 4,
-                .i64, .u64 => 8,
-                .f32 => 4,
-                .f64 => 8,
-                else => Error.UnspecificType,
-            };
-        } else {
-            return t.payload.alignment();
-        }
-    }
-
-    pub fn toZigInt(t: Type) type {
-        switch (t.tag) {
-            .u1 => u1,
-            .i8 => i8,
-            .u8 => u8,
-            .i16 => i16,
-            .u16 => u16,
-            .i32 => i32,
-            .u32 => u32,
-            .i64 => i64,
-            .u64 => u64,
-            else => unreachable,
-        }
-    }
-
-    pub fn intMaxValue(t: Type) u64 {
-        if (t.isTag()) {
-            return switch (t.tag) {
-                .u1 => 1,
-                .i8 => comptime (math.pow(u64, 2, 7) - 1),
-                .u8 => comptime (math.pow(u64, 2, 8) - 1),
-                .i16 => comptime (math.pow(u64, 2, 15) - 1),
-                .u16 => comptime (math.pow(u64, 2, 16) - 1),
-                .i32 => comptime (math.pow(u64, 2, 31) - 1),
-                .u32 => comptime (math.pow(u64, 2, 32) - 1),
-                .i64 => comptime (math.pow(u64, 2, 63) - 1),
-                .u64 => 18446744073709551615,
-                else => unreachable,
-            };
-        } else {
+    pub fn minInt(ty: Type) i64 {
+        std.debug.assert(ty.kind() == .uint or ty.kind() == .sint);
+        std.debug.assert(ty.basic.width <= 64);
+        const width = @intCast(u6, ty.basic.width - 1);
+        if (ty.basic.kind == .uint) {
             return 0;
+        } else {
+            return (@intCast(i64, -1) << width);
         }
     }
 
-    pub fn intMinValue(t: Type) i64 {
-        if (t.isTag()) {
-            return switch (t.tag) {
-                .u1 => 0,
-                .u8, .u16, .u32, .u64 => 0,
-                .i8 => comptime (-math.pow(i64, 2, 7)),
-                .i16 => comptime (-math.pow(i64, 2, 15)),
-                .i32 => comptime (-math.pow(i64, 2, 31)),
-                .i64 => -9223372036854775808,
-                else => unreachable,
-            };
-        } else {
-            return 0;
-        }
+    pub fn intSign(ty: Type) bool {
+        std.debug.assert(ty.isBasic());
+        return ty.basic.kind == .sint or ty.basic.kind == .comptime_sint;
     }
+
+    pub fn isComptimeInt(ty: Type) bool {
+        std.debug.assert(ty.isBasic());
+        return ty.basic.kind == .comptime_uint or ty.basic.kind == .comptime_sint;
+    }
+
+    pub fn isFixedInt(ty: Type) bool {
+        std.debug.assert(ty.isBasic());
+        return ty.basic.kind == .uint or ty.basic.kind == .sint;
+    }
+
+    pub fn isInt(ty: Type) bool {
+        return ty.isComptimeInt() or ty.isFixedInt();
+    }
+
+    // pub fn alignment(t: Type) !usize {
+    //     if (t.isTag()) {
+    //         return switch (t.tag) {
+    //             .void => 0,
+    //             .u1, .i8, .u8 => 1,
+    //             .i16, .u16 => 2,
+    //             .i32, .u32 => 4,
+    //             .i64, .u64 => 8,
+    //             .f32 => 4,
+    //             .f64 => 8,
+    //             else => Error.UnspecificType,
+    //         };
+    //     } else {
+    //         return t.payload.alignment();
+    //     }
+    // }
 };
 
 test "primitives size" {

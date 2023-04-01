@@ -8,8 +8,7 @@ let main = fn () void {
     }
 
     count = 0;
-    let limit: u32 = 100;
-    for (count < limit) {
+    for count < 100 {
         count = count + 1;
     }
 

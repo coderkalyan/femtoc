@@ -164,6 +164,8 @@ pub const Node = struct {
 
         // variable assignment with operator 'foo += 1'
         // main_token = variable name
+        // main_token + 1 = operator token
+        // val = value node
         assign_binary: struct {
             val: Index,
         },

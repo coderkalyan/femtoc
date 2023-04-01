@@ -8,3 +8,11 @@ let main = fn() void {
 let func = fn(x: i32, y: i32, z: i32) i32 {
     return x * y + z;
 }
+
+let func2 = fn(x: i32, y: i32, z: i64) i64 {
+    let a = x * y;
+    let b = a + z;
+    let b = b * 5;
+    let c = 5 * b;
+    return b;
+}

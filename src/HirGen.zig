@@ -1,5 +1,5 @@
 const std = @import("std");
-const Hir = @import ("Hir.zig");
+const Hir = @import("Hir.zig");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const parse = @import("parse.zig");
@@ -18,7 +18,7 @@ const indexToRef = Inst.indexToRef;
 const refToIndex = Inst.refToIndex;
 const HirGen = @This();
 
-pub const GenError = error {
+pub const GenError = error{
     NotImplemented,
     UnexpectedToken,
     InvalidIdentifier,
@@ -42,7 +42,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
-    var hirgen = HirGen {
+    var hirgen = HirGen{
         .gpa = gpa,
         .arena = arena.allocator(),
         .tree = tree,
@@ -52,8 +52,8 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .forward_map = .{},
     };
 
-    var module_scope = Scope.Module {}; // doesn't hold anything, just a toplevel sentinel
-    var b = Block {
+    var module_scope = Scope.Module{}; // doesn't hold anything, just a toplevel sentinel
+    var b = Block{
         .parent = &module_scope.base,
         .instructions = .{},
         .scratch = .{},
@@ -64,7 +64,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     const module_node = @intCast(u32, tree.nodes.len - 1);
     try module(&b, &b.base, module_node);
 
-    return Hir {
+    return Hir{
         .insts = hirgen.instructions.toOwnedSlice(),
         .extra_data = hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
@@ -90,7 +90,7 @@ const builtin_types = std.ComptimeStringMap(Hir.Ref, .{
 fn parseNumberToken(hg: *HirGen, index: Token.Index) !union { int: u64, float: f64 } {
     const source = hg.tree.source;
     const start = hg.tree.tokens.items(.start)[@intCast(u32, index)];
-    var lexer = lex.Lexer {
+    var lexer = lex.Lexer{
         .buffer = source,
         .index = start,
         .pending_invalid_token = null,
@@ -336,7 +336,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const param_id = try hg.interner.intern(param_str);
 
         const ty_ref = try ty(b, scope, data.ty);
-        const param_data = try hg.addExtra(Hir.Inst.Param {
+        const param_data = try hg.addExtra(Hir.Inst.Param{
             .name = param_id,
             .ty = ty_ref,
         });
@@ -361,7 +361,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     var block_scope = Block.init(b, s);
     defer block_scope.deinit();
     s = &block_scope.base;
-    var body_scope = Scope.Body { .parent = s };
+    var body_scope = Scope.Body{ .parent = s };
     s = &body_scope.base;
 
     const return_ty = try ty(&block_scope, s, signature.return_ty);
@@ -374,7 +374,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         s = parent;
     }
 
-    const decl = try hg.addExtra(Inst.FnDecl {
+    const decl = try hg.addExtra(Inst.FnDecl{
         .params_start = @intCast(u32, param_base),
         .params_end = @intCast(u32, param_top),
         .return_ty = return_ty,
@@ -382,7 +382,10 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     });
     const index = try b.addInst(.{
         .tag = .fn_decl,
-        .data = .{ .pl_node = .{ .node = node, .pl = decl, } },
+        .data = .{ .pl_node = .{
+            .node = node,
+            .pl = decl,
+        } },
     });
     return index;
 }
@@ -468,18 +471,24 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         // TODO: find the closing brace as token
         _ = try b.addInst(.{
             .tag = .ret_implicit,
-            .data = .{ .un_tok = .{ .tok = 0, .operand = Ref.void_val, } },
+            .data = .{ .un_tok = .{
+                .tok = 0,
+                .operand = Ref.void_val,
+            } },
         });
     }
 
-    const ref = try hg.addExtra(Inst.Block {
+    const ref = try hg.addExtra(Inst.Block{
         .len = @intCast(u32, b.instructions.items.len),
     });
     try hg.extra.appendSlice(hg.gpa, b.instructions.items);
 
     return b.addInst(.{
         .tag = .block,
-        .data = .{ .pl_node = .{ .node = node, .pl = ref, } },
+        .data = .{ .pl_node = .{
+            .node = node,
+            .pl = ref,
+        } },
     });
 }
 
@@ -490,13 +499,27 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     // instruction return value is stored in the scope such that future
     // code that needs to access this constant can simply look up the identifier
     // and refer to the associated value instruction
-    const const_decl = b.hg.tree.data(node).const_decl;
+    const hg = b.hg;
+    const const_decl = hg.tree.data(node).const_decl;
+
+    const ident_index = hg.tree.mainToken(node);
+    const ident_str = hg.tree.tokenString(ident_index + 1);
+    const id = try hg.interner.intern(ident_str);
+    const ref = try expr(b, s, const_decl.val);
+    const dbg_data = try hg.addExtra(Inst.DebugValue{
+        .name = id,
+        .value = ref,
+    });
+    _ = try b.addInst(.{
+        .tag = .dbg_value,
+        .data = .{ .pl_node = .{ .node = node, .pl = dbg_data } },
+    });
+
     if (const_decl.ty == 0) {
         // untyped (inferred) declaration
-        return expr(b, s, const_decl.val);
+        return ref;
     } else {
-        const ref = try expr(b, s, const_decl.val);
-        const validate_data = try b.hg.addExtra(Inst.ValidateTy {
+        const validate_data = try hg.addExtra(Inst.ValidateTy{
             .ref = ref,
             .ty = try ty(b, s, const_decl.ty),
         });
@@ -508,7 +531,10 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
         // and then remove this instruction in the mir
         const validate_ty = try b.addInst(.{
             .tag = .validate_ty,
-            .data = .{ .pl_node = .{ .node = node, .pl = validate_data, } },
+            .data = .{ .pl_node = .{
+                .node = node,
+                .pl = validate_data,
+            } },
         });
 
         return indexToRef(validate_ty);
@@ -712,7 +738,7 @@ fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         defer block_scope.deinit();
         break :block try block(&block_scope, &block_scope.base, exec.exec_false);
     };
-    const branch = try b.hg.addExtra(Inst.BranchDouble {
+    const branch = try b.hg.addExtra(Inst.BranchDouble{
         .condition = condition_ref,
         .exec_true = exec_true,
         .exec_false = exec_false,
@@ -720,14 +746,17 @@ fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 
     return b.addInst(.{
         .tag = .branch_double,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch, } },
+        .data = .{ .pl_node = .{
+            .node = node,
+            .pl = branch,
+        } },
     });
 }
 
 fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_chain = b.hg.tree.data(node).if_chain;
 
-    const condition_ref = try expr(b, scope, if_chain.condition);
+    const condition_ref = try branchCondition(b, scope, if_chain.condition);
     const chain = b.hg.tree.extraData(if_chain.chain, Node.IfChain);
     const exec_true = block: {
         var block_scope = Block.init(b, scope);
@@ -743,25 +772,28 @@ fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
             else => unreachable,
         };
 
-        const ref = try b.hg.addExtra(Inst.Block {
+        const ref = try b.hg.addExtra(Inst.Block{
             .len = @intCast(u32, block_scope.instructions.items.len),
         });
         try b.hg.extra.appendSlice(b.hg.gpa, block_scope.instructions.items);
 
         break :block try block_scope.addInst(.{
             .tag = .block,
-            .data = .{ .pl_node = .{ .node = node, .pl = ref, } },
+            .data = .{ .pl_node = .{
+                .node = node,
+                .pl = ref,
+            } },
         });
     };
 
-    const branch = try b.hg.addExtra(Inst.BranchDouble {
+    const branch = try b.hg.addExtra(Inst.BranchDouble{
         .condition = condition_ref,
         .exec_true = exec_true,
         .exec_false = next,
     });
     return b.addInst(.{
         .tag = .branch_double,
-        .data = .{ .pl_node = .{ .node = node, .pl = branch} },
+        .data = .{ .pl_node = .{ .node = node, .pl = branch } },
     });
 }
 
@@ -771,7 +803,10 @@ fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const ref = if (return_val.val == 0) Ref.void_val else try expr(b, scope, return_val.val);
     return b.addInst(.{
         .tag = .ret_node,
-        .data = .{ .un_node = .{ .node = node, .operand = ref, } },
+        .data = .{ .un_node = .{
+            .node = node,
+            .operand = ref,
+        } },
     });
 }
 
@@ -784,12 +819,24 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const condition = block: {
         var block_scope = Scope.Block.init(b, scope);
         defer block_scope.deinit();
+        const validate_data = try block_scope.hg.addExtra(Inst.ValidateTy{
+            .ref = Ref.btrue_val,
+            .ty = Ref.bool_ty,
+        });
+        // TODO: should be implicit not node
+        const validate_ty = try block_scope.addInst(.{
+            .tag = .validate_ty,
+            .data = .{ .pl_node = .{
+                .node = node,
+                .pl = validate_data,
+            } },
+        });
         _ = try block_scope.addInst(.{
             .tag = .yield_implicit,
-            .data = .{ .un_tok = .{ .tok = undefined, .operand = Ref.btrue_val } },
+            .data = .{ .un_tok = .{ .tok = undefined, .operand = indexToRef(validate_ty) } },
         });
 
-        const data = try block_scope.hg.addExtra(Inst.Block {
+        const data = try block_scope.hg.addExtra(Inst.Block{
             .len = @intCast(u32, block_scope.instructions.items.len),
         });
         try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
@@ -799,7 +846,7 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         });
     };
 
-    const data = try b.hg.addExtra(Inst.Loop {
+    const data = try b.hg.addExtra(Inst.Loop{
         .condition = condition,
         .body = body,
     });
@@ -821,7 +868,7 @@ fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
             .data = .{ .un_tok = .{ .tok = undefined, .operand = condition } },
         });
 
-        const data = try block_scope.hg.addExtra(Inst.Block {
+        const data = try block_scope.hg.addExtra(Inst.Block{
             .len = @intCast(u32, block_scope.instructions.items.len),
         });
         try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
@@ -835,7 +882,7 @@ fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     defer loop_scope.deinit();
     const body = try block(&loop_scope, &loop_scope.base, loop_conditional.body);
 
-    const data = try b.hg.addExtra(Inst.Loop {
+    const data = try b.hg.addExtra(Inst.Loop{
         .condition = condition,
         .body = body,
     });
@@ -866,7 +913,7 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
             .data = .{ .un_tok = .{ .tok = undefined, .operand = condition } },
         });
 
-        const data = try block_scope.hg.addExtra(Inst.Block {
+        const data = try block_scope.hg.addExtra(Inst.Block{
             .len = @intCast(u32, block_scope.instructions.items.len),
         });
         try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
@@ -892,7 +939,7 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
             return error.AfterthoughtDecl;
         }
 
-        const data = try block_scope.hg.addExtra(Inst.Block {
+        const data = try block_scope.hg.addExtra(Inst.Block{
             .len = @intCast(u32, block_scope.instructions.items.len),
         });
         try block_scope.hg.extra.appendSlice(block_scope.hg.gpa, block_scope.instructions.items);
@@ -902,7 +949,7 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
         });
     };
 
-    const data = try b.hg.addExtra(Inst.Loop {
+    const data = try b.hg.addExtra(Inst.Loop{
         .condition = condition,
         .body = body,
     });
@@ -964,7 +1011,7 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
         }
     }
 
-    const ref = try hg.addExtra(Inst.Module {
+    const ref = try hg.addExtra(Inst.Module{
         .len = @intCast(u32, b.instructions.items.len),
     });
     try hg.extra.appendSlice(hg.gpa, b.instructions.items);
