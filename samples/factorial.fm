@@ -1,0 +1,22 @@
+let factorial = fn (n: u32) u32 {
+    if n <= 1 {
+        return 1;
+    }
+
+    return n * factorial(n - 1);
+};
+
+let factorial_iter = fn (n: u32) u32 {
+    let mut ans: u32 = 1;
+    for let mut i: u32 = 1; i <= n; i += 1 {
+        ans = ans * i;
+    }
+
+    return ans;
+}
+
+let main = fn () void {
+    let x: i32 = 10;
+    let fact = factorial(x);
+    let fact_iter = factorial_iter(x);
+};
