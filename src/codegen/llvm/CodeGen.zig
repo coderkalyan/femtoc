@@ -274,14 +274,17 @@ fn branchSingle(codegen: *CodeGen, inst: Mir.Index) Error!void {
 
     const condition = codegen.resolveRef(data.op_pl.op);
     const exec_true = builder.appendBlock("if.true");
-    const exit = builder.appendBlock("if.exit");
-    builder.addCondBranch(condition, exec_true, exit);
-
+    const prev = builder.getInsertBlock();
     builder.positionAtEnd(exec_true);
+
     // TODO: branch expressions
     _ = try codegen.block(data.op_pl.pl);
-    if (c.LLVMGetBasicBlockTerminator(exec_true) == null)
+    const exit = builder.appendBlock("if.exit");
+    if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null)
         builder.addBranch(exit);
+
+    builder.positionAtEnd(prev);
+    builder.addCondBranch(condition, exec_true, exit);
 
     builder.positionAtEnd(exit);
 }
@@ -293,21 +296,27 @@ fn branchDouble(codegen: *CodeGen, inst: Mir.Index) Error!void {
     var builder = codegen.builder;
 
     const condition = codegen.resolveRef(data.op_pl.op);
-    const exec_true = builder.appendBlock("ifelse.true");
-    const exec_false = builder.appendBlock("ifelse.false");
-    const exit = builder.appendBlock("ifelse.exit");
-    builder.addCondBranch(condition, exec_true, exec_false);
 
-    builder.positionAtEnd(exec_true);
     // TODO: branch expressions
+    const prev = builder.getInsertBlock();
+    const exec_true = builder.appendBlock("ifelse.true");
+    builder.positionAtEnd(exec_true);
     _ = try codegen.block(condbr.exec_true);
-    if (c.LLVMGetBasicBlockTerminator(exec_true) == null)
-        builder.addBranch(exit);
 
+    const false_prev = builder.getInsertBlock();
+    const exec_false = builder.appendBlock("ifelse.false");
+    builder.positionAtEnd(prev);
+    builder.addCondBranch(condition, exec_true, exec_false);
     builder.positionAtEnd(exec_false);
     _ = try codegen.block(condbr.exec_false);
-    if (c.LLVMGetBasicBlockTerminator(exec_false) == null)
+
+    const exit = builder.appendBlock("ifelse.exit");
+    if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null)
         builder.addBranch(exit);
+    if (c.LLVMGetBasicBlockTerminator(false_prev) == null) {
+        builder.positionAtEnd(false_prev);
+        builder.addBranch(exit);
+    }
 
     builder.positionAtEnd(exit);
 }
