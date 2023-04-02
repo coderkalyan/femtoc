@@ -1,7 +1,7 @@
-let fact = fn (n: i32) i32 {
-    let mut ans: i32 = 1;
-    for let mut i = 1; i <= n; i += 1 {
-        ans *= i;
+let fact = fn (n: u32) u32 {
+    let mut ans: u32 = 1;
+    for let mut i: u32 = 1; i <= n; i += 1 {
+        ans = ans * i;
     }
 
     return ans;
