@@ -20,7 +20,7 @@ pub fn coerce(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.
 }
 
 fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
-    const src_ty = try analyzer.resolveTy(b, src);
+    const src_ty = try analyzer.resolveType(b, src);
     if (@bitCast(u64, dest_ty) == @bitCast(u64, src_ty)) return src;
 
     const src_sign = src_ty.intSign();
@@ -64,7 +64,7 @@ fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir
 }
 
 fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
-    const src_ty = try analyzer.resolveTy(b, src);
+    const src_ty = try analyzer.resolveType(b, src);
     switch (dest_ty.basic.kind) {
         .comptime_uint => switch (src_ty.kind()) {
             .comptime_uint => return src,
@@ -118,7 +118,7 @@ pub fn binaryCoerceTo(lty: Type, rty: Type) !Type {
 }
 
 pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
-    const src_ty = try analyzer.resolveTy(b, src);
+    const src_ty = try analyzer.resolveType(b, src);
     if (@bitCast(u64, src_ty) == @bitCast(u64, dest_ty)) return src;
     if (dest_ty.basic.width == 64) {
         if (src_ty.kind() == .comptime_float) {
@@ -143,7 +143,7 @@ pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type
 
 pub fn coerceToComptimeFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     _ = dest_ty;
-    const src_ty = try analyzer.resolveTy(b, src);
+    const src_ty = try analyzer.resolveType(b, src);
     if (src_ty.kind() == .comptime_float) return src;
     return error.InvalidCoercion;
 }

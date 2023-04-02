@@ -305,8 +305,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("store({s}, {s})", .{lbuf, rbuf});
                 },
                 .load => {
-                    const operand = ir.insts.items(.data)[index].un_node.operand;
-                    try self.formatRef(operand, &lbuf);
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    try self.formatIndex(pl, &lbuf);
                     try writer.print("load({s})", .{lbuf});
                 },
                 .load_inline => {
@@ -581,20 +581,20 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .constant => {
                     const data = ir.insts.items(.data)[index].ty_pl;
-                    const ty = ir.refToType(data.ty);
+                    const ty = ir.resolveType(data.ty);
                     try self.formatRef(data.ty, &lbuf);
                     switch (ty.kind()) {
                         .comptime_uint, .uint => {
-                            const val = ir.valToInt(data.pl);
+                            const val = ir.refToInt(Mir.indexToRef(index));
                             try writer.print("constant({s}, {})", .{lbuf, val});
                         },
                         .comptime_sint, .sint => {
-                            const val = ir.valToInt(data.pl);
+                            const val = ir.refToInt(Mir.indexToRef(index));
                             const signed = @bitCast(i32, @truncate(u32, val));
                             try writer.print("constant({s}, {})", .{lbuf, signed});
                         },
                         .comptime_float, .float => {
-                            const val = ir.valToFloat(data.pl);
+                            const val = ir.refToFloat(Mir.indexToRef(index));
                             try writer.print("constant({s}, {})", .{lbuf, val});
                         },
                         else => {},
@@ -634,7 +634,7 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("({s}, {s})", .{lbuf, rbuf});
                 },
                 .alloc => {
-                    try self.formatTy(ir.insts.items(.data)[index].ty, &lbuf);
+                    try self.formatRef(ir.insts.items(.data)[index].un_op, &lbuf);
                     try writer.print("alloc({s})", .{lbuf});
                 },
                 .store => {
@@ -775,18 +775,21 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     .zero_val => "zero",
                     .one_val => "one",
                     .void_val => "void_val",
-                    .void_ty => "void",
-                    .u1_ty => "u1",
-                    .u8_ty => "u8",
-                    .u16_ty => "u16",
-                    .u32_ty => "u32",
-                    .u64_ty => "u64",
-                    .i8_ty => "i8",
-                    .i16_ty => "i16",
-                    .i32_ty => "i32",
-                    .i64_ty => "i64",
-                    .f32_ty => "f32",
-                    .f64_ty => "f64",
+                    .void => "void",
+                    .u1 => "u1",
+                    .u8 => "u8",
+                    .u16 => "u16",
+                    .u32 => "u32",
+                    .u64 => "u64",
+                    .i8 => "i8",
+                    .i16 => "i16",
+                    .i32 => "i32",
+                    .i64 => "i64",
+                    .f32 => "f32",
+                    .f64 => "f64",
+                    .comptime_uint => "comptime_uint",
+                    .comptime_sint => "comptime_sint",
+                    .comptime_float => "comptime_float",
                     _ => unreachable,
                 }});
             }

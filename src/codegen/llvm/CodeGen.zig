@@ -129,27 +129,27 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
 fn constant(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst].ty_pl;
-    const ty = mir.refToType(data.ty);
+    const ty = mir.resolveType(data.ty);
 
     var builder = codegen.builder;
     switch (ty.kind()) {
         .comptime_uint, .comptime_sint, .comptime_float => return null,
 
-        .uint => return builder.addUint(ty, mir.valToInt(data.pl)),
-        .sint => return builder.addSint(ty, mir.valToInt(data.pl)),
-        .float => return builder.addFloat(ty, mir.valToFloat(data.pl)),
+        .uint => return builder.addUint(ty, mir.refToInt(Mir.indexToRef(inst))),
+        .sint => return builder.addSint(ty, mir.refToInt(Mir.indexToRef(inst))),
+        .float => return builder.addFloat(ty, mir.refToFloat(Mir.indexToRef(inst))),
         else => unreachable,
     }
 }
 
 fn binaryOp(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
-    const mir = codegen.mir;
+   const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
     const lref = codegen.resolveRef(data.bin_op.lref);
     const rref = codegen.resolveRef(data.bin_op.rref);
     var builder = codegen.builder;
     
-    const lty = mir.resolveTy(data.bin_op.lref);
+    const lty = mir.resolveType(data.bin_op.lref);
     return switch (lty.kind()) {
         .uint => switch (mir.insts.items(.tag)[inst]) {
             .add => c.LLVMBuildAdd(builder.builder, lref, rref, ""),
@@ -187,7 +187,7 @@ fn alloc(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
 
     const bb = builder.getInsertBlock();
     builder.positionAtEnd(codegen.alloc_block);
-    const alloca = builder.addAlloca(data.ty);
+    const alloca = builder.addAlloca(mir.resolveType(data.un_op));
     builder.positionAtEnd(bb);
     return alloca;
 }
@@ -340,7 +340,7 @@ fn zext(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
 
-    const ty = mir.refToType(data.ty_op.ty);
+    const ty = mir.resolveType(data.ty_op.ty);
     const ref = codegen.resolveRef(data.ty_op.op);
     return codegen.builder.addZext(ty, ref);
 }
@@ -349,7 +349,7 @@ fn sext(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
 
-    const ty = mir.refToType(data.ty_op.ty);
+    const ty = mir.resolveType(data.ty_op.ty);
     const ref = codegen.resolveRef(data.ty_op.op);
     return codegen.builder.addSext(ty, ref);
 }
@@ -358,7 +358,7 @@ fn fpext(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
 
-    const ty = mir.refToType(data.ty_op.ty);
+    const ty = mir.resolveType(data.ty_op.ty);
     const ref = codegen.resolveRef(data.ty_op.op);
     return codegen.builder.addFpext(ty, ref);
 }
@@ -404,7 +404,7 @@ fn call(codegen: *CodeGen, inst: Mir.Index) !llvm.Value {
         args[i] = codegen.resolveRef(@intToEnum(Mir.Ref, arg));
     }
 
-    const ty = mir.resolveTy(data.op);
+    const ty = mir.resolveType(data.op);
     return codegen.builder.addCall(ty, addr, args);
 }
 
