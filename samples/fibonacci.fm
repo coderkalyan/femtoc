@@ -5,16 +5,19 @@ let fibonacci = fn (n: i32) i32 {
         return 1;
     }
 
-    let mut a = 1; // fib(0)
-    let mut b = 1; // fib(1)
+    let mut a: i32 = 1; // fib(0)
+    let mut b: i32 = 1; // fib(1)
 
-    for let mut i = 2; i <= n; i += 1 {
+    for let mut i: i32 = 2; i <= n; i += 1 {
         let tmp = a;
         a = b;
         b = tmp + b;
     }
+
+    return b;
 };
 
 let main = fn () void {
-    let fib = fibonacci(5);
+    let x: i32 = 5;
+    let fib = fibonacci(x);
 };
