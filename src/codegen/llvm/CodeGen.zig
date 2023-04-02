@@ -385,19 +385,21 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     const body = data.bin_pl.r;
     var builder = codegen.builder;
     
+    const prev = builder.getInsertBlock();
     const entry_block = builder.appendBlock("loop.entry");
+    builder.positionAtEnd(entry_block);
+    _ = try codegen.block(body);
+
     const condition_block = builder.appendBlock("loop.cond");
     builder.addBranch(condition_block);
-
+    builder.positionAtEnd(prev);
+    builder.addBranch(condition_block);
     builder.positionAtEnd(condition_block);
     const condition_ref = try codegen.block(condition);
+
     const exit_block = builder.appendBlock("loop.exit");
     builder.addCondBranch(condition_ref, entry_block, exit_block);
 
-    builder.positionAtEnd(entry_block);
-    _ = try codegen.block(body);
-    builder.addBranch(condition_block);
-    
     builder.positionAtEnd(exit_block);
 }
 
