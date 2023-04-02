@@ -961,7 +961,8 @@ fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
             else => unreachable,
         };
 
-        break :block try addBlock(b, block_scope.instructions.items, node);
+        // TODO: another regression that needs to be tested
+        break :block try addBlock(&block_scope, block_scope.instructions.items, node);
     };
 
     return addBranchDouble(b, condition, exec_true, next, node);
