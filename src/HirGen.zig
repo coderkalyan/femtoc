@@ -6,7 +6,8 @@ const parse = @import("parse.zig");
 const parseInt = @import("integerLiteral.zig").parseInt;
 const parseFloat = @import("floatLiteral.zig").parseFloat;
 const Scope = @import("scope.zig").Scope;
-const Interner = @import("interner.zig").Interner;
+const interner = @import("interner.zig");
+const Interner = interner.Interner;
 
 const Allocator = std.mem.Allocator;
 const Inst = Hir.Inst;
@@ -28,7 +29,7 @@ pub const GenError = error {
     AfterthoughtDecl,
 };
 
-const Error = GenError || @import("interner.zig").Error || Allocator.Error || @import("integerLiteral.zig").ParseError;
+const Error = GenError || interner.Error || Allocator.Error || @import("integerLiteral.zig").ParseError;
 
 gpa: Allocator,
 arena: Allocator,
@@ -222,10 +223,10 @@ fn addAllocPush(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
     });
 }
 
-fn addLoad(b: *Block, addr: Hir.Ref, node: Node.Index) !Hir.Index {
+fn addLoad(b: *Block, addr: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .load,
-        .data = .{ .un_node = .{ .operand = addr, .node = node } },
+        .data = .{ .pl_node = .{ .pl = addr, .node = node } },
     });
 }
 
@@ -237,7 +238,6 @@ fn addLoadInline(b: *Block, decl: u32, node: Node.Index) !Hir.Index {
 }
 
 fn addStore(b: *Block, addr: Hir.Index, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    // TODO: why is this addr an index not a ref?
     const pl = try b.hg.addExtra(Inst.Store {
         .addr = addr,
         .val = val,
@@ -397,7 +397,8 @@ fn variable(b: *Block, scope: *Scope, node: Node.Index) !Ref {
         },
         .local_ptr => {
             const local_ptr = var_scope.cast(Scope.LocalPtr).?;
-            return indexToRef(try addLoad(b, local_ptr.ptr, node));
+            const addr = refToIndex(local_ptr.ptr).?;
+            return indexToRef(try addLoad(b, addr, node));
         },
         .namespace => {
             const namespace = var_scope.cast(Scope.Namespace).?;
