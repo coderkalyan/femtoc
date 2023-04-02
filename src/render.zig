@@ -684,19 +684,20 @@ pub fn MirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("}})", .{});
                 },
                 .loop => {
-                    const pl = ir.insts.items(.data)[index].pl;
-                    const data = ir.extraData(pl, Mir.Inst.Loop);
+                    const data = ir.insts.items(.data)[index].bin_pl;
+                    const condition = data.l;
+                    const body = data.r;
                     try writer.print("loop(", .{});
                     self.stream.indent();
                     try self.stream.newline();
                     try writer.print("condition = {{", .{});
                     self.stream.indent();
                     try self.stream.newline();
-                    try self.renderInst(data.condition);
+                    try self.renderInst(condition);
                     self.stream.dedent();
                     try writer.print("}}, body = {{", .{});
                     try self.stream.newline();
-                    try self.renderInst(data.body);
+                    try self.renderInst(body);
                     self.stream.dedent();
                     try writer.print("}})", .{});
                 },

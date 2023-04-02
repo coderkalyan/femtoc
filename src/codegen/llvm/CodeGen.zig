@@ -372,7 +372,8 @@ fn yield(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
 fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
-    const loop_data = mir.extraData(data.pl, Mir.Inst.Loop);
+    const condition = data.bin_pl.l;
+    const body = data.bin_pl.r;
     var builder = codegen.builder;
     
     const entry_block = builder.appendBlock("loop.entry");
@@ -380,12 +381,12 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     builder.addBranch(condition_block);
 
     builder.positionAtEnd(condition_block);
-    const condition_ref = try codegen.block(loop_data.condition);
+    const condition_ref = try codegen.block(condition);
     const exit_block = builder.appendBlock("loop.exit");
     builder.addCondBranch(condition_ref, entry_block, exit_block);
 
     builder.positionAtEnd(entry_block);
-    _ = try codegen.block(loop_data.body);
+    _ = try codegen.block(body);
     builder.addBranch(condition_block);
     
     builder.positionAtEnd(exit_block);
