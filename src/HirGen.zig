@@ -322,6 +322,13 @@ fn addBreak(b: *Block, node: Node.Index) !Hir.Index {
     });
 }
 
+fn addContinue(b: *Block, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .loop_continue,
+        .data = .{ .node = node },
+    });
+}
+
 fn addDeclConst(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .decl_const,
@@ -588,6 +595,7 @@ fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
         .loop_conditional => loopConditional(b, scope, node),
         .loop_range => loopRange(b, scope, node),
         .loop_break => loopBreak(b, scope, node),
+        .loop_continue => loopContinue(b, scope, node),
         else => {
             std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
             return GenError.NotImplemented;
@@ -1063,6 +1071,11 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
 fn loopBreak(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     _ = scope;
     return addBreak(b, node);
+}
+
+fn loopContinue(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+    _ = scope;
+    return addContinue(b, node);
 }
 
 fn module(b: *Block, scope: *Scope, node: Node.Index) !void {

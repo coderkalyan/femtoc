@@ -114,6 +114,10 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
                 try codegen.loopBreak(inst);
                 continue;
             },
+            .loop_continue => {
+                try codegen.loopContinue(inst);
+                continue;
+            },
             .block => try codegen.block(inst),
             .load_decl => continue,
             else => {
@@ -402,6 +406,13 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     builder.addBranch(condition_block);
     builder.positionAtEnd(prev);
     builder.addBranch(condition_block);
+    for (codegen.loop_continues.items) |b| {
+        const terminator = llvm.c.LLVMGetBasicBlockTerminator(b);
+        llvm.c.LLVMInstructionEraseFromParent(terminator);
+        builder.positionAtEnd(b);
+        builder.addBranch(condition_block);
+    }
+    codegen.loop_continues.clearRetainingCapacity();
     builder.positionAtEnd(condition_block);
     const condition_ref = try codegen.block(condition);
 
@@ -447,4 +458,9 @@ fn ret(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
 fn loopBreak(codegen: *CodeGen, inst: Mir.Index) !void {
     _ = inst;
     try codegen.loop_breaks.append(codegen.arena, codegen.builder.getInsertBlock());
+}
+
+fn loopContinue(codegen: *CodeGen, inst: Mir.Index) !void {
+    _ = inst;
+    try codegen.loop_continues.append(codegen.arena, codegen.builder.getInsertBlock());
 }

@@ -283,6 +283,7 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!u32 {
             .dbg_declare,
             .dbg_assign => unreachable, // TODO: not implemented
             .loop_break => try analyzer.loopBreak(block, index),
+            .loop_continue => try analyzer.loopContinue(block, index),
             // else => Mir.indexToRef(0),
         };
         try analyzer.map.put(analyzer.gpa, index, ref);
@@ -1054,6 +1055,16 @@ fn loopBreak(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     _ = inst;
     const index = try b.addInst(.{
         .tag = .loop_break,
+        .data = undefined,
+    });
+    return Mir.indexToRef(index);
+}
+
+fn loopContinue(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    _ = analyzer;
+    _ = inst;
+    const index = try b.addInst(.{
+        .tag = .loop_continue,
         .data = undefined,
     });
     return Mir.indexToRef(index);

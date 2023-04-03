@@ -96,6 +96,8 @@ pub const Inst = struct {
         loop,
         // breaks out of a loop
         loop_break,
+        // jumps to loop condition
+        loop_continue,
 
         // returns control flow to the function's callee (not explicitly stated in src code)
         // includes an operand as the return value

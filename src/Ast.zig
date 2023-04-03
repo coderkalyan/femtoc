@@ -245,6 +245,8 @@ pub const Node = struct {
 
         // "break" statement to exit a loop early
         loop_break: void,
+        // "continue" statement to jump to the end of a loop iteration
+        loop_continue: void,
 
         // body = body block node
         module: struct {
