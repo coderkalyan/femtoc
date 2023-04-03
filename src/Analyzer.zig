@@ -269,7 +269,21 @@ pub fn analyzeBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error!u32 {
                 try block.instructions.append(analyzer.gpa, block_index);
                 break :ref Mir.indexToRef(block_index);
             },
-            else => Mir.indexToRef(0),
+            .lsl,
+            .lsr,
+            .asl,
+            .asr => unreachable, // TODO: not implemented
+            .decl_const,
+            .decl_mut,
+            .block_inline,
+            .yield_inline,
+            .param => unreachable,
+            .module => unreachable, // TODO: invalid instruction, remove
+            .fn_decl => unreachable, // TODO: not implemented
+            .dbg_declare,
+            .dbg_assign => unreachable, // TODO: not implemented
+            .loop_break => try analyzer.loopBreak(block, index),
+            // else => Mir.indexToRef(0),
         };
         try analyzer.map.put(analyzer.gpa, index, ref);
     }
