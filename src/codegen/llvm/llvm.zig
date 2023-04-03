@@ -122,13 +122,19 @@ pub const Backend = struct {
         const builder = Builder.create(backend, function);
         defer builder.destroy();
 
+        var arena = std.heap.ArenaAllocator.init(backend.gpa);
+        defer arena.deinit();
+
         var codegen = CodeGen {
             .gpa = backend.gpa,
+            .arena = arena.allocator(),
             .mir = mir,
             .comp = backend.comp,
             .map = .{},
             .builder = builder,
             .alloc_block = null,
+            .loop_breaks = .{},
+            .loop_continues = .{},
         };
         try codegen.generate();
     }

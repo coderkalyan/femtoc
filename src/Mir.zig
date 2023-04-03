@@ -72,6 +72,8 @@ pub const Inst = struct {
         ret,
         yield,
         loop,
+        loop_break,
+        loop_continue,
 
         dbg_value,
         dbg_declare,
@@ -223,7 +225,9 @@ pub fn resolveType(mir: *const Mir, ref: Mir.Ref) Type {
             .dbg_value,
             .dbg_declare,
             .dbg_assign => unreachable, // should not be referenced
-            .ret => unreachable, // always end a function, can't be referenced
+            .ret,
+            .loop_break,
+            .loop_continue => unreachable, // always end a block, can't be referenced
         };
     } else {
         return switch (ref) {

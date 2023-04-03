@@ -1034,3 +1034,13 @@ fn dbgValue(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     });
     return Mir.indexToRef(index);
 }
+
+fn loopBreak(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    _ = analyzer;
+    _ = inst;
+    const index = try b.addInst(.{
+        .tag = .loop_break,
+        .data = undefined,
+    });
+    return Mir.indexToRef(index);
+}

@@ -11,6 +11,7 @@ const CodeGen = @This();
 const Type = typing.Type;
 
 gpa: Allocator,
+arena: Allocator,
 comp: *const Compilation,
 mir: *const Mir,
 // TODO: is LLVM thread safe?
@@ -19,6 +20,9 @@ map: std.AutoHashMapUnmanaged(Mir.Index, llvm.Value),
 // function: llvm.Value,
 builder: llvm.Builder,
 alloc_block: llvm.c.LLVMBasicBlockRef,
+loop_breaks: std.ArrayListUnmanaged(llvm.c.LLVMBasicBlockRef),
+loop_continues: std.ArrayListUnmanaged(llvm.c.LLVMBasicBlockRef),
+// scratch: std.ArrayListUnmanaged(u32),
 
 const Error = Allocator.Error || @import("../../interner.zig").Error || error { NotImplemented };
 const c = llvm.c;
@@ -104,6 +108,10 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
             },
             .loop => {
                 try codegen.loop(inst);
+                continue;
+            },
+            .loop_break => {
+                try codegen.loopBreak(inst);
                 continue;
             },
             .block => try codegen.block(inst),
@@ -399,6 +407,13 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
 
     const exit_block = builder.appendBlock("loop.exit");
     builder.addCondBranch(condition_ref, entry_block, exit_block);
+    for (codegen.loop_breaks.items) |b| {
+        const terminator = llvm.c.LLVMGetBasicBlockTerminator(b);
+        llvm.c.LLVMInstructionEraseFromParent(terminator);
+        builder.positionAtEnd(b);
+        builder.addBranch(exit_block);
+    }
+    codegen.loop_breaks.clearRetainingCapacity();
 
     builder.positionAtEnd(exit_block);
 }
@@ -426,4 +441,10 @@ fn ret(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
     
     const ref = if (data.un_op == Mir.Ref.void_val) null else codegen.resolveRef(data.un_op);
     return codegen.builder.addReturn(ref);
+}
+
+// TODO: this doesn't support nested breaks
+fn loopBreak(codegen: *CodeGen, inst: Mir.Index) !void {
+    _ = inst;
+    try codegen.loop_breaks.append(codegen.arena, codegen.builder.getInsertBlock());
 }
