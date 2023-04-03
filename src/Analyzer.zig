@@ -1001,11 +1001,13 @@ fn call(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
     defer analyzer.scratch.shrinkRetainingCapacity(scratch_top);
 
     const addr = try analyzer.resolveRef(b, call_data.addr);
-    var arg_index: u32 = 0;
-    while (arg_index < call_data.args_len) : (arg_index += 1) {
-        const arg = analyzer.hir.extra_data[data.pl_node.pl + 2 + arg_index];
+    const function_type = (try analyzer.resolveType(b, addr)).extended.cast(Type.Function).?;
+    const base = data.pl_node.pl + 2;
+    const hir_args = analyzer.hir.extra_data[base..base + call_data.args_len];
+    for (hir_args) |arg, i| {
         const ref = try analyzer.resolveRef(b, @intToEnum(Hir.Ref, arg));
-        try analyzer.scratch.append(analyzer.arena, @enumToInt(ref));
+        const res = try coercion.coerce(analyzer, b, ref, function_type.param_types[i]);
+        try analyzer.scratch.append(analyzer.arena, @enumToInt(res));
     }
 
     const args = analyzer.scratch.items[scratch_top..];
