@@ -45,17 +45,24 @@ pub const Type = extern union {
 
         pub fn size(p: *const Payload) !usize {
             switch (p.kind) {
+                .void,
+                .comptime_uint,
+                .comptime_sint,
+                .comptime_float,
+                .uint,
+                .sint,
+                .float => unreachable,
                 .pointer => return 8,
                 .structure => {
                     var total: usize = 0;
                     var max: usize = 0;
                     const structure = p.cast(Structure).?;
                     for (structure.members) |member| {
-                        const member_alignment = try member.alignment();
+                        const member_alignment = member.alignment();
                         max = @max(max, member_alignment);
                         if (((total / member_alignment) * member_alignment) != total)
                             total = ((total / member_alignment) + 1) * member_alignment;
-                        total += try member.size();
+                        total += member.size();
                     }
                     if (((total / max) * max) != total)
                         total = ((total / max) + 1) * max;
@@ -65,22 +72,8 @@ pub const Type = extern union {
             }
         }
 
-        pub fn alignment(p: *const Payload) !usize {
-            switch (p.kind) {
-                .pointer => {
-                    // TODO: this depends on architecture
-                    return 8;
-                },
-                .structure => {
-                    var max: usize = 0;
-                    const structure = p.cast(Structure).?;
-                    for (structure.members) |member| {
-                        max = @max(max, try member.alignment());
-                    }
-                    return max;
-                },
-                .function => return error.NotImplemented,
-            }
+        pub inline fn alignment(p: *const Payload) usize {
+            return @bitCast(Type, @ptrToInt(p)).alignment();
         }
     };
 
@@ -157,8 +150,24 @@ pub const Type = extern union {
             .void => 0,
             .uint, .sint, .float => (ty.basic.width + 7) / 8,
             .comptime_uint, .comptime_sint, .comptime_float => 8,
-            .pointer => 8,
+            .pointer => 8, // TODO: architecture dependent
             .function, .structure => unreachable,
+        };
+    }
+
+    pub fn alignment(ty: Type) usize {
+        return switch (ty.kind()) {
+            .void => 0,
+            .uint, .sint, .float => (ty.basic.width + 7) / 8,
+            .comptime_uint, .comptime_sint, .comptime_float => 8,
+            .pointer => 8, // TODO: architecture dependent
+            .function => unreachable,
+            .structure => {
+                var max: usize = 0;
+                const structure = ty.extended.cast(Type.Structure).?;
+                for (structure.members) |member| max = std.math.max(max, member.alignment());
+                return max;
+            },
         };
     }
 
@@ -223,50 +232,52 @@ pub const Type = extern union {
 };
 
 test "primitives size" {
-    try std.testing.expectEqual(Type.initTag(.void).size(), 0);
+    try std.testing.expectEqual(Type.initVoid().size(), 0);
 
-    try std.testing.expectEqual(Type.initTag(.u1).size(), 1);
-    try std.testing.expectEqual(Type.initTag(.u8).size(), 1);
-    try std.testing.expectEqual(Type.initTag(.i8).size(), 1);
-    try std.testing.expectEqual(Type.initTag(.u16).size(), 2);
-    try std.testing.expectEqual(Type.initTag(.i16).size(), 2);
-    try std.testing.expectEqual(Type.initTag(.u32).size(), 4);
-    try std.testing.expectEqual(Type.initTag(.i32).size(), 4);
-    try std.testing.expectEqual(Type.initTag(.u64).size(), 8);
-    try std.testing.expectEqual(Type.initTag(.i64).size(), 8);
+    try std.testing.expectEqual(Type.initInt(1, false).size(), 1);
+    try std.testing.expectEqual(Type.initInt(8, false).size(), 1);
+    try std.testing.expectEqual(Type.initInt(8, true).size(), 1);
+    try std.testing.expectEqual(Type.initInt(16, false).size(), 2);
+    try std.testing.expectEqual(Type.initInt(16, true).size(), 2);
+    try std.testing.expectEqual(Type.initInt(32, false).size(), 4);
+    try std.testing.expectEqual(Type.initInt(32, true).size(), 4);
+    try std.testing.expectEqual(Type.initInt(64, false).size(), 8);
+    try std.testing.expectEqual(Type.initInt(64, true).size(), 8);
 
-    try std.testing.expectEqual(Type.initTag(.f32).size(), 4);
-    try std.testing.expectEqual(Type.initTag(.f64).size(), 8);
+    try std.testing.expectEqual(Type.initFloat(32).size(), 4);
+    try std.testing.expectEqual(Type.initFloat(64).size(), 8);
 
-    try std.testing.expectError(Error.UnspecificType, Type.initTag(.comptime_int).size());
-    try std.testing.expectError(Error.UnspecificType, Type.initTag(.comptime_float).size());
+    try std.testing.expectEqual(Type.initComptimeInt(false).size(), 8);
+    try std.testing.expectEqual(Type.initComptimeInt(true).size(), 8);
+    try std.testing.expectEqual(Type.initComptimeFloat().size(), 8);
 }
 
 test "primitive alignment" {
-    try std.testing.expectEqual(Type.initTag(.void).alignment(), 0);
+    try std.testing.expectEqual(Type.initVoid().alignment(), 0);
 
-    try std.testing.expectEqual(Type.initTag(.u1).alignment(), 1);
-    try std.testing.expectEqual(Type.initTag(.u8).alignment(), 1);
-    try std.testing.expectEqual(Type.initTag(.i8).alignment(), 1);
-    try std.testing.expectEqual(Type.initTag(.u16).alignment(), 2);
-    try std.testing.expectEqual(Type.initTag(.i16).alignment(), 2);
-    try std.testing.expectEqual(Type.initTag(.u32).alignment(), 4);
-    try std.testing.expectEqual(Type.initTag(.i32).alignment(), 4);
-    try std.testing.expectEqual(Type.initTag(.u64).alignment(), 8);
-    try std.testing.expectEqual(Type.initTag(.i64).alignment(), 8);
+    try std.testing.expectEqual(Type.initInt(1, false).alignment(), 1);
+    try std.testing.expectEqual(Type.initInt(8, false).alignment(), 1);
+    try std.testing.expectEqual(Type.initInt(8, true).alignment(), 1);
+    try std.testing.expectEqual(Type.initInt(16, false).alignment(), 2);
+    try std.testing.expectEqual(Type.initInt(16, true).alignment(), 2);
+    try std.testing.expectEqual(Type.initInt(32, false).alignment(), 4);
+    try std.testing.expectEqual(Type.initInt(32, true).alignment(), 4);
+    try std.testing.expectEqual(Type.initInt(64, false).alignment(), 8);
+    try std.testing.expectEqual(Type.initInt(64, true).alignment(), 8);
 
-    try std.testing.expectEqual(Type.initTag(.f32).alignment(), 4);
-    try std.testing.expectEqual(Type.initTag(.f64).alignment(), 8);
+    try std.testing.expectEqual(Type.initFloat(32).alignment(), 4);
+    try std.testing.expectEqual(Type.initFloat(64).alignment(), 8);
 
-    try std.testing.expectError(Error.UnspecificType, Type.initTag(.comptime_int).alignment());
-    try std.testing.expectError(Error.UnspecificType, Type.initTag(.comptime_float).alignment());
+    try std.testing.expectEqual(Type.initComptimeInt(false).alignment(), 8);
+    try std.testing.expectEqual(Type.initComptimeInt(true).alignment(), 8);
+    try std.testing.expectEqual(Type.initComptimeFloat().alignment(), 8);
 }
 
 test "struct size and alignment" {
-    const ubyte = Type.initTag(.u8);
-    const ushort = Type.initTag(.u16);
-    const uint = Type.initTag(.u32);
-    const ulong = Type.initTag(.u64);
+    const ubyte = Type.initInt(8, false);
+    const ushort = Type.initInt(16, false);
+    const uint = Type.initInt(32, false);
+    const ulong = Type.initInt(64, false);
 
     const s1 = &Type.Structure.init(&[_]Type{ubyte}).base;
     try std.testing.expectEqual(s1.size(), 1);

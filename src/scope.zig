@@ -8,7 +8,6 @@ const Node = Ast.Node;
 const Inst = Hir.Inst;
 const Allocator = std.mem.Allocator;
 const indexToRef = Inst.indexToRef;
-// pub const IdentifierError = error { Invalid, Shadowed };
 
 pub const Scope = struct {
     tag: Tag,
@@ -387,6 +386,7 @@ test "block shadowing" {
         .hg = undefined,
         .scratch = .{},
         .force_comptime = true,
+        .return_ty = @intToEnum(Hir.Ref, 0),
     };
 
     const apple = try interner.intern("apple");
@@ -407,6 +407,7 @@ test "block shadowing" {
         .instructions = .{},
         .scratch = .{},
         .force_comptime = false,
+        .return_ty = @intToEnum(Hir.Ref, 0),
     };
     var cherry_var = Scope.LocalVal.init(&inner.base, cherry, c);
 
