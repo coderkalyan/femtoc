@@ -75,6 +75,7 @@ pub const Inst = struct {
         
         decl_const,
         decl_mut,
+        decl_export,
 
         // scope block - body of function, loop, branch, etc
         // data.pl_node.pl = Inst.Block

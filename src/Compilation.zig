@@ -41,6 +41,7 @@ config: *Driver.Configuration,
 hir: *const Hir,
 
 decls: std.SegmentedList(Decl, 0),
+export_decls: std.AutoHashMapUnmanaged(Decl.Index, void),
 globals: std.AutoHashMapUnmanaged(Hir.Index, Decl.Index),
 backend: *llvm.Backend,
 
@@ -60,6 +61,7 @@ pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !
         .config = config,
         .hir = hir,
         .decls = .{},
+        .export_decls = .{},
         .globals = .{},
         .backend = &backend,
     };
@@ -146,7 +148,7 @@ fn compileModule(comp: *Compilation, module_inst: Hir.Index) !void {
         // TODO: figure out memory lifetimes for previous and current name
         const name = try std.mem.joinZ(comp.gpa, "", &.{member_str});
         decl_ptr.name = name.ptr;
-        try comp.backend.updateDecl(decl_ptr);
+        try comp.backend.updateDecl(decl_index);
     }
 }
 

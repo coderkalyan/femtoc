@@ -9,17 +9,20 @@ const DeclGen = @This();
 
 gpa: Allocator,
 // TODO: make const, change ownership of backend
-// comp: *Compilation,
-decl: *Decl,
+// comp: *const Compilation,
+decl_index: Decl.Index,
 // TODO: is LLVM thread safe?
 backend: *llvm.Backend,
 
 pub fn generate(dg: *DeclGen) !void {
-    const decl = dg.decl;
+    var comp = dg.backend.comp;
+    const decl = comp.declPtr(dg.decl_index);
     if (dg.backend.globals.get(decl)) |val| {
         // already exists, update
-        // currently, only thing to update is the name
         llvm.c.LLVMSetValueName2(val, decl.name, std.mem.len(decl.name));
+        const is_exported = comp.export_decls.contains(dg.decl_index);
+        const linkage = if (is_exported) llvm.c.LLVMExternalLinkage else llvm.c.LLVMInternalLinkage;
+        llvm.c.LLVMSetLinkage(val, @intCast(c_uint, linkage));
     } else {
         // create the decl
         // TODO: switch from value kind to decl kind (need to create that enum)
@@ -40,7 +43,8 @@ pub fn generate(dg: *DeclGen) !void {
 }
 
 fn function(dg: *DeclGen) !llvm.c.LLVMValueRef {
-    const decl = dg.decl;
+    const comp = dg.backend.comp;
+    const decl = comp.declPtr(dg.decl_index);
     // const function_val = decl.val.payload.cast(Value.Payload.Function).?;
     // const function_decl = function_val.func;
     // _ = function_decl;
@@ -51,7 +55,8 @@ fn function(dg: *DeclGen) !llvm.c.LLVMValueRef {
 }
 
 fn global(dg: *DeclGen) !llvm.c.LLVMValueRef {
-    const decl = dg.decl;
+    const comp = dg.backend.comp;
+    const decl = comp.declPtr(dg.decl_index);
     const llvm_type = try llvm.getType(dg.gpa, dg.backend.context.context, decl.ty);
     const g = llvm.c.LLVMAddGlobal(dg.backend.module.module, llvm_type, decl.name);
     llvm.c.LLVMSetGlobalConstant(g, @boolToInt(!decl.mut));
@@ -65,15 +70,3 @@ fn global(dg: *DeclGen) !llvm.c.LLVMValueRef {
     llvm.c.LLVMSetInitializer(g, val);
     return g;
 }
-// fn reference(dg: *DeclGen) !void {
-//     const decl = dg.decl;
-//     const ref_val = decl.val.payload.cast(Value.Payload.Reference).?;
-//     const ref = dg.comp.backend.globals.get(dg.comp.decls.at(ref_val.ref)).?;
-//     const llvm_type = llvm.c.LLVMTypeOf(ref);
-//     // const llvm_type = try llvm.getType(dg.gpa, decl.ty);
-//     // TODO: use Alias2
-//     // const val = llvm.c.LLVMAddAlias(dg.module, llvm_type, ref, decl.name);
-//     const val = llvm.c.LLVMAddGlobal(dg.module, llvm_type, decl.name);
-//     llvm.c.LLVMSetInitializer(val, ref);
-//     try dg.comp.backend.globals.put(dg.gpa, decl, val);
-// }

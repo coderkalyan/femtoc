@@ -336,6 +336,13 @@ fn addDeclMut(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
     });
 }
 
+fn addDeclExport(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .decl_export,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
 fn addModule(b: *Block, members: []u32, node: Node.Index) !Hir.Index {
     std.debug.assert(members.len % 2 == 0);
     const pl = try b.hg.addExtra(Inst.Module {
@@ -597,11 +604,11 @@ fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
     return null;
 }
 
-fn global_statement(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn globalStatement(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const data = b.hg.tree.data(node);
     return try switch (data) {
         .const_decl => globalConst(b, scope, node),
-        // .const_decl_attr => return try constDeclAttr(b, scope, node),
+        .const_decl_attr => return try globalConstAttr(b, scope, node),
         .var_decl => globalVar(b, scope, node),
         else => {
             std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
@@ -794,6 +801,55 @@ fn globalConst(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
 
         break :val indexToRef(try addDeclConst(&block_inline, val, node));
     };
+
+    _ = try addYieldInline(&block_inline, yield_val, node);
+    return addBlockInline(b, block_inline.instructions.items, node);
+}
+
+fn globalConstAttr(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
+    // "initializes" constant variables
+    // this doesn't actually create any instructions for declaring the constant
+    // instead, the value to set the constant to is computed, and the resulting
+    // instruction return value is stored in the scope such that future
+    // code that needs to access this constant can simply look up the identifier
+    // and refer to the associated value instruction
+    const hg = b.hg;
+    const const_decl = hg.tree.data(node).const_decl_attr;
+    const metadata = hg.tree.extraData(const_decl.metadata, Node.DeclMetadata);
+
+    const ident_index = hg.tree.mainToken(node);
+    const ident_str = hg.tree.tokenString(ident_index + 1);
+    const id = try hg.interner.intern(ident_str);
+    _ = id;
+
+    var block_inline = Block.init(b, s);
+    const scope = &block_inline.base;
+    defer block_inline.deinit();
+
+    const ref = try expr(&block_inline, scope, const_decl.val);
+    const val = if (metadata.ty == 0) ref: {
+        // untyped (inferred) declaration
+        break :ref ref;
+    } else ref: {
+        const dest_ty = try ty(&block_inline, scope, metadata.ty);
+        break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
+    };
+
+    var yield_val = val: {
+        if (refToIndex(val)) |index| {
+            if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
+        }
+
+        break :val indexToRef(try addDeclConst(&block_inline, val, node));
+    };
+
+    const attrs = hg.tree.extra_data[metadata.attrs_start..metadata.attrs_end];
+    for (attrs) |attr| {
+        switch (hg.tree.tokenTag(hg.tree.mainToken(attr))) {
+            .a_export => yield_val = indexToRef(try addDeclExport(&block_inline, yield_val, node)),
+            else => unreachable,
+        }
+    }
 
     _ = try addYieldInline(&block_inline, yield_val, node);
     return addBlockInline(b, block_inline.instructions.items, node);
@@ -1106,7 +1162,7 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
     // second pass - generate the value/expression and update the resolution map
     // so we can link node ids to instructions
     for (stmts) |stmt| {
-        const inst = try global_statement(b, &namespace.base, stmt);
+        const inst = try globalStatement(b, &namespace.base, stmt);
         const ref = indexToRef(inst);
         switch (hg.tree.data(stmt)) {
             .const_decl,

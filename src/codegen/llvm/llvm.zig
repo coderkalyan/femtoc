@@ -85,13 +85,13 @@ pub const Module = struct {
 
 pub const Backend = struct {
     gpa: Allocator,
-    comp: *const Compilation,
+    comp: *Compilation,
     context: Context,
     module: Module,
     // TODO: change to Decl.Index
     globals: std.AutoHashMapUnmanaged(*Decl, c.LLVMValueRef),
 
-    pub fn create(gpa: Allocator, comp: *const Compilation, name: [:0]const u8) Backend {
+    pub fn create(gpa: Allocator, comp: *Compilation, name: [:0]const u8) Backend {
         const context = Context.create();
         return .{
             .gpa = gpa,
@@ -108,10 +108,10 @@ pub const Backend = struct {
         backend.context.destroy();
     }
 
-    pub fn updateDecl(backend: *Backend, decl: *Decl) !void {
+    pub fn updateDecl(backend: *Backend, decl_index: Decl.Index) !void {
         var dg = DeclGen {
             .gpa = backend.gpa,
-            .decl = decl,
+            .decl_index = decl_index,
             .backend = backend,
         };
         try dg.generate();

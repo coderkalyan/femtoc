@@ -292,6 +292,7 @@ pub fn analyzeInlineBlock(analyzer: *Analyzer, b: *Block, inst: Hir.Index) Error
             .float => try analyzer.float(block, index),
             .decl_const => try analyzer.declConst(block, index),
             .decl_mut => try analyzer.declMut(block, index),
+            .decl_export => try analyzer.declExport(block, index),
             .load_inline => try analyzer.loadInline(block, index),
             .coerce => try analyzer.coerce(block, index),
             .add, .sub, .mul, .div, .mod => try analyzer.binaryArithOp(block, index),
@@ -800,7 +801,7 @@ fn fnProto(analyzer: *Analyzer, b: *Block, function_inst: Hir.Index) !Mir.Ref {
         .val = .{ .payload = &function_val.base },
         .mut = false,
     };
-    try comp.backend.updateDecl(decl_ptr);
+    try comp.backend.updateDecl(decl_index);
 
     const load_decl = try b.addInst(.{
         .tag = .load_decl,
@@ -934,7 +935,7 @@ fn declConst(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
         .val = mir.resolveValue(Mir.refToIndex(op).?),
         .mut = false,
     };
-    try comp.backend.updateDecl(decl_ptr);
+    try comp.backend.updateDecl(decl_index);
 
     const load_decl = try b.addInst(.{
         .tag = .load_decl,
@@ -957,13 +958,25 @@ fn declMut(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
         .val = mir.resolveValue(Mir.refToIndex(op).?),
         .mut = true,
     };
-    try comp.backend.updateDecl(decl_ptr);
+    try comp.backend.updateDecl(decl_index);
 
     const load_decl = try b.addInst(.{
         .tag = .load_decl,
         .data = .{ .pl = decl_index },
     });
     return Mir.indexToRef(load_decl);
+}
+
+fn declExport(analyzer: *Analyzer, b: *Block, inst: Hir.Index) !Mir.Ref {
+    const comp = analyzer.comp;
+    const data = analyzer.hir.insts.items(.data)[inst].un_node;
+
+    const ref = try analyzer.resolveRef(b, data.operand);
+    const decl_index = Mir.refToIndex(ref).?;
+    try comp.export_decls.put(comp.gpa, decl_index, {});
+    try comp.backend.updateDecl(decl_index);
+
+    return ref;
 }
 // fn fnDecl(parent: *Analyzer, b: *Block, inst: Hir.Index) Error!Mir.Ref {
 //     if (true) unreachable;
