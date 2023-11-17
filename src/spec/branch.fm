@@ -30,4 +30,4 @@ let main = fn () void {
     if f < g {
         let mut h = f + g;
     }
-}
+};

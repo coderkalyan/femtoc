@@ -15,7 +15,7 @@ fn stem(path: []const u8) []const u8 {
     while (path[start] != '/') : (start -= 1) {}
     var end = path.len - 1;
     while (path[end] != '.') : (end -= 1) {}
-    return path[start+1..end];
+    return path[start + 1 .. end];
 }
 
 pub fn main() !void {
@@ -34,7 +34,7 @@ pub fn main() !void {
         \\<str>                 Source filename to compile.
     );
 
-    var diag = clap.Diagnostic {};
+    var diag = clap.Diagnostic{};
     var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
         .diagnostic = &diag,
     }) catch |err| {
@@ -47,31 +47,31 @@ pub fn main() !void {
         fatal("Missing source filename");
     }
 
-    var config = Driver.Configuration {
+    var config = Driver.Configuration{
         .input = res.positionals[0],
         .output = "",
         .stage = .executable,
-        .verbose_hir = res.args.@"verbose-hir",
-        .verbose_mir = res.args.@"verbose-mir",
-        .verbose_llvm_ir = res.args.@"verbose-llvm-ir",
-        .emit_llvm = res.args.@"emit-llvm",
+        .verbose_hir = res.args.@"verbose-hir" == 1,
+        .verbose_mir = res.args.@"verbose-mir" == 1,
+        .verbose_llvm_ir = res.args.@"verbose-llvm-ir" == 1,
+        .emit_llvm = res.args.@"emit-llvm" == 1,
     };
 
     const input_stem = stem(config.input);
     var extension: []const u8 = "o";
-    if (res.args.compile) {
-        if (res.args.assemble) {
+    if (res.args.compile == 1) {
+        if (res.args.assemble == 1) {
             fatal("-c cannot be used along with -S");
         }
         extension = "o";
         config.stage = .object;
-    } else if (res.args.assemble) {
+    } else if (res.args.assemble == 1) {
         extension = "s";
         config.stage = .assembly;
     }
 
-    if (res.args.@"emit-llvm") {
-        if (res.args.assemble) {
+    if (res.args.@"emit-llvm" == 1) {
+        if (res.args.assemble == 1) {
             extension = "ll";
             config.stage = .llvm_ll;
         } else {

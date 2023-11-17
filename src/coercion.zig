@@ -4,7 +4,7 @@ const Type = @import("typing.zig").Type;
 const Mir = @import("Mir.zig");
 const Block = Analyzer.Block;
 
-pub const Error = error {
+pub const Error = error{
     InvalidCoercion,
     Truncated,
 };
@@ -21,7 +21,7 @@ pub fn coerce(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.
 
 fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     const src_ty = try analyzer.resolveType(b, src);
-    if (@bitCast(u64, dest_ty) == @bitCast(u64, src_ty)) return src;
+    if (@as(u64, @bitCast(dest_ty)) == @as(u64, @bitCast(src_ty))) return src;
 
     const src_sign = src_ty.intSign();
     const dest_sign = dest_ty.intSign();
@@ -34,9 +34,9 @@ fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir
             } else return error.Truncated;
         },
         .comptime_sint => {
-            const val: i64 = @bitCast(i64, analyzer.refToInt(src));
+            const val: i64 = @bitCast(analyzer.refToInt(src));
             if ((val >= dest_ty.minInt()) and (val <= dest_ty.maxInt())) {
-                const index = try b.addIntConstant(dest_ty, @bitCast(u64, val));
+                const index = try b.addIntConstant(dest_ty, @bitCast(val));
                 return Mir.indexToRef(index);
             } else return error.Truncated;
         },
@@ -69,9 +69,9 @@ fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Ty
         .comptime_uint => switch (src_ty.kind()) {
             .comptime_uint => return src,
             .comptime_sint => {
-                const val: i64 = @bitCast(i64, analyzer.refToInt(src));
+                const val: i64 = @bitCast(analyzer.refToInt(src));
                 if (val < 0) return error.Truncated;
-                const index = try b.addIntConstant(dest_ty, @bitCast(u64, val));
+                const index = try b.addIntConstant(dest_ty, @bitCast(val));
                 return Mir.indexToRef(index);
             },
             else => unreachable,
@@ -92,8 +92,8 @@ fn coerceToComptimeInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Ty
 
 // given two types in a binary operation, returns the coercion target type
 // that both references should be coerced to. generally this will be one of
-// the two existing types - whichever is more "well known" or "safe" 
-// for instance, comptime numbers cast to fixed width numbers, and 
+// the two existing types - whichever is more "well known" or "safe"
+// for instance, comptime numbers cast to fixed width numbers, and
 // ints cast upwards in bitwidth
 // if this function returns, it does NOT necessarily mean the coercion will
 // succeed (coerce() will determine that)
@@ -119,7 +119,7 @@ pub fn binaryCoerceTo(lty: Type, rty: Type) !Type {
 
 pub fn coerceToFloat(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     const src_ty = try analyzer.resolveType(b, src);
-    if (@bitCast(u64, src_ty) == @bitCast(u64, dest_ty)) return src;
+    if (@as(u64, @bitCast(src_ty)) == @as(u64, @bitCast(dest_ty))) return src;
     if (dest_ty.basic.width == 64) {
         if (src_ty.kind() == .comptime_float) {
             const val = analyzer.refToFloat(src);

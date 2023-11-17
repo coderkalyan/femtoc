@@ -22,7 +22,7 @@ pub const Value = c.LLVMValueRef;
 pub const verifyModule = c.LLVMVerifyModule;
 pub const dumpModule = c.LLVMDumpModule;
 
-pub const Error = error {
+pub const Error = error{
     WriteBitcodeFailed,
     WriteIRFailed,
     VerificationFailed,
@@ -63,7 +63,7 @@ pub const Module = struct {
     }
 
     pub fn writeIR(module: Module, name: [:0]const u8) !void {
-        var err = @intToPtr([*c]u8, 0);
+        var err: [*c]u8 = @ptrFromInt(0);
         const result = c.LLVMPrintModuleToFile(module.module, name.ptr, &err);
         if (result != 0) {
             std.debug.print("{s}\n", .{err});
@@ -73,7 +73,7 @@ pub const Module = struct {
     }
 
     pub fn verify(module: Module) !void {
-        var err = @intToPtr([*c]u8, 0);
+        var err: [*c]u8 = @ptrFromInt(0);
         const result = c.LLVMVerifyModule(module.module, c.LLVMPrintMessageAction, &err);
         defer c.LLVMDisposeMessage(err);
         if (result != 0) {
@@ -109,7 +109,7 @@ pub const Backend = struct {
     }
 
     pub fn updateDecl(backend: *Backend, decl_index: Decl.Index) !void {
-        var dg = DeclGen {
+        var dg = DeclGen{
             .gpa = backend.gpa,
             .decl_index = decl_index,
             .backend = backend,
@@ -122,7 +122,7 @@ pub const Backend = struct {
         const builder = Builder.create(backend, function);
         defer builder.destroy();
 
-        var codegen = CodeGen {
+        var codegen = CodeGen{
             .gpa = backend.gpa,
             .mir = mir,
             .comp = backend.comp,
@@ -142,7 +142,7 @@ pub const Builder = struct {
     builder: c.LLVMBuilderRef,
 
     pub fn create(backend: *Backend, function: c.LLVMValueRef) Builder {
-        return .{ 
+        return .{
             .gpa = backend.gpa,
             .backend = backend,
             .context = backend.context.context,
@@ -175,12 +175,12 @@ pub const Builder = struct {
     // constant values
     pub fn addUint(builder: *Builder, ty: Type, val: u64) c.LLVMValueRef {
         const llvm_type = builder.getBasicType(ty);
-        return c.LLVMConstInt(llvm_type, @intCast(c_ulonglong, val), 0);
+        return c.LLVMConstInt(llvm_type, @intCast(val), 0);
     }
 
     pub fn addSint(builder: *Builder, ty: Type, val: u64) c.LLVMValueRef {
         const llvm_type = builder.getBasicType(ty);
-        return c.LLVMConstInt(llvm_type, @intCast(c_ulonglong, val), 1);
+        return c.LLVMConstInt(llvm_type, @intCast(val), 1);
     }
 
     pub fn addFloat(builder: *Builder, ty: Type, val: f64) c.LLVMValueRef {
@@ -212,7 +212,7 @@ pub const Builder = struct {
         cmp_uge,
         cmp_ult,
         cmp_ugt,
-        
+
         cmp_sle,
         cmp_sge,
         cmp_slt,
@@ -227,8 +227,7 @@ pub const Builder = struct {
         cmp_fgt,
     };
 
-    pub fn addCmp(builder: *Builder, kind: Cmp,
-                  lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
+    pub fn addCmp(builder: *Builder, kind: Cmp, lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
         return switch (kind) {
             .cmp_ieq => c.LLVMBuildICmp(builder.builder, c.LLVMIntEQ, lref, rref, ""),
             .cmp_ine => c.LLVMBuildICmp(builder.builder, c.LLVMIntNE, lref, rref, ""),
@@ -258,16 +257,13 @@ pub const Builder = struct {
         _ = c.LLVMBuildBr(builder.builder, bb);
     }
 
-    pub fn addCondBranch(builder: *Builder, cond: c.LLVMValueRef,
-                         a: c.LLVMBasicBlockRef, b: c.LLVMBasicBlockRef) void {
+    pub fn addCondBranch(builder: *Builder, cond: c.LLVMValueRef, a: c.LLVMBasicBlockRef, b: c.LLVMBasicBlockRef) void {
         _ = c.LLVMBuildCondBr(builder.builder, cond, a, b);
     }
 
-    pub fn addCall(builder: *Builder, ty: Type,
-                   addr: c.LLVMValueRef, args: []c.LLVMValueRef) !c.LLVMValueRef {
+    pub fn addCall(builder: *Builder, ty: Type, addr: c.LLVMValueRef, args: []c.LLVMValueRef) !c.LLVMValueRef {
         const llvm_type = try builder.getType(ty);
-        return c.LLVMBuildCall2(builder.builder, llvm_type, addr,
-                                args.ptr, @intCast(c_uint, args.len), "");
+        return c.LLVMBuildCall2(builder.builder, llvm_type, addr, args.ptr, @intCast(args.len), "");
     }
 
     pub fn addReturn(builder: *Builder, val: c.LLVMValueRef) c.LLVMValueRef {
@@ -334,13 +330,12 @@ pub fn getType(gpa: Allocator, context: c.LLVMContextRef, ty: typing.Type) !c.LL
             // TODO: use arena
             const params = try gpa.alloc(c.LLVMTypeRef, function.param_types.len);
             defer gpa.free(params);
-            for (function.param_types) |param, i| {
+            for (function.param_types, 0..) |param, i| {
                 params[i] = try getType(gpa, context, param);
             }
             const return_type = try getType(gpa, context, function.return_type);
 
-            return c.LLVMFunctionType(return_type,
-            params.ptr, @intCast(c_uint, params.len), 0);
+            return c.LLVMFunctionType(return_type, params.ptr, @intCast(params.len), 0);
         },
         else => unreachable,
     };

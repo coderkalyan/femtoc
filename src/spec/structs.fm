@@ -15,7 +15,7 @@ let Point.new = fn (x: f32, y: f32, z: f32) Point {
     }
 };
 
-let Point.dist = fn (a: *Point, b: *Point) f32 {
+let Point.dist = fn (a: Point*, b: Point*) f32 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let dz = b.z - a.z;
@@ -23,8 +23,8 @@ let Point.dist = fn (a: *Point, b: *Point) f32 {
     return math.hypot(math.hypot(dx, dy), dz);
 };
 
-let Point.create = fn (allocator: *Allocator, x: f32, y: f32, z: f32) *Point {
-    let point: *Point = allocator.alloc(fm.size(Point));
+let Point.create = fn (allocator: Allocator*, x: f32, y: f32, z: f32) Point* {
+    let point: Point* = allocator.alloc(fm.size(Point));
     *point = Point {
         .x = x,
         .y = y,
@@ -34,6 +34,6 @@ let Point.create = fn (allocator: *Allocator, x: f32, y: f32, z: f32) *Point {
     return point;
 };
 
-let Point.destroy = fn (point: *Point, allocator: *Allocator) void {
+let Point.destroy = fn (point: Point*, allocator: Allocator*) void {
     allocator.free(point);
 };

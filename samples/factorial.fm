@@ -13,7 +13,7 @@ let factorial_iter = fn (n: u32) u32 {
     }
 
     return ans;
-}
+};
 
 let main = fn () void {
     let x: i32 = 10;

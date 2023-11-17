@@ -31,7 +31,6 @@ pub const Decl = struct {
     };
 };
 
-
 const Compilation = @This();
 const InlineMap = std.AutoHashMapUnmanaged(Hir.Index, Decl.Index);
 
@@ -55,7 +54,7 @@ pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
-    comp.* = Compilation {
+    comp.* = Compilation{
         .gpa = gpa,
         .arena = arena.allocator(),
         .config = config,
@@ -66,7 +65,7 @@ pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !
         .backend = &backend,
     };
 
-    const module_index = @intCast(u32, hir.insts.len - 1);
+    const module_index: u32 = @intCast(hir.insts.len - 1);
     try comp.compileModule(module_index);
 
     if (config.verbose_llvm_ir) backend.module.print();
@@ -90,7 +89,7 @@ pub fn addDecl(comp: *Compilation, decl: Decl) !u32 {
 }
 
 pub fn allocateDecl(comp: *Compilation) !u32 {
-    const count = @intCast(u32, comp.decls.count());
+    const count: u32 = @intCast(comp.decls.count());
     _ = try comp.decls.addOne(comp.gpa);
     return count;
 }
@@ -105,19 +104,19 @@ fn compileModule(comp: *Compilation, module_inst: Hir.Index) !void {
     const pl = hir.insts.items(.data)[module_inst].pl_node.pl;
     const module = hir.extraData(pl, Hir.Inst.Module);
 
-    const ids = hir.extra_data[pl + 1..pl + 1 + module.len];
-    const insts = hir.extra_data[pl + 1 + module.len..pl + 1 + 2 * module.len];
+    const ids = hir.extra_data[pl + 1 .. pl + 1 + module.len];
+    const insts = hir.extra_data[pl + 1 + module.len .. pl + 1 + 2 * module.len];
     // for (insts) |inst| {
     //     const index = try comp.allocateDecl();
     //     try comp.globals.put(comp.gpa, inst, index);
     // }
 
     // todo: zig 0.11 multi object for loops
-    for (insts) |inst, i| {
+    for (insts, 0..) |inst, i| {
         var arena = std.heap.ArenaAllocator.init(comp.gpa);
         defer arena.deinit();
 
-        var analyzer = Analyzer {
+        var analyzer = Analyzer{
             .comp = comp,
             .gpa = comp.gpa,
             .arena = arena.allocator(),
@@ -130,7 +129,7 @@ fn compileModule(comp: *Compilation, module_inst: Hir.Index) !void {
             .errors = .{},
             .interner = &comp.hir.interner,
         };
-        var block = Analyzer.Block {
+        var block = Analyzer.Block{
             .parent = null,
             .analyzer = &analyzer,
             .instructions = .{},
@@ -172,31 +171,29 @@ pub fn refToType(ref: Hir.Ref) Type {
             .f32_ty => Type.initFloat(32),
             .f64_ty => Type.initFloat(64),
             .void_ty => Type.initVoid(),
-            .zero_val, .one_val, .btrue_val, .bfalse_val,
-            .void_val => unreachable,
+            .zero_val, .one_val, .btrue_val, .bfalse_val, .void_val => unreachable,
             _ => unreachable,
         };
     }
 }
 
 // fn blockInline(comp: *Compilation, block_inst: Hir.Index) !Mir.Ref {
-    // const hir = comp.hir;
-    // const pl = hir.insts.items(.data)[block_inst].pl_node.pl;
-    // const data = hir.extraData(pl, Hir.Inst.Block);
+// const hir = comp.hir;
+// const pl = hir.insts.items(.data)[block_inst].pl_node.pl;
+// const data = hir.extraData(pl, Hir.Inst.Block);
 
+// return yield_inst;
+// try comp.globals.put(comp.arena, block_inst, Mir.refToIndex(decl).?);
 
-    // return yield_inst;
-    // try comp.globals.put(comp.arena, block_inst, Mir.refToIndex(decl).?);
-
-    // const insts = hir.extra_data[pl + 1..pl + 1 + data.len];
-    // for (insts) |inst| {
-    //     const decl = switch (hir.insts.items(.tag)[inst]) {
-    //         .fn_decl => try comp.fnDecl(inst, decl_index),
-    //         .yield_inline => comp.yieldInline(inst),
-    //         else => unreachable,
-    //     };
-    //     try comp.globals.put(comp.arena, inst, decl);
-    // }
+// const insts = hir.extra_data[pl + 1..pl + 1 + data.len];
+// for (insts) |inst| {
+//     const decl = switch (hir.insts.items(.tag)[inst]) {
+//         .fn_decl => try comp.fnDecl(inst, decl_index),
+//         .yield_inline => comp.yieldInline(inst),
+//         else => unreachable,
+//     };
+//     try comp.globals.put(comp.arena, inst, decl);
+// }
 // }
 
 // fn yieldInline(comp: *Compilation, inst: Hir.Index) Decl.Index {
@@ -204,4 +201,3 @@ pub fn refToType(ref: Hir.Ref) Type {
 //     const index = Hir.Inst.refToIndex(data.un_node.operand).?; // TODO: non-index refs
 //     return comp.globals.get(index).?;
 // }
-

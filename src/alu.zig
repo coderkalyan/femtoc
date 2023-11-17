@@ -6,7 +6,7 @@ const std = @import("std");
 
 // }
 
-pub const Error = error {
+pub const Error = error{
     Overflow,
 };
 
@@ -16,7 +16,7 @@ const u64_min: u64 = std.math.minInt(u64);
 const i64_min: u64 = int_neg(std.math.minInt(i64));
 
 inline fn BIT(val: u64) u8 {
-    return @boolToInt(val > 0);
+    return @intFromBool(val > 0);
 }
 
 inline fn ALL(val: u8) u64 {
@@ -25,13 +25,12 @@ inline fn ALL(val: u8) u64 {
 }
 
 pub fn negate(a: u64) u64 {
-    var negative: u64 = 0;
-    _ = @addWithOverflow(u64, ~a, 1, &negative);
-    return negative;
+    const negative = @addWithOverflow(~a, 1);
+    return negative[0];
 }
 
 pub inline fn isNegative(a: u64) bool {
-    return (a & (@intCast(u64, 1) << 63)) > 0;
+    return (a & (@as(u64, @intCast(1)) << 63)) > 0;
 }
 pub fn demoteUnsigned(a: u64) !u64 {
     if (isNegative(a)) return error.Overflow;
@@ -135,7 +134,7 @@ pub fn udiv(a: u64, b: u64) !u64 {
     while (lsb >= 0) : (lsb -= 1) {
         if (dividend >= divisor) {
             dividend = radd(dividend, negate(divisor));
-            quotient |= @intCast(u64, 1) << @intCast(u6, lsb);
+            quotient |= @as(u64, @intCast(1)) << @as(u6, @intCast(lsb));
         }
         divisor = try lsr(divisor, 1);
     }
@@ -163,7 +162,8 @@ pub fn lsl(a: u64, b: u64) u64 {
     var count: u64 = 0;
     var result = a;
     while (count < b) : (count += 1) {
-        _ = @shlWithOverflow(u64, result, 1, &result);
+        const shift = @shlWithOverflow(result, 1);
+        result = shift[0];
     }
 
     return result;
@@ -195,11 +195,11 @@ pub fn lsr(a: u64, b: u64) !u64 {
 
 pub fn asr(a: u64, b: u64) !u64 {
     if (b > std.math.maxInt(u6)) return error.Overflow;
-    return @bitCast(u64, @bitCast(i64, a) >> @intCast(u6, b));
+    return @bitCast(@as(i64, @bitCast(a)) >> @as(u6, @intCast(b)));
 }
 
 inline fn int_neg(val: i64) u64 {
-    return @bitCast(u64, val);
+    return @bitCast(val);
 }
 
 test "negate" {
@@ -322,7 +322,7 @@ test "shift" {
     try std.testing.expectEqual(asr(1, 8), 1 >> 8);
     try std.testing.expectEqual(asr(1, 0), 1 >> 0);
     try std.testing.expectEqual(asr(0b111, 1), 0b11);
-    try std.testing.expectEqual(asr(u64_max, 2), @bitCast(u64, @bitCast(i64, u64_max) >> 2));
-    try std.testing.expectEqual(asr(int_neg(-2), 1), @bitCast(u64, @intCast(i64, -2) >> 1));
+    try std.testing.expectEqual(asr(u64_max, 2), @as(u64, @bitCast(@as(i64, @bitCast(u64_max)) >> 2)));
+    try std.testing.expectEqual(asr(int_neg(-2), 1), @as(u64, @bitCast(@as(i64, @intCast(-2)) >> 1)));
     try std.testing.expectError(error.Overflow, asr(500, 65));
 }

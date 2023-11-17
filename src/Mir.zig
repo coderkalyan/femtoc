@@ -6,7 +6,7 @@ const Value = @import("value.zig").Value;
 const Compilation = @import("Compilation.zig");
 
 const Mir = @This();
-pub const Error = error { NotImplemented };
+pub const Error = error{NotImplemented};
 pub const UserError = struct {
     node: NodeIndex,
     tag: Tag,
@@ -154,23 +154,23 @@ pub const Ref = enum(u32) {
 };
 
 pub fn indexToRef(index: Index) Ref {
-    const ref_len = @intCast(u32, @typeInfo(Ref).Enum.fields.len);
-    return @intToEnum(Ref, ref_len + index);
+    const ref_len: u32 = @intCast(@typeInfo(Ref).Enum.fields.len);
+    return @enumFromInt(ref_len + index);
 }
 
 pub fn refToIndex(ref: Ref) ?Index {
-    const ref_len = @intCast(u32, @typeInfo(Ref).Enum.fields.len);
-    const index = @enumToInt(ref);
+    const ref_len: u32 = @intCast(@typeInfo(Ref).Enum.fields.len);
+    const index = @intFromEnum(ref);
     return if (index >= ref_len) index - ref_len else null;
 }
 
 pub fn extraData(mir: *const Mir, index: usize, comptime T: type) T {
     const fields = std.meta.fields(T);
     var result: T = undefined;
-    inline for (fields) |field, i| {
-        @field(result, field.name) = switch (field.field_type) {
+    inline for (fields, 0..) |field, i| {
+        @field(result, field.name) = switch (field.type) {
             u32 => mir.extra[index + i],
-            Ref => @intToEnum(Ref, mir.extra[index + i]),
+            Ref => @enumFromInt(mir.extra[index + i]),
             else => unreachable,
         };
     }
@@ -183,28 +183,9 @@ pub fn resolveType(mir: *const Mir, ref: Mir.Ref) Type {
         return switch (mir.insts.items(.tag)[index]) {
             .ty => data.ty,
             .constant => mir.resolveType(data.ty_pl.ty),
-            .add,
-            .sub,
-            .mul,
-            .div,
-            .mod => mir.resolveType(data.bin_op.lref),
-            .cmp_eq,
-            .cmp_ne,
-            .cmp_uge,
-            .cmp_ule,
-            .cmp_ugt,
-            .cmp_ult,
-            .cmp_sge,
-            .cmp_sle,
-            .cmp_sgt,
-            .cmp_slt,
-            .cmp_fge,
-            .cmp_fle,
-            .cmp_fgt,
-            .cmp_flt => Type.initInt(1, false),
-            .alloc,
-            .load,
-            .store => mir.resolveType(data.un_op),
+            .add, .sub, .mul, .div, .mod => mir.resolveType(data.bin_op.lref),
+            .cmp_eq, .cmp_ne, .cmp_uge, .cmp_ule, .cmp_ugt, .cmp_ult, .cmp_sge, .cmp_sle, .cmp_sgt, .cmp_slt, .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => Type.initInt(1, false),
+            .alloc, .load, .store => mir.resolveType(data.un_op),
             .param => mir.resolveType(data.ty_pl.ty),
             .load_decl => mir.comp.declPtr(data.pl).ty,
             .call => ty: {
@@ -212,17 +193,10 @@ pub fn resolveType(mir: *const Mir, ref: Mir.Ref) Type {
                 const fn_type = ty.extended.cast(Type.Function).?;
                 break :ty fn_type.return_type;
             },
-            .zext,
-            .sext,
-            .fpext => mir.resolveType(data.ty_op.ty),
-            .block,
-            .branch_single,
-            .branch_double,
-            .loop => Type.initVoid(), // TODO
+            .zext, .sext, .fpext => mir.resolveType(data.ty_op.ty),
+            .block, .branch_single, .branch_double, .loop => Type.initVoid(), // TODO
             .yield => mir.resolveType(data.un_op),
-            .dbg_value,
-            .dbg_declare,
-            .dbg_assign => unreachable, // should not be referenced
+            .dbg_value, .dbg_declare, .dbg_assign => unreachable, // should not be referenced
             .ret => unreachable, // always end a function, can't be referenced
         };
     } else {
@@ -238,11 +212,8 @@ pub fn resolveType(mir: *const Mir, ref: Mir.Ref) Type {
             .u64 => Type.initInt(64, false),
             .f32 => Type.initFloat(32),
             .f64 => Type.initFloat(64),
-            .void,
-            .void_val => Type.initVoid(),
-            .zero_val,
-            .one_val,
-            .comptime_uint => Type.initComptimeInt(false),
+            .void, .void_val => Type.initVoid(),
+            .zero_val, .one_val, .comptime_uint => Type.initComptimeInt(false),
             .comptime_sint => Type.initComptimeInt(true),
             .comptime_float => Type.initComptimeFloat(),
             _ => unreachable,
@@ -275,9 +246,9 @@ pub fn refToInt(mir: *const Mir, ref: Mir.Ref) u64 {
                         // interpret payload as i32, sign extend it to i64,
                         // then reinterpret as u64 to return
                         // TODO: probably more readable to implement and use alu.sext
-                        return @bitCast(u64, @intCast(i64, @bitCast(i32, payload.int)));
+                        return @bitCast(@as(i64, @intCast(@as(i32, @bitCast(payload.int)))));
                     } else {
-                        return @intCast(u64, payload.int);
+                        return @intCast(payload.int);
                     }
                 },
                 .u64 => {

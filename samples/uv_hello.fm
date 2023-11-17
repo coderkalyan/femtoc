@@ -6,7 +6,6 @@ use io;
 
 let main = fn () u32 {
     let allocator = Allocator.init(); // pseudocode
-let a_b = c;
 
     let loop: *uv.loop_t = allocator.alloc(uv.loop_t);
     defer allocator.free(loop);

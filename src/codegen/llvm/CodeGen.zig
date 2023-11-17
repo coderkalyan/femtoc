@@ -20,11 +20,11 @@ map: std.AutoHashMapUnmanaged(Mir.Index, llvm.Value),
 builder: llvm.Builder,
 alloc_block: llvm.c.LLVMBasicBlockRef,
 
-const Error = Allocator.Error || @import("../../interner.zig").Error || error { NotImplemented };
+const Error = Allocator.Error || @import("../../interner.zig").Error || error{NotImplemented};
 const c = llvm.c;
 
 pub fn generate(codegen: *CodeGen) !void {
-    const block_inst = @intCast(u32, codegen.mir.insts.len - 1);
+    const block_inst: u32 = @intCast(codegen.mir.insts.len - 1);
     var builder = codegen.builder;
 
     codegen.alloc_block = builder.appendBlock("common.alloca");
@@ -70,8 +70,8 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
     var yield_jump: bool = false;
 
     const extra_base = data.pl + 1;
-    const insts = mir.extra[extra_base..extra_base + block_data.insts_len];
-    for (insts) |inst, i| {
+    const insts = mir.extra[extra_base .. extra_base + block_data.insts_len];
+    for (insts, 0..) |inst, i| {
         const ref = switch (mir.insts.items(.tag)[inst]) {
             .constant => try codegen.constant(inst),
             .add, .sub, .mul, .div, .mod => try codegen.binaryOp(inst),
@@ -79,14 +79,11 @@ fn block(codegen: *CodeGen, block_inst: Mir.Index) Error!c.LLVMValueRef {
             .alloc => try codegen.alloc(inst),
             .load => codegen.load(inst),
             .store => codegen.store(inst),
-            .cmp_eq, .cmp_ne,
-            .cmp_ule, .cmp_uge, .cmp_ult, .cmp_ugt,
-            .cmp_sle, .cmp_sge, .cmp_slt, .cmp_sgt,
-            .cmp_fle, .cmp_fge, .cmp_flt, .cmp_fgt => codegen.cmp(inst),
+            .cmp_eq, .cmp_ne, .cmp_ule, .cmp_uge, .cmp_ult, .cmp_ugt, .cmp_sle, .cmp_sge, .cmp_slt, .cmp_sgt, .cmp_fle, .cmp_fge, .cmp_flt, .cmp_fgt => codegen.cmp(inst),
             .zext => try codegen.zext(inst),
             .sext => try codegen.sext(inst),
             .fpext => try codegen.fpext(inst),
-            .param => try codegen.functionParam(inst, @intCast(u32, i)),
+            .param => try codegen.functionParam(inst, @intCast(i)),
             .call => try codegen.call(inst),
             .branch_single => {
                 try codegen.branchSingle(inst);
@@ -143,12 +140,12 @@ fn constant(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
 }
 
 fn binaryOp(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
-   const mir = codegen.mir;
+    const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
     const lref = codegen.resolveRef(data.bin_op.lref);
     const rref = codegen.resolveRef(data.bin_op.rref);
     var builder = codegen.builder;
-    
+
     const lty = mir.resolveType(data.bin_op.lref);
     return switch (lty.kind()) {
         .uint => switch (mir.insts.items(.tag)[inst]) {
@@ -178,7 +175,6 @@ fn binaryOp(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
         else => unreachable,
     };
 }
-
 
 fn alloc(codegen: *CodeGen, inst: Mir.Index) !c.LLVMValueRef {
     const mir = codegen.mir;
@@ -384,7 +380,7 @@ fn loop(codegen: *CodeGen, inst: Mir.Index) !void {
     const condition = data.bin_pl.l;
     const body = data.bin_pl.r;
     var builder = codegen.builder;
-    
+
     const prev = builder.getInsertBlock();
     const entry_block = builder.appendBlock("loop.entry");
     builder.positionAtEnd(entry_block);
@@ -411,9 +407,9 @@ fn call(codegen: *CodeGen, inst: Mir.Index) !llvm.Value {
     const addr = codegen.resolveRef(data.op);
     const args = try codegen.gpa.alloc(llvm.Value, call_data.args_len);
     defer codegen.gpa.free(args);
-    const mir_args = mir.extra[data.pl + 1..data.pl + 1 + call_data.args_len];
-    for (mir_args) |arg, i| {
-        args[i] = codegen.resolveRef(@intToEnum(Mir.Ref, arg));
+    const mir_args = mir.extra[data.pl + 1 .. data.pl + 1 + call_data.args_len];
+    for (mir_args, 0..) |arg, i| {
+        args[i] = codegen.resolveRef(@enumFromInt(arg));
     }
 
     const ty = mir.resolveType(data.op);
@@ -423,7 +419,7 @@ fn call(codegen: *CodeGen, inst: Mir.Index) !llvm.Value {
 fn ret(codegen: *CodeGen, inst: Mir.Index) c.LLVMValueRef {
     const mir = codegen.mir;
     const data = mir.insts.items(.data)[inst];
-    
+
     const ref = if (data.un_op == Mir.Ref.void_val) null else codegen.resolveRef(data.un_op);
     return codegen.builder.addReturn(ref);
 }

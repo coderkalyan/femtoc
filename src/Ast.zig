@@ -12,9 +12,7 @@ pub const Error = struct {
     tag: Tag,
     token: TokenIndex,
 
-    pub const Tag = enum {
-        
-    };
+    pub const Tag = enum {};
 };
 
 // represents the entire, immutable, AST of a source file, once parsed.
@@ -253,8 +251,8 @@ pub const Node = struct {
         },
     };
 
-    pub const Index = u32;          // index into nodes array
-    pub const ExtraIndex = u32;     // index into extra_data array
+    pub const Index = u32; // index into nodes array
+    pub const ExtraIndex = u32; // index into extra_data array
 
     // represents a contigious range of nodes (subarray)
     pub const Range = struct {
@@ -304,7 +302,7 @@ pub const Node = struct {
         condition: Index,
         afterthought: Index,
     };
-    
+
     pub const DeclMetadata = struct {
         ty: Index,
         attrs_start: ExtraIndex,
@@ -315,8 +313,8 @@ pub const Node = struct {
 pub fn extraData(self: *const Ast, index: usize, comptime T: type) T {
     const fields = std.meta.fields(T);
     var result: T = undefined;
-    inline for (fields) |field, i| {
-        comptime std.debug.assert(field.field_type == Node.Index);
+    inline for (fields, 0..) |field, i| {
+        comptime std.debug.assert(field.type == Node.Index);
         @field(result, field.name) = self.extra_data[index + i];
     }
     return result;

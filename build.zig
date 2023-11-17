@@ -1,29 +1,34 @@
 const std = @import("std");
 
 pub fn build(b: *std.build.Builder) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const clap = b.dependency("clap", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
-    const exe = b.addExecutable("femtoc", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
+    const exe = b.addExecutable(.{
+        .name = "femtoc",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
     exe.linkLibC();
     exe.linkSystemLibrary("c");
-    exe.linkSystemLibrary("LLVM-15");
-    exe.addPackage(.{
-        .name = "clap",
-        .source = .{ .path = "lib/zig-clap/clap.zig" },
-    });
-    exe.install();
+    exe.linkSystemLibrary("LLVM-16");
+    exe.addModule("clap", clap.module("clap"));
+    // exe.linkLibrary(clap.artifact("clap"));
+    // exe.addPackage(.{
+    //     .name = "clap",
+    //     .source = .{ .path = "lib/zig-clap/clap.zig" },
+    // });
+    // exe.install();
+    b.installArtifact(exe);
 
-    const run_cmd = exe.run();
+    // const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     // run_cmd.step.dependOn(&b.step);
     if (b.args) |args| {
@@ -33,9 +38,13 @@ pub fn build(b: *std.build.Builder) void {
     const run_step = b.step("run", "Run femtoc");
     run_step.dependOn(&run_cmd.step);
 
-    const exe_tests = b.addTest("src/test.zig");
-    exe_tests.setTarget(target);
-    exe_tests.setBuildMode(mode);
+    const exe_tests = b.addTest(.{
+        .root_source_file = .{ .path = "src/test.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    // exe_tests.setTarget(target);
+    // exe_tests.setBuildMode(opt);
     exe_tests.linkLibC();
 
     const test_step = b.step("test", "Run unit tests");

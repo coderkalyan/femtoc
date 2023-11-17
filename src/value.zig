@@ -59,7 +59,7 @@ pub const Value = extern union {
     };
 
     pub inline fn kind(val: Value) Tag {
-        return if (@bitCast(u64, val) < tagged_length) val.tag else val.payload.tag;
+        return if (@as(u64, @bitCast(val)) < tagged_length) val.tag else val.payload.tag;
     }
 
     pub fn toInt(val: *Value) u64 {
@@ -68,7 +68,7 @@ pub const Value = extern union {
             .one => return 1,
             .u32 => {
                 const payload = val.payload.cast(Value.Payload.U32).?;
-                return @intCast(u64, payload.int);
+                return @intCast(payload.int);
             },
             .u64 => {
                 const payload = val.payload.cast(Value.Payload.U64).?;

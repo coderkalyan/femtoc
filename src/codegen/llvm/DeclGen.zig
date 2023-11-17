@@ -22,7 +22,7 @@ pub fn generate(dg: *DeclGen) !void {
         llvm.c.LLVMSetValueName2(val, decl.name, std.mem.len(decl.name));
         const is_exported = comp.export_decls.contains(dg.decl_index);
         const linkage = if (is_exported) llvm.c.LLVMExternalLinkage else llvm.c.LLVMInternalLinkage;
-        llvm.c.LLVMSetLinkage(val, @intCast(c_uint, linkage));
+        llvm.c.LLVMSetLinkage(val, @intCast(linkage));
     } else {
         // create the decl
         // TODO: switch from value kind to decl kind (need to create that enum)
@@ -59,11 +59,11 @@ fn global(dg: *DeclGen) !llvm.c.LLVMValueRef {
     const decl = comp.declPtr(dg.decl_index);
     const llvm_type = try llvm.getType(dg.gpa, dg.backend.context.context, decl.ty);
     const g = llvm.c.LLVMAddGlobal(dg.backend.module.module, llvm_type, decl.name);
-    llvm.c.LLVMSetGlobalConstant(g, @boolToInt(!decl.mut));
+    llvm.c.LLVMSetGlobalConstant(g, @intFromBool(!decl.mut));
 
     const val = switch (decl.ty.kind()) {
-        .uint => llvm.c.LLVMConstInt(llvm_type, @intCast(c_ulonglong, decl.val.toInt()), 0),
-        .sint => llvm.c.LLVMConstInt(llvm_type, @intCast(c_ulonglong, decl.val.toInt()), 1),
+        .uint => llvm.c.LLVMConstInt(llvm_type, @intCast(decl.val.toInt()), 0),
+        .sint => llvm.c.LLVMConstInt(llvm_type, @intCast(decl.val.toInt()), 1),
         .float => llvm.c.LLVMConstReal(llvm_type, decl.val.toFloat()),
         else => unreachable,
     };

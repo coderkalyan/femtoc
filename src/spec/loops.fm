@@ -1,4 +1,11 @@
+// type func = (fn (a: u32, b: u32) bool)*;
+
 let main = fn () void {
+    // let greater: func = fn (a: u32, b: u32) bool { a > b };
+    // std.sort(arr, greater);
+    // std.sort(arr, fn (a: u32, b: u32) bool { a < b });
+    
+
     let mut count: u32 = 0;
     for {
         count += 1;

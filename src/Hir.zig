@@ -3,12 +3,15 @@ const Interner = @import("interner.zig").Interner;
 const Ast = @import("Ast.zig");
 const TokenIndex = Ast.TokenIndex;
 const Type = @import("typing.zig").Type;
+const Allocator = std.mem.Allocator;
+const InstList = @import("hir/InstList.zig");
 
 const Node = Ast.Node;
-pub const Error = error { InvalidRef };
+pub const Error = error{InvalidRef};
 pub const Hir = @This();
 
 insts: std.MultiArrayList(Inst).Slice,
+block_tape: []InstList.LinkedNode,
 extra_data: []const u32,
 interner: Interner,
 resolution_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
@@ -35,12 +38,29 @@ pub const Inst = struct {
 
         // binary comparison operations
         // data.pl_node.pl = Inst.Binary
+        //
+        // first set is high level (untyped) comparisons
         cmp_eq,
         cmp_ne,
         cmp_gt,
         cmp_ge,
         cmp_lt,
         cmp_le,
+        // and typed concrete comparisons
+        icmp_eq,
+        icmp_ne,
+        icmp_ugt,
+        icmp_uge,
+        icmp_ult,
+        icmp_ule,
+        icmp_sgt,
+        icmp_sge,
+        icmp_slt,
+        icmp_sle,
+        fcmp_gt,
+        fcmp_ge,
+        fcmp_lt,
+        fcmp_le,
 
         // TODO
         lsl,
@@ -51,6 +71,10 @@ pub const Inst = struct {
         // coerces (expands to constant, cast, or noop in mir)
         // data.pl_node.pl = Inst.Coerce
         coerce,
+        zext,
+        sext,
+        fpext,
+
         // loads a module decl that is forward declared
         // that is, ref is not available during generation but will
         // be by the time the entire hir is generated and mir is running
@@ -58,7 +82,9 @@ pub const Inst = struct {
         load_inline,
         // pushes a value onto the stack and returns the memory address
         // data.un_node.operand = ref to push
-        alloc_push,
+        push,
+        // TODO
+        alloca,
         // loads data from a memory address and returns a ref to the value
         // data.un_node.operand = memory address (ref to alloc_push or decl)
         load,
@@ -72,7 +98,7 @@ pub const Inst = struct {
         // calls a function at an address (ref) and a list of arguments
         // data.pl_node.pl = Inst.Call
         call,
-        
+
         decl_const,
         decl_mut,
         decl_export,
@@ -167,13 +193,13 @@ pub const Inst = struct {
     };
 
     pub fn indexToRef(index: Hir.Index) Hir.Ref {
-        const ref_len = @intCast(u32, @typeInfo(Hir.Ref).Enum.fields.len);
-        return @intToEnum(Hir.Ref, ref_len + index);
+        const ref_len: u32 = @intCast(@typeInfo(Hir.Ref).Enum.fields.len);
+        return @enumFromInt(ref_len + index);
     }
 
     pub fn refToIndex(ref: Hir.Ref) ?Hir.Index {
-        const ref_len = @intCast(u32, @typeInfo(Hir.Ref).Enum.fields.len);
-        const index = @enumToInt(ref);
+        const ref_len: u32 = @intCast(@typeInfo(Hir.Ref).Enum.fields.len);
+        const index = @intFromEnum(ref);
         return if (index >= ref_len) index - ref_len else null;
     }
 
@@ -234,6 +260,16 @@ pub const Inst = struct {
 
     pub const Block = struct {
         len: u32,
+        head: u32,
+
+        pub fn iterate(self: *const Block, tape: []InstList.LinkedNode) InstList.InstIterator {
+            return .{
+                .tape = tape,
+                .counter = 0,
+                .len = self.len,
+                .cursor = .{ .node = self.head, .pos = 0 },
+            };
+        }
     };
 
     pub const Module = struct {
@@ -258,8 +294,11 @@ pub const Ref = enum(u32) {
     i16_ty,
     i32_ty,
     i64_ty,
+    comptime_uint,
+    comptime_sint,
     f32_ty,
     f64_ty,
+    comptime_float,
     bool_ty,
     void_ty,
 
@@ -275,12 +314,56 @@ pub const Ref = enum(u32) {
 pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
     const fields = std.meta.fields(T);
     var result: T = undefined;
-    inline for (fields) |field, i| {
-        @field(result, field.name) = switch (field.field_type) {
+    inline for (fields, 0..) |field, i| {
+        @field(result, field.name) = switch (field.type) {
             u32 => hir.extra_data[index + i],
-            Ref => @intToEnum(Ref, hir.extra_data[index + i]),
+            Ref => @enumFromInt(hir.extra_data[index + i]),
             else => unreachable,
         };
     }
     return result;
+}
+
+pub fn resolveType(hir: *const Hir, ref: Ref) Type {
+    if (Inst.refToIndex(ref)) |index| {
+        const data = hir.insts.items(.data)[index];
+        return switch (hir.insts.items(.tag)[index]) {
+            .ty => data.ty,
+            .constant => hir.resolveType(data.ty_pl.ty),
+            .add, .sub, .mul, .div, .mod => hir.resolveType(data.bin_op.lref),
+            .cmp_eq, .cmp_ne, .cmp_uge, .cmp_ule, .cmp_ugt, .cmp_ult, .cmp_sge, .cmp_sle, .cmp_sgt, .cmp_slt, .cmp_fge, .cmp_fle, .cmp_fgt, .cmp_flt => Type.initInt(1, false),
+            .alloc, .load, .store => hir.resolveType(data.un_op),
+            .param => hir.resolveType(data.ty_pl.ty),
+            .load_decl => hir.comp.declPtr(data.pl).ty,
+            .call => ty: {
+                const ty = hir.resolveType(data.op_pl.op);
+                const fn_type = ty.extended.cast(Type.Function).?;
+                break :ty fn_type.return_type;
+            },
+            .zext, .sext, .fpext => hir.resolveType(data.ty_op.ty),
+            .block, .branch_single, .branch_double, .loop => Type.initVoid(), // TODO
+            .yield => hir.resolveType(data.un_op),
+            .dbg_value, .dbg_declare, .dbg_assign => unreachable, // should not be referenced
+            .ret => unreachable, // always end a function, can't be referenced
+        };
+    } else {
+        return switch (ref) {
+            .u1 => Type.initInt(1, false),
+            .i8 => Type.initInt(8, true),
+            .u8 => Type.initInt(8, false),
+            .i16 => Type.initInt(16, true),
+            .u16 => Type.initInt(16, false),
+            .i32 => Type.initInt(32, true),
+            .u32 => Type.initInt(32, false),
+            .i64 => Type.initInt(64, true),
+            .u64 => Type.initInt(64, false),
+            .f32 => Type.initFloat(32),
+            .f64 => Type.initFloat(64),
+            .void, .void_val => Type.initVoid(),
+            .zero_val, .one_val, .comptime_uint => Type.initComptimeInt(false),
+            .comptime_sint => Type.initComptimeInt(true),
+            .comptime_float => Type.initComptimeFloat(),
+            _ => unreachable,
+        };
+    }
 }

@@ -39,7 +39,7 @@ pub fn build(gpa: Allocator, config: *Configuration) !void {
         std.process.exit(1);
     }
 
-    var source = try gpa.allocSentinel(u8, @intCast(usize, stat.size), 0);
+    var source = try gpa.allocSentinel(u8, @intCast(stat.size), 0);
     const size = try file.readAll(source);
     if (stat.size != size) {
         std.log.err("Failed to read entire source file", .{});

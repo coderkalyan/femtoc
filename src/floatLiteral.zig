@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const ParseError = error { InvalidCharacter };
+pub const ParseError = error{InvalidCharacter};
 
 const State = enum(u8) {
     start,
@@ -83,9 +83,9 @@ pub fn parseFloat(source: []const u8) !f64 {
         }
     }
 
-    const power = point_len - (@intCast(i16, exponent.sign) * exponent.value);
-    const multiplier = std.math.pow(f64, 10.0, @intToFloat(f64, -power));
-    const value = @intToFloat(f64, base) * multiplier;
+    const power = point_len - (@as(i16, @intCast(exponent.sign)) * exponent.value);
+    const multiplier = std.math.pow(f64, 10.0, @as(f64, @floatFromInt(-power)));
+    const value: f64 = @as(f64, @floatFromInt(base)) * multiplier;
     return value;
 }
 

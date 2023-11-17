@@ -8,7 +8,7 @@ const Lexer = lex.Lexer;
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
 
-pub const Error = error { UnexpectedToken } || Allocator.Error;
+pub const Error = error{UnexpectedToken} || Allocator.Error;
 const null_node: Node.Index = 0;
 
 // parses a string of source characters into an abstract syntax tree
@@ -23,7 +23,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
         const token = lexer.next();
         try tokens.append(gpa, .{
             .tag = token.tag,
-            .start = @intCast(u32, token.loc.start),
+            .start = @intCast(token.loc.start),
         });
         if (token.tag == .eof) break;
     }
@@ -41,11 +41,11 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
 
     // copy parser results into an abstract syntax tree
     // that owns the source, token list, node list, and node extra data
-    return Ast {
+    return Ast{
         .source = source,
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
-        .extra_data = parser.extra.toOwnedSlice(gpa),
+        .extra_data = try parser.extra.toOwnedSlice(gpa),
         .errors = &.{},
     };
 }
@@ -79,14 +79,14 @@ const Parser = struct {
     }
 
     fn addNode(p: *Parser, node: Node) !Node.Index {
-        const result = @intCast(Node.Index, p.nodes.len);
+        const result: u32 = @intCast(p.nodes.len);
         try p.nodes.append(p.gpa, node);
         return result;
     }
 
     fn setNode(p: *Parser, i: usize, node: Node) Node.Index {
         p.nodes.set(i, node);
-        return @intCast(Node.Index, i);
+        return @intCast(i);
     }
 
     fn reserveNode(p: *Parser, tag: Ast.Node.Tag) !usize {
@@ -115,9 +115,9 @@ const Parser = struct {
     fn addExtra(p: *Parser, extra: anytype) Allocator.Error!Node.Index {
         const fields = std.meta.fields(@TypeOf(extra));
         try p.extra.ensureUnusedCapacity(p.gpa, fields.len);
-        const len = @intCast(u32, p.extra.items.len);
+        const len: u32 = @intCast(p.extra.items.len);
         inline for (fields) |field| {
-            comptime std.debug.assert(field.field_type == Node.Index);
+            comptime std.debug.assert(field.type == Node.Index);
             p.extra.appendAssumeCapacity(@field(extra, field.name));
         }
         return len;
@@ -133,9 +133,6 @@ const Parser = struct {
             .r_angle => 13,
             .l_angle_equal => 13,
             .r_angle_equal => 13,
-            .pipe_pipe => 20,
-            .ampersand_ampersand => 30,
-            .caret_caret => 40,
             .plus => 110,
             .minus => 120,
             .asterisk => 130,
@@ -157,7 +154,7 @@ const Parser = struct {
             const node = switch (p.token_tags[p.index]) {
                 .eof => break,
                 .k_let => try p.parseDecl(),
-                .a_export => { 
+                .a_export => {
                     try p.parseExport();
                     continue;
                 },
@@ -179,8 +176,8 @@ const Parser = struct {
             .main_token = 0,
             .data = .{
                 .module = .{
-                    .stmts_start = @intCast(Node.ExtraIndex, extra_top),
-                    .stmts_end = @intCast(Node.ExtraIndex, p.extra.items.len),
+                    .stmts_start = @intCast(extra_top),
+                    .stmts_end = @intCast(p.extra.items.len),
                 },
             },
         });
@@ -276,12 +273,9 @@ const Parser = struct {
     fn expectVarExpr(p: *Parser) !Node.Index {
         // parses variable identifier expressions (variable value)
         const ident_token = try p.expectToken(.ident);
-        return p.addNode(.{
-            .main_token = ident_token,
-            .data = .{
-                .var_expr = {},
-            }
-        });
+        return p.addNode(.{ .main_token = ident_token, .data = .{
+            .var_expr = {},
+        } });
     }
 
     fn expectArgList(p: *Parser) !Node.ExtraRange {
@@ -309,12 +303,11 @@ const Parser = struct {
         const params = p.scratch.items[scratch_top..];
         const extra_top = p.extra.items.len;
         try p.extra.appendSlice(p.gpa, params);
-        return Node.ExtraRange {
-            .start = @intCast(Node.ExtraIndex, extra_top),
-            .end = @intCast(Node.ExtraIndex, p.extra.items.len),
+        return Node.ExtraRange{
+            .start = @intCast(extra_top),
+            .end = @intCast(p.extra.items.len),
         };
     }
-
 
     fn expectType(p: *Parser) !Node.Index {
         // parses a type as either an named identifier (u32, Point),
@@ -346,16 +339,14 @@ const Parser = struct {
 
         return p.addNode(.{
             .main_token = fn_token,
-            .data = .{
-                .fn_decl = .{
-                    .signature = try p.addExtra(Node.FnSignature {
-                        .params_start = params.start,
-                        .params_end = params.end,
-                        .return_ty = return_ty,
-                    }),
-                    .body = body,
-                }
-            },
+            .data = .{ .fn_decl = .{
+                .signature = try p.addExtra(Node.FnSignature{
+                    .params_start = params.start,
+                    .params_end = params.end,
+                    .return_ty = return_ty,
+                }),
+                .body = body,
+            } },
         });
     }
 
@@ -383,16 +374,16 @@ const Parser = struct {
         const params = p.scratch.items[scratch_top..];
         const extra_top = p.extra.items.len;
         try p.extra.appendSlice(p.gpa, params);
-        return Node.ExtraRange {
-            .start = @intCast(Node.ExtraIndex, extra_top),
-            .end = @intCast(Node.ExtraIndex, p.extra.items.len),
+        return Node.ExtraRange{
+            .start = @intCast(extra_top),
+            .end = @intCast(p.extra.items.len),
         };
     }
 
     fn expectParam(p: *Parser) !Node.Index {
         const ident_token = try p.expectToken(.ident);
         _ = try p.expectToken(.colon);
-        
+
         const type_node = try p.expectType();
         return p.addNode(.{
             .main_token = ident_token,
@@ -445,8 +436,8 @@ const Parser = struct {
             .main_token = l_brace_token,
             .data = .{
                 .block = .{
-                    .stmts_start = @intCast(Node.ExtraIndex, extra_top),
-                    .stmts_end = @intCast(Node.ExtraIndex, p.extra.items.len),
+                    .stmts_start = @intCast(extra_top),
+                    .stmts_end = @intCast(p.extra.items.len),
                 },
             },
         });
@@ -460,12 +451,7 @@ const Parser = struct {
             .k_for => p.parseLoop(),
             .ident => switch (p.token_tags[p.index + 1]) {
                 .l_paren => p.expectCall(),
-                .equal,
-                .plus_equal, .minus_equal,
-                .asterisk_equal, .slash_equal, .percent_equal,
-                .ampersand_equal, .pipe_equal, .caret_equal,
-                .l_angle_l_angle_equal,
-                .r_angle_r_angle_equal => p.parseAssignment(),
+                .equal, .plus_equal, .minus_equal, .asterisk_equal, .slash_equal, .percent_equal, .ampersand_equal, .pipe_equal, .caret_equal, .l_angle_l_angle_equal, .r_angle_r_angle_equal => p.parseAssignment(),
                 else => return Error.UnexpectedToken,
             },
             .k_break => p.expectBreak(),
@@ -538,11 +524,11 @@ const Parser = struct {
 
             const val = try p.expectExpr();
             if (p.attributes.items.len > 0) {
-                const attrs_start = @intCast(u32, p.extra.items.len);
+                const attrs_start: u32 = @intCast(p.extra.items.len);
                 try p.extra.appendSlice(p.gpa, p.attributes.items);
-                const attrs_end = @intCast(u32, p.extra.items.len);
+                const attrs_end: u32 = @intCast(p.extra.items.len);
 
-                const data = try p.addExtra(Node.DeclMetadata {
+                const data = try p.addExtra(Node.DeclMetadata{
                     .ty = ty,
                     .attrs_start = attrs_start,
                     .attrs_end = attrs_end,
@@ -559,7 +545,7 @@ const Parser = struct {
             }
         }
     }
-    
+
     fn expectReturnStmt(p: *Parser) !Node.Index {
         const ret_token = try p.expectToken(.k_return);
 
@@ -599,46 +585,37 @@ const Parser = struct {
             if (p.token_tags[p.index] == .k_if) {
                 // chained if
                 const next = try p.parseConditional();
-                const chain = try p.addExtra(Node.IfChain {
+                const chain = try p.addExtra(Node.IfChain{
                     .exec_true = exec_true,
                     .next = next,
                 });
                 return p.addNode(.{
                     .main_token = if_token,
-                    .data = .{
-                        .if_chain = .{
-                            .condition = condition,
-                            .chain = chain,
-                        }
-                    },
+                    .data = .{ .if_chain = .{
+                        .condition = condition,
+                        .chain = chain,
+                    } },
                 });
             } else {
                 // if else
                 const exec_false = try p.expectBlock();
-                const exec = try p.addExtra(Node.IfElse {
+                const exec = try p.addExtra(Node.IfElse{
                     .exec_true = exec_true,
                     .exec_false = exec_false,
                 });
-                return p.addNode(.{
-                    .main_token = if_token,
-                    .data = .{
-                        .if_else = .{
-                            .condition = condition,
-                            .exec = exec,
-                        }
-                    }
-                });
+                return p.addNode(.{ .main_token = if_token, .data = .{ .if_else = .{
+                    .condition = condition,
+                    .exec = exec,
+                } } });
             }
         } else {
             // simple if
             return p.addNode(.{
                 .main_token = if_token,
-                .data = .{
-                    .if_simple = .{
-                        .condition = condition,
-                        .exec_true = exec_true,
-                    }
-                },
+                .data = .{ .if_simple = .{
+                    .condition = condition,
+                    .exec_true = exec_true,
+                } },
             });
         }
     }
@@ -663,7 +640,7 @@ const Parser = struct {
             const condition = try p.expectExpr();
             _ = try p.expectToken(.semi);
             const afterthought = try p.parseStatement();
-            const signature = try p.addExtra(Node.RangeSignature {
+            const signature = try p.addExtra(Node.RangeSignature{
                 .binding = binding,
                 .condition = condition,
                 .afterthought = afterthought,
@@ -672,26 +649,19 @@ const Parser = struct {
             const body = try p.expectBlock();
             return p.addNode(.{
                 .main_token = for_token,
-                .data = .{
-                    .loop_range = .{
-                        .signature = signature,
-                        .body = body,
-                    }
-                },
+                .data = .{ .loop_range = .{
+                    .signature = signature,
+                    .body = body,
+                } },
             });
         } else {
             // assume this is the condition of a conditional loop
             const condition = try p.expectExpr();
             const body = try p.expectBlock();
-            return p.addNode(.{
-                .main_token = for_token,
-                .data = .{
-                    .loop_conditional = .{
-                        .condition = condition,
-                        .body = body,
-                    }
-                }
-            });
+            return p.addNode(.{ .main_token = for_token, .data = .{ .loop_conditional = .{
+                .condition = condition,
+                .body = body,
+            } } });
         }
     }
 
@@ -702,10 +672,10 @@ const Parser = struct {
             .data = .{ .loop_break = {} },
         });
     }
-    
+
     fn parseExport(p: *Parser) !void {
         const export_token = try p.expectToken(.a_export);
-        
+
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
         if (p.token_tags[p.index] == .l_paren) {
@@ -723,21 +693,18 @@ const Parser = struct {
                 }
             }
         }
-        
-        const args = p.scratch.items[scratch_top..];
-        const args_start = @intCast(u32, p.extra.items.len);
-        try p.extra.appendSlice(p.gpa, args);
-        const args_end = @intCast(u32, p.extra.items.len);
 
-        const attribute = try p.addNode(.{
-            .main_token = export_token,
-            .data = .{
-                .attribute = .{
-                    .args_start = args_start,
-                    .args_end = args_end,
-                },
-            }
-        });
+        const args = p.scratch.items[scratch_top..];
+        const args_start: u32 = @intCast(p.extra.items.len);
+        try p.extra.appendSlice(p.gpa, args);
+        const args_end: u32 = @intCast(p.extra.items.len);
+
+        const attribute = try p.addNode(.{ .main_token = export_token, .data = .{
+            .attribute = .{
+                .args_start = args_start,
+                .args_end = args_end,
+            },
+        } });
         try p.attributes.append(p.gpa, attribute);
     }
 };
@@ -746,8 +713,15 @@ const Parser = struct {
 //     const stderr = std.io.getStdErr().writer();
 //
 //     var tree = try parse(allocator, source);
-
-    // for (tree.errors) |parse_error| {
-    //
-    // }
+//
+//     for (tree.errors) |parse_error| {
+//
+//     }
 // }
+test "arith.fm" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
+
+    const ast = try parse(allocator, @embedFile("tests/arith.fm"));
+    _ = ast;
+}

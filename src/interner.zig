@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Error = error { InternTableFull, InvalidId };
+pub const Error = error{ InternTableFull, InvalidId };
 
 // "Interns" strings by storing each unique string exactly once
 // and returning a unique handle to the string the next time it
@@ -19,7 +19,7 @@ pub const Interner = struct {
     list: std.ArrayList(u32),
 
     pub fn init(gpa: std.mem.Allocator) Interner {
-        return Interner {
+        return Interner{
             .gpa = gpa,
             .map = std.StringArrayHashMap(u32).init(gpa),
             .list = std.ArrayList(u32).init(gpa),
@@ -34,10 +34,10 @@ pub const Interner = struct {
 
         if (self.list.items.len >= std.math.maxInt(u32)) return Error.InternTableFull;
         // handle is the "next" element in the list
-        const id = @intCast(u32, self.list.items.len);
+        const id: u32 = @intCast(self.list.items.len);
         try self.map.put(string, id);
         const index = self.map.getIndex(string).?;
-        try self.list.append(@intCast(u32, index));
+        try self.list.append(@intCast(index));
 
         return id;
     }
