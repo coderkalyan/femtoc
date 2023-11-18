@@ -3,6 +3,7 @@ const parse = @import("parse.zig");
 const HirGen = @import("HirGen.zig");
 const Compilation = @import("Compilation.zig");
 const render = @import("render.zig");
+const error_handler = @import("error_handler.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -48,7 +49,27 @@ pub fn build(gpa: Allocator, config: *Configuration) !void {
 
     const ast = try parse.parse(gpa, source);
 
+    if (ast.errors.len > 0) {
+        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, ast.errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, config.input, errors);
+
+        try error_renderer.render();
+        try buffered_out.flush();
+        std.debug.print("{any} errors\n", .{errors.len});
+        std.process.exit(1);
+    }
+
     const hir = try HirGen.generate(gpa, &ast);
+    if (hir.errors.len > 0) {
+        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, hir.errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, config.input, errors);
+
+        try error_renderer.render();
+        try buffered_out.flush();
+        std.debug.print("{any} errors\n", .{errors.len});
+        std.process.exit(1);
+    }
+
     if (config.verbose_hir) {
         var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, &hir);
         try hir_renderer.render();

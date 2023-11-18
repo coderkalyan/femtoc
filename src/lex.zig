@@ -66,26 +66,16 @@ pub const Token = struct {
         caret_equal,
         l_angle_l_angle,
         r_angle_r_angle,
-        /// logical
-        ampersand_ampersand,
-        pipe_pipe,
-        caret_caret,
         /// comparison
         equal_equal,
         l_angle_equal,
         r_angle_equal,
         bang_equal,
-        /// scope
-        colon_colon,
 
         // triple character punctuation
         /// binary
         l_angle_l_angle_equal,
         r_angle_r_angle_equal,
-        /// logical
-        ampersand_ampersand_equal,
-        pipe_pipe_equal,
-        caret_caret_equal,
 
         // keywords
         k_use,
@@ -192,14 +182,10 @@ pub const Lexer = struct {
         pipe,
         caret,
         bang,
-        colon,
         l_angle,
         r_angle,
         l_angle_l_angle,
         r_angle_r_angle,
-        ampersand_ampersand,
-        pipe_pipe,
-        caret_caret,
 
         line_comment,
     };
@@ -212,7 +198,7 @@ pub const Lexer = struct {
         // we only parse <= ~4GiB files (u32_max characters)
         std.debug.assert(source.len <= std.math.maxInt(u32)); // TODO: nice error
 
-        return Lexer {
+        return Lexer{
             .source = source,
             .index = index,
         };
@@ -220,7 +206,7 @@ pub const Lexer = struct {
 
     pub fn next(self: *Lexer) Token {
         var state: State = .start;
-        var result = Token {
+        var result = Token{
             .tag = .eof,
             .loc = .{
                 .start = self.index,
@@ -323,7 +309,9 @@ pub const Lexer = struct {
                         break;
                     },
                     ':' => {
-                        state = .colon;
+                        result.tag = .colon;
+                        self.index += 1;
+                        break;
                     },
                     '=' => {
                         state = .equal;
@@ -424,7 +412,7 @@ pub const Lexer = struct {
                     'a'...'z', 'A'...'Z', '_', '0'...'9' => {},
                     else => {
                         // done with annotation, check if keyword
-                        result.tag = Token.getAnnotation(self.source[result.loc.start + 1..self.index]) orelse .a_unknown;
+                        result.tag = Token.getAnnotation(self.source[result.loc.start + 1 .. self.index]) orelse .a_unknown;
                         break;
                     },
                 },
@@ -456,10 +444,14 @@ pub const Lexer = struct {
                 .binary => switch (c) {
                     '0'...'1', '_' => {},
                     '2'...'9', 'a'...'z', 'A'...'Z' => {
-                        self.index += 1;
-                        const invalid_length = self.eatInvalidLiteral();
+                        while (true) {
+                            self.index += 1;
+                            switch (self.source[self.index]) {
+                                '2'...'9', 'a'...'z', 'A'...'Z' => {},
+                                else => break, // includes EOF
+                            }
+                        }
                         result.tag = .invalid;
-                        self.index += invalid_length;
                         break;
                     },
                     else => {
@@ -470,10 +462,14 @@ pub const Lexer = struct {
                 .octal => switch (c) {
                     '0'...'7', '_' => {},
                     '8'...'9', 'a'...'z', 'A'...'Z' => {
-                        self.index += 1;
-                        const invalid_length = self.eatInvalidLiteral();
+                        while (true) {
+                            self.index += 1;
+                            switch (self.source[self.index]) {
+                                '8'...'9', 'a'...'z', 'A'...'Z' => {},
+                                else => break, // includes EOF
+                            }
+                        }
                         result.tag = .invalid;
-                        self.index += invalid_length;
                         break;
                     },
                     else => {
@@ -516,6 +512,10 @@ pub const Lexer = struct {
                         state = .float_exp;
                         switch (self.source[self.index + 1]) {
                             '+', '-' => self.index += 1,
+                            0 => {
+                                state = .start;
+                                break;
+                            },
                             else => {},
                         }
                     },
@@ -639,9 +639,6 @@ pub const Lexer = struct {
                         self.index += 1;
                         break;
                     },
-                    '&' => {
-                        state = .ampersand_ampersand;
-                    },
                     else => {
                         result.tag = .ampersand;
                         break;
@@ -653,9 +650,6 @@ pub const Lexer = struct {
                         self.index += 1;
                         break;
                     },
-                    '|' => {
-                        state = .pipe_pipe;
-                    },
                     else => {
                         result.tag = .pipe;
                         break;
@@ -666,9 +660,6 @@ pub const Lexer = struct {
                         result.tag = .caret_equal;
                         self.index += 1;
                         break;
-                    },
-                    '^' => {
-                        state = .caret_caret;
                     },
                     else => {
                         result.tag = .caret;
@@ -683,17 +674,6 @@ pub const Lexer = struct {
                     },
                     else => {
                         result.tag = .bang;
-                        break;
-                    },
-                },
-                .colon => switch (c) {
-                    ':' => {
-                        result.tag = .colon_colon;
-                        self.index += 1;
-                        break;
-                    },
-                    else => {
-                        result.tag = .colon;
                         break;
                     },
                 },
@@ -747,39 +727,6 @@ pub const Lexer = struct {
                         break;
                     },
                 },
-                .ampersand_ampersand => switch (c) {
-                    '=' => {
-                        result.tag = .ampersand_ampersand_equal;
-                        self.index += 1;
-                        break;
-                    },
-                    else => {
-                        result.tag = .ampersand_ampersand;
-                        break;
-                    },
-                },
-                .pipe_pipe => switch (c) {
-                    '=' => {
-                        result.tag = .pipe_pipe_equal;
-                        self.index += 1;
-                        break;
-                    },
-                    else => {
-                        result.tag = .pipe_pipe;
-                        break;
-                    },
-                },
-                .caret_caret => switch (c) {
-                    '=' => {
-                        result.tag = .caret_caret_equal;
-                        self.index += 1;
-                        break;
-                    },
-                    else => {
-                        result.tag = .caret_caret;
-                        break;
-                    },
-                },
                 .line_comment => switch (c) {
                     '\n' => {
                         result.loc.start = self.index + 1;
@@ -808,7 +755,9 @@ pub const Lexer = struct {
         while (self.index + length < self.source.len) : (length += 1) {
             switch (self.source[self.index + length]) {
                 'a'...'z', 'A'...'Z' => {},
-                else => { return length; },
+                else => {
+                    return length;
+                },
             }
         }
 
@@ -824,8 +773,8 @@ fn testLex(source: [:0]const u8, expected_token_tags: []const Token.Tag) !void {
     }
     const eof = lexer.next();
     try std.testing.expectEqual(Token.Tag.eof, eof.tag);
-    try std.testing.expectEqual(@intCast(u32, source.len), eof.loc.start);
-    try std.testing.expectEqual(@intCast(u32, source.len), eof.loc.end);
+    try std.testing.expectEqual(@as(u32, @intCast(source.len)), eof.loc.start);
+    try std.testing.expectEqual(@as(u32, @intCast(source.len)), eof.loc.end);
 }
 
 test "identifier" {
@@ -844,6 +793,7 @@ test "string literal" {
 }
 
 test "character literal" {
+    // TODO: special characters (escaped)
     try testLex("'a'", &.{.char_lit});
     try testLex("'0'", &.{.char_lit});
     try testLex("'abc'", &.{.invalid});
@@ -854,10 +804,9 @@ test "integer literal" {
     // decimal
     try testLex("0", &.{.int_lit});
     try testLex("123", &.{.int_lit});
-    try testLex("123(", &.{.int_lit, .l_paren});
-    try testLex("123;", &.{.int_lit, .semi});
+    try testLex("123(", &.{ .int_lit, .l_paren });
+    try testLex("123;", &.{ .int_lit, .semi });
     try testLex("123abc", &.{.invalid});
-    try testLex("123", &.{.int_lit});
     try testLex("123_456", &.{.int_lit});
     try testLex("123_456_789", &.{.int_lit});
 
@@ -865,6 +814,7 @@ test "integer literal" {
     try testLex("0b0", &.{.int_lit});
     try testLex("0b1", &.{.int_lit});
     try testLex("0b0101011", &.{.int_lit});
+    try testLex("0b1234", &.{.invalid});
 
     // octal
     try testLex("0o0", &.{.int_lit});
@@ -874,6 +824,7 @@ test "integer literal" {
     try testLex("0o178", &.{.invalid});
     try testLex("0o17abc", &.{.invalid});
     try testLex("0o12345_67", &.{.int_lit});
+    try testLex("0o12399", &.{.invalid});
 
     // hex
     try testLex("0x0", &.{.int_lit});
@@ -926,52 +877,38 @@ test "punctuation" {
     try testLex(">", &.{.r_angle});
 
     try testLex("+=", &.{.plus_equal});
-    try testLex("+ =", &.{.plus, .equal});
+    try testLex("+ =", &.{ .plus, .equal });
     try testLex("-=", &.{.minus_equal});
-    try testLex("- =", &.{.minus, .equal});
+    try testLex("- =", &.{ .minus, .equal });
     try testLex("*=", &.{.asterisk_equal});
-    try testLex("* =", &.{.asterisk, .equal});
+    try testLex("* =", &.{ .asterisk, .equal });
     try testLex("/=", &.{.slash_equal});
-    try testLex("/ =", &.{.slash, .equal});
+    try testLex("/ =", &.{ .slash, .equal });
     try testLex("%=", &.{.percent_equal});
-    try testLex("% =", &.{.percent, .equal});
+    try testLex("% =", &.{ .percent, .equal });
     try testLex("&=", &.{.ampersand_equal});
-    try testLex("& =", &.{.ampersand, .equal});
+    try testLex("& =", &.{ .ampersand, .equal });
     try testLex("|=", &.{.pipe_equal});
-    try testLex("| =", &.{.pipe, .equal});
+    try testLex("| =", &.{ .pipe, .equal });
     try testLex("^=", &.{.caret_equal});
-    try testLex("^ =", &.{.caret, .equal});
+    try testLex("^ =", &.{ .caret, .equal });
     try testLex("<<", &.{.l_angle_l_angle});
-    try testLex("< <", &.{.l_angle, .l_angle});
+    try testLex("< <", &.{ .l_angle, .l_angle });
     try testLex(">>", &.{.r_angle_r_angle});
-    try testLex("> >", &.{.r_angle, .r_angle});
-    try testLex("&&", &.{.ampersand_ampersand});
-    try testLex("& &", &.{.ampersand, .ampersand});
-    try testLex("||", &.{.pipe_pipe});
-    try testLex("| |", &.{.pipe, .pipe});
-    try testLex("^^", &.{.caret_caret});
-    try testLex("^ ^", &.{.caret, .caret});
+    try testLex("> >", &.{ .r_angle, .r_angle });
     try testLex("==", &.{.equal_equal});
-    try testLex("= =", &.{.equal, .equal});
+    try testLex("= =", &.{ .equal, .equal });
     try testLex("<=", &.{.l_angle_equal});
-    try testLex("< =", &.{.l_angle, .equal});
+    try testLex("< =", &.{ .l_angle, .equal });
     try testLex(">=", &.{.r_angle_equal});
-    try testLex("> =", &.{.r_angle, .equal});
+    try testLex("> =", &.{ .r_angle, .equal });
     try testLex("!=", &.{.bang_equal});
-    try testLex("! =", &.{.bang, .equal});
-    try testLex("::", &.{.colon_colon});
-    try testLex(": :", &.{.colon, .colon});
+    try testLex("! =", &.{ .bang, .equal });
 
     try testLex("<<=", &.{.l_angle_l_angle_equal});
-    try testLex("<< =", &.{.l_angle_l_angle, .equal});
+    try testLex("<< =", &.{ .l_angle_l_angle, .equal });
     try testLex(">>=", &.{.r_angle_r_angle_equal});
-    try testLex(">> =", &.{.r_angle_r_angle, .equal});
-    try testLex("&&=", &.{.ampersand_ampersand_equal});
-    try testLex("&& =", &.{.ampersand_ampersand, .equal});
-    try testLex("||=", &.{.pipe_pipe_equal});
-    try testLex("|| =", &.{.pipe_pipe, .equal});
-    try testLex("^^=", &.{.caret_caret_equal});
-    try testLex("^^ =", &.{.caret_caret, .equal});
+    try testLex(">> =", &.{ .r_angle_r_angle, .equal });
 }
 
 test "keywords" {
@@ -1001,30 +938,23 @@ test "annotations" {
 
 test "line comments" {
     try testLex("//test", &.{});
+    try testLex("return // test\nlet", &.{ .k_return, .k_let });
 }
 
 test "arith.fm" {
     try testLex(@embedFile("tests/arith.fm"), &.{
-        .k_let, .ident, .equal, .k_fn, .l_paren, .r_paren, .ident, .l_brace,
-        .k_let, .ident, .equal, .int_lit, .semi,
-        .k_let, .ident, .equal, .int_lit, .semi,
-        .k_let, .ident, .equal, .ident, .plus, .ident, .semi,
-        .r_brace, .semi,
+        .k_let,   .ident,   .equal, .k_fn,    .l_paren, .r_paren, .ident, .l_brace,
+        .k_let,   .ident,   .equal, .int_lit, .semi,    .k_let,   .ident, .equal,
+        .int_lit, .semi,    .k_let, .ident,   .equal,   .ident,   .plus,  .ident,
+        .semi,    .r_brace, .semi,
     });
 }
 
 test "fact-iter.fm" {
     try testLex(@embedFile("tests/fact-iter.fm"), &.{
-        .k_let, .ident, .equal, .k_fn, .l_paren, .ident, .colon, .ident, .r_paren, .ident, .l_brace,
-        .k_let, .k_mut, .ident, .colon, .ident, .equal, .int_lit, .semi,
-        .k_for,
-        .k_let, .k_mut, .ident, .equal, .int_lit, .semi,
-        .ident, .l_angle_equal, .ident, .semi,
-        .ident, .plus_equal, .int_lit,
-        .l_brace,
-        .ident, .asterisk_equal, .ident, .semi,
-        .r_brace,
-        .k_return, .ident, .semi,
-        .r_brace,
+        .k_let,   .ident, .equal,          .k_fn,  .l_paren, .ident,         .colon,    .ident, .r_paren, .ident,      .l_brace,
+        .k_let,   .k_mut, .ident,          .colon, .ident,   .equal,         .int_lit,  .semi,  .k_for,   .k_let,      .k_mut,
+        .ident,   .equal, .int_lit,        .semi,  .ident,   .l_angle_equal, .ident,    .semi,  .ident,   .plus_equal, .int_lit,
+        .l_brace, .ident, .asterisk_equal, .ident, .semi,    .r_brace,       .k_return, .ident, .semi,    .r_brace,
     });
 }

@@ -8,6 +8,7 @@ const parseFloat = @import("floatLiteral.zig").parseFloat;
 const Scope = @import("scope.zig").Scope;
 const interner = @import("interner.zig");
 const Interner = interner.Interner;
+const error_handler = @import("error_handler.zig");
 const InstList = @import("hir/InstList.zig");
 const Value = @import("value.zig").Value;
 const implicit_return = @import("hir/implicit_return.zig");
@@ -43,6 +44,7 @@ block_tape: std.ArrayListUnmanaged(InstList.LinkedNode),
 values: std.ArrayListUnmanaged(Value),
 interner: Interner,
 forward_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
+errors: std.ArrayListUnmanaged(error_handler.SourceError),
 
 pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -58,6 +60,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .values = .{},
         .interner = Interner.init(gpa),
         .forward_map = .{},
+        .errors = .{},
     };
 
     var module_scope = Scope.Module{}; // doesn't hold anything, just a toplevel sentinel
@@ -80,6 +83,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .extra_data = try hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
         .resolution_map = hirgen.forward_map,
+        .errors = try hirgen.errors.toOwnedSlice(gpa),
     };
 }
 
@@ -409,7 +413,13 @@ fn variable(b: *Block, scope: *Scope, node: Node.Index) !Ref {
     const ident_token = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_token);
     const id = try hg.interner.intern(ident_str);
-    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+    const var_scope = (try scope.resolveVar(id)) orelse {
+        try b.hg.errors.append(b.hg.gpa, .{
+            .tag = .invalid_identifer,
+            .token = ident_token,
+        });
+        return error.InvalidIdentifier;
+    };
 
     // for constants, the ref points to the instruction that returned its value
     // so we don't have to do anything else
@@ -443,15 +453,20 @@ fn variable(b: *Block, scope: *Scope, node: Node.Index) !Ref {
 
 fn ty(b: *Block, scope: *Scope, node: Node.Index) !Hir.Ref {
     const hg = b.hg;
-    const nodes = hg.tree.nodes;
-    const ident_index = nodes.items(.main_token)[node];
+    const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index);
 
     if (builtin_types.get(ident_str)) |ref| {
         return ref;
     } else {
         const id = try hg.interner.intern(ident_str);
-        const ty_scope = try scope.resolveType(ident_index) orelse return error.InvalidIdentifier;
+        const ty_scope = (try scope.resolveType(ident_index)) orelse {
+            try hg.errors.append(b.hg.gpa, .{
+                .tag = .invalid_identifer,
+                .token = ident_index,
+            });
+            return error.InvalidIdentifier;
+        };
         switch (ty_scope.tag) {
             .local_type => {
                 const local_type = ty_scope.cast(Scope.LocalType).?;
@@ -667,7 +682,7 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     var s: *Scope = scope;
     const stmts = hg.tree.extra_data[data.stmts_start..data.stmts_end];
     for (stmts) |stmt| {
-        const ref = try statement(b, s, stmt);
+        const ref = statement(b, s, stmt) catch continue;
         switch (b.hg.tree.data(stmt)) {
             .const_decl, .const_decl_attr => {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
@@ -919,8 +934,14 @@ fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
     return addBlockInline(b, &block_inline, node);
 }
 
-fn assignLocalPtr(b: *Block, scope: *Scope, node: Node.Index, id: Node.Index, val: Ref) !Hir.Index {
-    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+fn assignLocalPtr(b: *Block, scope: *Scope, node: Node.Index, id: u32, val: Ref) !Hir.Index {
+    const var_scope = (try scope.resolveVar(id)) orelse {
+        try b.hg.errors.append(b.hg.gpa, .{
+            .tag = .invalid_identifer,
+            .token = b.hg.tree.mainToken(node),
+        });
+        return error.InvalidIdentifier;
+    };
     const local_ptr = var_scope.cast(Scope.LocalPtr).?;
     const addr = refToIndex(local_ptr.ptr).?;
     return addStore(b, addr, val, node);
@@ -928,7 +949,13 @@ fn assignLocalPtr(b: *Block, scope: *Scope, node: Node.Index, id: Node.Index, va
 
 fn assignNamespace(b: *Block, scope: *Scope, node: Node.Index, id: Node.Index, val: Ref) !Hir.Index {
     const hg = b.hg;
-    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+    const var_scope = (try scope.resolveVar(id)) orelse {
+        try hg.errors.append(b.hg.gpa, .{
+            .tag = .invalid_identifer,
+            .token = hg.tree.mainToken(node),
+        });
+        return error.InvalidIdentifier;
+    };
     const namespace = var_scope.cast(Scope.Namespace).?;
     const decl = namespace.decls.get(id).?;
 
@@ -948,10 +975,22 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index);
     const id = try hg.interner.intern(ident_str);
-    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+    const var_scope = (try scope.resolveVar(id)) orelse {
+        try hg.errors.append(b.hg.gpa, .{
+            .tag = .invalid_identifer,
+            .token = ident_index,
+        });
+        return error.InvalidIdentifier;
+    };
 
     switch (var_scope.tag) {
-        .local_val => return error.ConstAssign,
+        .local_val => {
+            try hg.errors.append(hg.gpa, .{
+                .tag = .const_assign,
+                .token = ident_index,
+            });
+            return error.ConstAssign;
+        },
         .local_ptr => {
             const valref = try expr(b, scope, assign.val);
             return assignLocalPtr(b, scope, node, id, valref);
@@ -976,9 +1015,21 @@ fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index);
     const id = try hg.interner.intern(ident_str);
-    const var_scope = try scope.resolveVar(id) orelse return error.InvalidIdentifier;
+    const var_scope = (try scope.resolveVar(id)) orelse {
+        try hg.errors.append(b.hg.gpa, .{
+            .tag = .invalid_identifer,
+            .token = ident_index,
+        });
+        return error.InvalidIdentifier;
+    };
     switch (var_scope.tag) {
-        .local_val => return error.ConstAssign,
+        .local_val => {
+            try hg.errors.append(hg.gpa, .{
+                .tag = .const_assign,
+                .token = ident_index,
+            });
+            return error.ConstAssign;
+        },
         .local_ptr => {
             const val = try variable(b, scope, node);
             const op = hg.tree.mainToken(node) + 1;

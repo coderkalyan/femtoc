@@ -1,5 +1,6 @@
 const std = @import("std");
 const lex = @import("lex.zig");
+const error_handler = @import("error_handler.zig");
 
 const Lexer = lex.Lexer;
 const Token = lex.Token;
@@ -8,13 +9,6 @@ pub const Ast = @This();
 pub const TokenIndex = u32;
 pub const ByteOffset = u32;
 
-pub const Error = struct {
-    tag: Tag,
-    token: TokenIndex,
-
-    pub const Tag = enum {};
-};
-
 // represents the entire, immutable, AST of a source file, once parsed.
 // in-progess mutable parsing data is stored in the `Parser` struct in parser.zig
 // the AST owns the source, token list, node list, and node extra_data list
@@ -22,7 +16,7 @@ source: [:0]const u8,
 tokens: TokenList.Slice,
 nodes: std.MultiArrayList(Node).Slice,
 extra_data: []Node.Index,
-errors: []const Error,
+errors: []const error_handler.SourceError,
 
 // we store an array of token tags and start locations
 // to reference during parsing. AST nodes don't store tokens

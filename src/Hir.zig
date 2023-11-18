@@ -3,6 +3,7 @@ const Interner = @import("interner.zig").Interner;
 const Ast = @import("Ast.zig");
 const TokenIndex = Ast.TokenIndex;
 const Type = @import("typing.zig").Type;
+const error_handler = @import("error_handler.zig");
 const Allocator = std.mem.Allocator;
 const InstList = @import("hir/InstList.zig");
 
@@ -15,6 +16,7 @@ block_tape: []InstList.LinkedNode,
 extra_data: []const u32,
 interner: Interner,
 resolution_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
+errors: []error_handler.SourceError,
 
 pub const Inst = struct {
     tag: Tag,
