@@ -65,8 +65,7 @@ pub fn compile(gpa: Allocator, hir: *const Hir, config: *Driver.Configuration) !
         .backend = &backend,
     };
 
-    const module_index: u32 = @intCast(hir.insts.len - 1);
-    try comp.compileModule(module_index);
+    try comp.compileModule(hir.module_index);
 
     if (config.verbose_llvm_ir) backend.module.print();
     try backend.module.verify();
@@ -106,6 +105,7 @@ fn compileModule(comp: *Compilation, module_inst: Hir.Index) !void {
 
     const ids = hir.extra_data[pl + 1 .. pl + 1 + module.len];
     const insts = hir.extra_data[pl + 1 + module.len .. pl + 1 + 2 * module.len];
+    _ = ids;
     // for (insts) |inst| {
     //     const index = try comp.allocateDecl();
     //     try comp.globals.put(comp.gpa, inst, index);
@@ -116,38 +116,41 @@ fn compileModule(comp: *Compilation, module_inst: Hir.Index) !void {
         var arena = std.heap.ArenaAllocator.init(comp.gpa);
         defer arena.deinit();
 
-        var analyzer = Analyzer{
-            .comp = comp,
-            .gpa = comp.gpa,
-            .arena = arena.allocator(),
-            .map = .{},
-            .hir = comp.hir,
-            .instructions = .{},
-            .extra = .{},
-            .values = .{},
-            .scratch = .{},
-            .errors = .{},
-            .interner = &comp.hir.interner,
-        };
-        var block = Analyzer.Block{
-            .parent = null,
-            .analyzer = &analyzer,
-            .instructions = .{},
-        };
+        _ = inst;
+        _ = i;
+
+        // var analyzer = Analyzer{
+        //     .comp = comp,
+        //     .gpa = comp.gpa,
+        //     .arena = arena.allocator(),
+        //     .map = .{},
+        //     .hir = comp.hir,
+        //     .instructions = .{},
+        //     .extra = .{},
+        //     .values = .{},
+        //     .scratch = .{},
+        //     .errors = .{},
+        //     .interner = &comp.hir.interner,
+        // };
+        // var block = Analyzer.Block{
+        //     .parent = null,
+        //     .analyzer = &analyzer,
+        //     .instructions = .{},
+        // };
 
         // const decl_index = comp.globals.get(inst).?;
-        const decl_ref = try analyzer.analyzeInlineBlock(&block, inst);
-        const decl_inst = Mir.refToIndex(decl_ref).?;
-        const decl_index = analyzer.instructions.items(.data)[decl_inst].pl;
-        const decl_ptr = comp.declPtr(decl_index);
+        // const decl_ref = try analyzer.analyzeInlineBlock(&block, inst);
+        // const decl_inst = Mir.refToIndex(decl_ref).?;
+        // const decl_index = analyzer.instructions.items(.data)[decl_inst].pl;
+        // const decl_ptr = comp.declPtr(decl_index);
         // try comp.globals.put(comp.gpa, inst, decl_index);
 
         // TODO: move this to a rename decl instruction
-        const member_str = try hir.interner.get(ids[i]);
+        // const member_str = try hir.interner.get(ids[i]);
         // TODO: figure out memory lifetimes for previous and current name
-        const name = try std.mem.joinZ(comp.gpa, "", &.{member_str});
-        decl_ptr.name = name.ptr;
-        try comp.backend.updateDecl(decl_index);
+        // const name = try std.mem.joinZ(comp.gpa, "", &.{member_str});
+        // decl_ptr.name = name.ptr;
+        // try comp.backend.updateDecl(decl_index);
     }
 }
 

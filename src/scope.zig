@@ -4,6 +4,7 @@ const HirGen = @import("HirGen.zig");
 const Ast = @import("Ast.zig");
 const Interner = @import("interner.zig").Interner;
 const InstList = @import("hir/InstList.zig");
+const BlockEditor = @import("hir/BlockEditor.zig");
 
 const Node = Ast.Node;
 const Inst = Hir.Inst;
@@ -49,9 +50,8 @@ pub const Scope = struct {
         base: Scope = .{ .tag = base_tag },
 
         parent: *Scope,
-        // decls: std.AutoHashMapUnmanaged(u32, Node.Index),
-        decls: std.AutoHashMapUnmanaged(u32, u32),
-        types: std.AutoHashMapUnmanaged(u32, Node.Index),
+        decls: std.AutoHashMapUnmanaged(u32, void),
+        types: std.AutoHashMapUnmanaged(u32, Node.Index), // TODO
 
         pub fn init(s: *Scope) @This() {
             return .{
@@ -67,22 +67,26 @@ pub const Scope = struct {
         base: Scope = .{ .tag = base_tag },
 
         parent: *Scope,
-        // instructions: std.ArrayListUnmanaged(u32),
-        instructions: InstList,
-        scratch: std.ArrayListUnmanaged(u32),
         hg: *HirGen,
+        editor: BlockEditor,
 
-        force_comptime: bool,
         return_ty: Hir.Ref,
 
-        pub fn init(b: *Block, s: *Scope) !Block {
+        pub fn init(b: *BlockEditor, s: *Scope) !Block {
             return .{
                 .parent = s,
-                .instructions = try InstList.init(b.hg.gpa, &b.hg.block_tape),
-                .scratch = .{},
+                .editor = try BlockEditor.init(b.hg),
                 .hg = b.hg,
-                .force_comptime = b.force_comptime,
-                .return_ty = b.return_ty,
+                .return_ty = undefined,
+            };
+        }
+
+        pub fn initInline(hg: *HirGen, s: *Scope) !Block {
+            return .{
+                .parent = s,
+                .editor = try BlockEditor.init(hg),
+                .hg = hg,
+                .return_ty = undefined,
             };
         }
 
@@ -92,13 +96,7 @@ pub const Scope = struct {
         }
 
         pub fn addInstUnlinked(b: *Block, inst: Inst) !Hir.Index {
-            const gpa = b.hg.gpa;
-            const array_index: Hir.Index = @intCast(b.hg.instructions.len);
-
-            try b.hg.instructions.ensureUnusedCapacity(gpa, 1);
-            b.hg.instructions.appendAssumeCapacity(inst);
-
-            return array_index;
+            return b.hg.addInstUnlinked(inst);
         }
 
         pub fn addInst(b: *Block, inst: Inst) !Hir.Index {
@@ -289,6 +287,24 @@ pub const Scope = struct {
                     if (block.k == .loop) return s;
                     s = block.parent;
                 },
+                .local_val => s = s.cast(LocalVal).?.parent,
+                .local_ptr => s = s.cast(LocalPtr).?.parent,
+                .local_type => s = s.cast(LocalPtr).?.parent,
+            }
+        }
+
+        return null;
+    }
+
+    pub fn resolveBlock(inner: *Scope) ?*Block {
+        var s: *Scope = inner;
+
+        while (true) {
+            switch (s.tag) {
+                .module => break,
+                .namespace => s = s.cast(Namespace).?.parent,
+                .block => return s.cast(Block).?,
+                .body => s = s.cast(Body).?.parent,
                 .local_val => s = s.cast(LocalVal).?.parent,
                 .local_ptr => s = s.cast(LocalPtr).?.parent,
                 .local_type => s = s.cast(LocalPtr).?.parent,

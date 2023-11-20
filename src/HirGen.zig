@@ -11,7 +11,9 @@ const Interner = interner.Interner;
 const error_handler = @import("error_handler.zig");
 const InstList = @import("hir/InstList.zig");
 const Value = @import("value.zig").Value;
+const Type = @import("typing.zig").Type;
 const implicit_return = @import("hir/implicit_return.zig");
+const BlockEditor = @import("hir/BlockEditor.zig");
 
 const Allocator = std.mem.Allocator;
 const Inst = Hir.Inst;
@@ -38,12 +40,13 @@ const Error = GenError || interner.Error || Allocator.Error || @import("integerL
 gpa: Allocator,
 arena: Allocator,
 tree: *const Ast,
-instructions: std.MultiArrayList(Inst),
+insts: std.MultiArrayList(Inst),
 extra: std.ArrayListUnmanaged(u32),
 block_tape: std.ArrayListUnmanaged(InstList.LinkedNode),
 values: std.ArrayListUnmanaged(Value),
+types: std.ArrayListUnmanaged(Type),
+untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 interner: Interner,
-forward_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
 errors: std.ArrayListUnmanaged(error_handler.SourceError),
 
 pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
@@ -54,35 +57,28 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .gpa = gpa,
         .arena = arena.allocator(),
         .tree = tree,
-        .instructions = .{},
+        .insts = .{},
         .extra = .{},
         .block_tape = .{},
         .values = .{},
+        .types = .{},
+        .untyped_decls = .{},
         .interner = Interner.init(gpa),
-        .forward_map = .{},
         .errors = .{},
-    };
-
-    var module_scope = Scope.Module{}; // doesn't hold anything, just a toplevel sentinel
-    var b = Block{
-        .parent = &module_scope.base,
-        .instructions = try InstList.init(gpa, &hirgen.block_tape),
-        .scratch = .{},
-        .hg = &hirgen,
-        .force_comptime = true,
-        .return_ty = @enumFromInt(0),
     };
 
     // post order format guarantees that the module node will be the last
     const module_node: u32 = @intCast(tree.nodes.len - 1);
-    try module(&b, &b.base, module_node);
+    const module_index = try module(&hirgen, module_node);
+    try implicit_return.executePass(&hirgen);
 
     return Hir{
-        .insts = hirgen.instructions.toOwnedSlice(),
+        .insts = hirgen.insts.toOwnedSlice(),
+        .module_index = module_index,
         .block_tape = try hirgen.block_tape.toOwnedSlice(gpa),
         .extra_data = try hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
-        .resolution_map = hirgen.forward_map,
+        .untyped_decls = try hirgen.untyped_decls.clone(gpa),
         .errors = try hirgen.errors.toOwnedSlice(gpa),
     };
 }
@@ -102,7 +98,7 @@ const builtin_types = std.ComptimeStringMap(Hir.Ref, .{
     .{ "void", .void_ty },
 });
 
-fn addExtra(hg: *HirGen, extra: anytype) !Hir.ExtraIndex {
+pub fn addExtra(hg: *HirGen, extra: anytype) !Hir.ExtraIndex {
     const fields = std.meta.fields(@TypeOf(extra));
     try hg.extra.ensureUnusedCapacity(hg.gpa, fields.len);
     const len: u32 = @intCast(hg.extra.items.len);
@@ -116,269 +112,55 @@ fn addExtra(hg: *HirGen, extra: anytype) !Hir.ExtraIndex {
     return len;
 }
 
-fn addInt(b: *Block, int: u64) !Hir.Index {
-    return b.addInst(.{
-        .tag = .int,
-        .data = .{ .int = int },
-    });
+pub fn updateExtra(hg: *HirGen, index: Hir.ExtraIndex, extra: anytype) void {
+    const fields = std.meta.fields(@TypeOf(extra));
+    inline for (fields, 0..) |field, offset| {
+        switch (field.type) {
+            u32 => hg.extra.items[index + offset] = @field(extra, field.name),
+            Hir.Ref => hg.extra.items[index + offset] = @intFromEnum(@field(extra, field.name)),
+            else => unreachable,
+        }
+    }
 }
 
-fn addFloat(b: *Block, float: f64) !Hir.Index {
-    return b.addInst(.{
-        .tag = .float,
-        .data = .{ .float = float },
-    });
+pub fn extraData(hg: *HirGen, index: Hir.ExtraIndex, comptime T: type) T {
+    const fields = std.meta.fields(T);
+    var result: T = undefined;
+    inline for (fields, 0..) |field, i| {
+        @field(result, field.name) = switch (field.type) {
+            u32 => hg.extra.items[index + i],
+            Ref => @enumFromInt(hg.extra.items[index + i]),
+            else => unreachable,
+        };
+    }
+    return result;
 }
 
-fn addBinary(b: *Block, l: Hir.Ref, r: Hir.Ref, tag: Inst.Tag, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Binary{
-        .lref = l,
-        .rref = r,
-    });
+pub inline fn addInstUnlinked(hg: *HirGen, inst: Inst) !Hir.Index {
+    const array_index: Hir.Index = @intCast(hg.insts.len);
+    try hg.insts.append(hg.gpa, inst);
 
-    return b.addInst(.{
-        .tag = tag,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
+    return array_index;
 }
 
-fn addBlock(b: *Block, data_block: *Block, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Block{
-        .len = @intCast(data_block.instructions.len),
-        .head = data_block.instructions.head,
+fn addModule(hg: *HirGen, node: Node.Index) !Hir.Index {
+    const decls = &hg.untyped_decls;
+    const pl = try hg.addExtra(Inst.Module{
+        .len = decls.size,
     });
 
-    return b.addInst(.{
-        .tag = .block,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
+    var it = decls.iterator();
+    while (it.next()) |entry| {
+        try hg.extra.appendSlice(hg.gpa, &.{ entry.key_ptr.*, entry.value_ptr.* });
+    }
 
-fn addBlockUnlinked(b: *Block, data_block: *Block, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Block{
-        .len = @intCast(data_block.instructions.len),
-        .head = data_block.instructions.head,
-    });
-
-    return b.addInstUnlinked(.{
-        .tag = .block,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addBlockInline(b: *Block, inline_block: *Block, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Block{
-        .len = @intCast(inline_block.instructions.len),
-        .head = inline_block.instructions.head,
-    });
-
-    return b.addInst(.{
-        .tag = .block_inline,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addCall(b: *Block, addr: Hir.Ref, args: []u32, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Call{
-        .addr = addr,
-        .args_len = @intCast(args.len),
-    });
-    try b.hg.extra.appendSlice(b.hg.gpa, args);
-
-    return b.addInst(.{
-        .tag = .call,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addFnDecl(b: *Block, params: []u32, return_type: Hir.Ref, body: Hir.Index, hash: u64, node: Node.Index) !Hir.Index {
-    const params_start: u32 = @intCast(b.hg.extra.items.len);
-    try b.hg.extra.appendSlice(b.hg.gpa, params);
-    const params_end: u32 = @intCast(b.hg.extra.items.len);
-
-    const pl = try b.hg.addExtra(Inst.FnDecl{
-        .params_start = params_start,
-        .params_end = params_end,
-        .return_type = return_type,
-        .body = body,
-        .hash_lower = @truncate(hash),
-        .hash_upper = @truncate(hash >> 32),
-    });
-
-    return b.addInst(.{
-        .tag = .fn_decl,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addParam(b: *Block, name: u32, ty_ref: Hir.Ref, node: Node.Index) !Hir.Index {
-    const hg = b.hg;
-    const pl = try hg.addExtra(Inst.Param{
-        .name = name,
-        .ty = ty_ref,
-    });
-
-    const index: u32 = @intCast(hg.instructions.len);
-    try hg.instructions.append(hg.gpa, .{
-        .tag = .param,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-    return index;
-}
-
-fn addDebugValue(b: *Block, val: Hir.Ref, name: u32, node: Node.Index) !Hir.Index {
-    // TODO: enum and member naming
-    const pl = try b.hg.addExtra(Inst.DebugValue{
-        .name = name,
-        .value = val,
-    });
-
-    return b.addInst(.{
-        .tag = .dbg_value,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addPush(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .push,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-fn addLoad(b: *Block, addr: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .load,
-        .data = .{ .pl_node = .{ .pl = addr, .node = node } },
-    });
-}
-
-fn addLoadInline(b: *Block, decl: u32, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .load_inline,
-        .data = .{ .pl_node = .{ .pl = decl, .node = node } },
-    });
-}
-
-fn addStore(b: *Block, addr: Hir.Index, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Store{
-        .addr = addr,
-        .val = val,
-    });
-
-    return b.addInst(.{
-        .tag = .store,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addBranchSingle(b: *Block, cond: Hir.Ref, exec: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.BranchSingle{
-        .condition = cond,
-        .exec_true = exec,
-    });
-
-    return b.addInst(.{
-        .tag = .branch_single,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addBranchDouble(b: *Block, cond: Hir.Ref, x: Hir.Index, y: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.BranchDouble{
-        .condition = cond,
-        .exec_true = x,
-        .exec_false = y,
-    });
-
-    return b.addInst(.{
-        .tag = .branch_double,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addRetNode(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .ret_node,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-fn addRetImplicit(b: *Block, val: Hir.Ref, tok: Ast.TokenIndex) !Hir.Index {
-    return b.addInst(.{
-        .tag = .ret_implicit,
-        .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
-    });
-}
-
-fn addYieldImplicit(b: *Block, val: Hir.Ref, tok: Ast.TokenIndex) !Hir.Index {
-    return b.addInst(.{
-        .tag = .yield_implicit,
-        .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
-    });
-}
-
-fn addYieldInline(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .yield_inline,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-fn addLoop(b: *Block, cond: Hir.Index, body: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Loop{
-        .condition = cond,
-        .body = body,
-    });
-
-    return b.addInst(.{
-        .tag = .loop,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-fn addBreak(b: *Block, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .loop_break,
-        .data = .{ .node = node },
-    });
-}
-
-fn addDeclConst(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .decl_const,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-fn addDeclMut(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .decl_mut,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-fn addDeclExport(b: *Block, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .decl_export,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-fn addModule(b: *Block, members: []u32, node: Node.Index) !Hir.Index {
-    std.debug.assert(members.len % 2 == 0);
-    const pl = try b.hg.addExtra(Inst.Module{
-        .len = @intCast(members.len / 2),
-    });
-    try b.hg.extra.appendSlice(b.hg.gpa, members);
-
-    return b.addInst(.{
+    return hg.addInstUnlinked(.{
         .tag = .module,
         .data = .{ .pl_node = .{ .pl = pl, .node = node } },
     });
 }
 
-fn integerLiteral(b: *Block, node: Node.Index) !Ref {
+fn integerLiteral(b: *BlockEditor, node: Node.Index) !Ref {
     const int_token = b.hg.tree.mainToken(node);
     const int_str = b.hg.tree.tokenString(int_token);
     const int = try parseInt(int_str);
@@ -386,19 +168,19 @@ fn integerLiteral(b: *Block, node: Node.Index) !Ref {
     return switch (int) {
         0 => .zero_val,
         1 => .one_val,
-        else => indexToRef(try addInt(b, int)),
+        else => indexToRef(try b.addInt(int)),
     };
 }
 
-fn floatLiteral(b: *Block, node: Node.Index) !Ref {
+fn floatLiteral(b: *BlockEditor, node: Node.Index) !Ref {
     const float_token = b.hg.tree.mainToken(node);
     const float_str = b.hg.tree.tokenString(float_token);
     const float = try parseFloat(float_str);
 
-    return indexToRef(try addFloat(b, float));
+    return indexToRef(try b.addFloat(float));
 }
 
-fn boolLiteral(b: *Block, node: Node.Index) Ref {
+fn boolLiteral(b: *BlockEditor, node: Node.Index) Ref {
     const bool_token = b.hg.tree.mainToken(node);
 
     return switch (b.hg.tree.tokenTag(bool_token)) {
@@ -408,7 +190,7 @@ fn boolLiteral(b: *Block, node: Node.Index) Ref {
     };
 }
 
-fn variable(b: *Block, scope: *Scope, node: Node.Index) !Ref {
+fn variable(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
     const hg = b.hg;
     const ident_token = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_token);
@@ -433,25 +215,17 @@ fn variable(b: *Block, scope: *Scope, node: Node.Index) !Ref {
         .local_ptr => {
             const local_ptr = var_scope.cast(Scope.LocalPtr).?;
             const addr = refToIndex(local_ptr.ptr).?;
-            return indexToRef(try addLoad(b, addr, node));
+            return indexToRef(try b.addLoad(addr, node));
         },
         .namespace => {
-            const namespace = var_scope.cast(Scope.Namespace).?;
-            const decl = namespace.decls.get(id).?;
-            // TODO: load the declaration, don't return pointer
-            // have we already generated the instruction for this identifier?
-            if (hg.forward_map.get(decl)) |ref| {
-                return ref;
-            } else {
-                // nope, so just create a forward declaration
-                return indexToRef(try addLoadInline(b, decl, node));
-            }
+            return indexToRef(try b.addLoadGlobal(id, node));
         },
         else => unreachable,
     }
 }
 
-fn ty(b: *Block, scope: *Scope, node: Node.Index) !Hir.Ref {
+// TODO: this entire function is a mess and out of date
+fn ty(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Ref {
     const hg = b.hg;
     const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index);
@@ -473,22 +247,25 @@ fn ty(b: *Block, scope: *Scope, node: Node.Index) !Hir.Ref {
                 return local_type.ref;
             },
             .namespace => {
-                const namespace = ty_scope.cast(Scope.Namespace).?;
-                const decl = namespace.types.get(id).?;
-                // have we already generated the instruction for this identifier?
-                if (hg.forward_map.get(decl)) |ref| {
-                    return ref;
-                } else {
-                    // nope, so just create a forward declaration
-                    return indexToRef(try addLoadInline(b, decl, node));
-                }
+                _ = id;
+                unreachable;
+                // const namespace = ty_scope.cast(Scope.Namespace).?;
+                // const decl = namespace.types.get(id).?;
+                // // have we already generated the instruction for this identifier?
+                // if (hg.forward_map.get(decl)) |ref| {
+                //     return ref;
+                // } else {
+                //     // nope, so just create a forward declaration
+                //     unreachable;
+                //     // return indexToRef(try addLoadInline(b, decl, node));
+                // }
             },
             else => unreachable,
         }
     }
 }
 
-fn binaryRaw(b: *Block, node: Node.Index, op: Ast.TokenIndex, lref: Ref, rref: Ref) Error!Hir.Index {
+fn binaryRaw(b: *BlockEditor, node: Node.Index, op: Ast.TokenIndex, lref: Ref, rref: Ref) Error!Hir.Index {
     const tag: Inst.Tag = switch (b.hg.tree.tokenTag(op)) {
         .plus => .add,
         .plus_equal => .add,
@@ -509,7 +286,7 @@ fn binaryRaw(b: *Block, node: Node.Index, op: Ast.TokenIndex, lref: Ref, rref: R
         else => return Error.UnexpectedToken,
     };
 
-    return addBinary(b, lref, rref, tag, node);
+    return b.addBinary(lref, rref, tag, node);
 }
 
 // TODO: maybe try to get the AST to do this?
@@ -537,14 +314,14 @@ fn computeFunctionHash(tree: *const Ast, node: Node.Index, hash: []u8) void {
     hasher.final(hash);
 }
 
-fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn binary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const binary_expr = hg.tree.data(node).binary_expr;
     const operator_token = hg.tree.mainToken(node);
     return binaryRaw(b, node, operator_token, try expr(b, scope, binary_expr.left), try expr(b, scope, binary_expr.right));
 }
 
-fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const arena = hg.arena;
     const fn_decl = hg.tree.data(node).fn_decl;
@@ -563,7 +340,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const param_id = try hg.interner.intern(param_str);
 
         const ty_ref = try ty(b, scope, data.ty);
-        const param_index = try addParam(b, param_id, ty_ref, param);
+        const param_index = try b.addParam(param_id, ty_ref, param);
         b.scratch.appendAssumeCapacity(param_index);
 
         const ref = Inst.indexToRef(param_index);
@@ -572,27 +349,17 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         s = &param_scope.base;
     }
 
-    // var block_scope = try Block.init(b, s);
-    // defer block_scope.deinit();
-    // s = &block_scope.base;
-    // var body_scope = Scope.Body{ .parent = s, .fn_node = node };
-    // s = &body_scope.base;
     var body_scope = try Block.init(b, s);
     defer body_scope.deinit();
 
-    // const return_type = try ty(&block_scope, s, signature.return_ty);
-    // block_scope.return_ty = return_type;
-    // const body = try block(&block_scope, s, fn_decl.body);
-    // var hash: u64 = undefined;
-    // computeFunctionHash(hg.tree, node, std.mem.asBytes(&hash));
-
-    const return_type = try ty(&body_scope, &body_scope.base, signature.return_ty);
+    const return_type = try ty(&body_scope.editor, &body_scope.base, signature.return_ty);
     body_scope.return_ty = return_type;
-    const body = try block(&body_scope, &body_scope.base, fn_decl.body);
+    const body = try block(&body_scope.editor, &body_scope.base, fn_decl.body);
     var hash: u64 = undefined;
     computeFunctionHash(hg.tree, node, std.mem.asBytes(&hash));
 
     // unwind and free scope objects
+    // TODO: idk if this is working properly
     while (s != scope) {
         const parent = s.parent().?;
         arena.destroy(s);
@@ -600,10 +367,10 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     }
 
     const hir_params = b.scratch.items[scratch_top..];
-    return addFnDecl(b, hir_params, return_type, body, hash, node);
+    return b.addFnDecl(hir_params, return_type, body, hash, node);
 }
 
-fn expr(b: *Block, scope: *Scope, node: Node.Index) !Ref {
+fn expr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
     return switch (b.hg.tree.data(node)) {
         .integer_literal => integerLiteral(b, node),
         .float_literal => floatLiteral(b, node),
@@ -620,7 +387,7 @@ fn expr(b: *Block, scope: *Scope, node: Node.Index) !Ref {
 }
 
 // TODO: why do some of them not return?
-fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
+fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!?Ref {
     _ = try switch (b.hg.tree.data(node)) {
         .const_decl => return try constDecl(b, scope, node),
         .const_decl_attr => return try constDeclAttr(b, scope, node),
@@ -644,20 +411,20 @@ fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!?Ref {
     return null;
 }
 
-fn globalStatement(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
-    const data = b.hg.tree.data(node);
+fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const data = hg.tree.data(node);
     return try switch (data) {
-        .const_decl => globalConst(b, scope, node),
-        .const_decl_attr => return try globalConstAttr(b, scope, node),
-        .var_decl => globalVar(b, scope, node),
+        .const_decl => globalConst(hg, scope, node),
+        // .const_decl_attr => return try globalConstAttr(hg, scope, node),
+        .var_decl => globalVar(hg, scope, node),
         else => {
-            std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+            std.debug.print("Unexpected node: {}\n", .{hg.tree.data(node)});
             return GenError.NotImplemented;
         },
     };
 }
 
-fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const addr = try variable(b, scope, node);
     const call_expr = b.hg.tree.data(node).call_expr;
 
@@ -672,10 +439,10 @@ fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
     }
 
     const args = b.scratch.items[scratch_top..];
-    return addCall(b, addr, args, node);
+    return b.addCall(addr, args, node);
 }
 
-fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn block(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const data = hg.tree.data(node).block;
 
@@ -709,17 +476,10 @@ fn block(b: *Block, scope: *Scope, node: Node.Index) Error!Hir.Index {
         s = parent;
     }
 
-    // if ((scope.tag == .body) and !blockReturns(b)) {
-    // insert implicit return
-    // TODO: find the closing brace as token
-    //     _ = try addRetImplicit(b, Ref.void_val, undefined);
-    // }
-
-    // return addBlock(b, b.instructions.items, node);
-    return addBlockUnlinked(b, b, node);
+    return b.addBlockUnlinked(b, node);
 }
 
-fn coerce(b: *Block, s: *Scope, val: Ref, dest_ty: Ref, node: Node.Index) !Ref {
+fn coerce(b: *BlockEditor, s: *Scope, val: Ref, dest_ty: Ref, node: Node.Index) !Ref {
     _ = s;
     const coerce_data = try b.hg.addExtra(Inst.Coerce{
         .val = val,
@@ -738,7 +498,7 @@ fn coerce(b: *Block, s: *Scope, val: Ref, dest_ty: Ref, node: Node.Index) !Ref {
     return indexToRef(coerce_inst);
 }
 
-fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
+fn constDecl(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     // "initializes" constant variables
     // this doesn't actually create any instructions for declaring the constant
     // instead, the value to set the constant to is computed, and the resulting
@@ -752,7 +512,7 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
     const ref = try expr(b, s, const_decl.val);
-    _ = try addDebugValue(b, ref, id, node);
+    _ = try b.addDebugValue(ref, id, node);
 
     if (const_decl.ty == 0) {
         // untyped (inferred) declaration
@@ -763,7 +523,7 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     }
 }
 
-fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Ref {
+fn constDeclAttr(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     // "initializes" constant variables
     // this doesn't actually create any instructions for declaring the constant
     // instead, the value to set the constant to is computed, and the resulting
@@ -778,7 +538,7 @@ fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Ref {
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
     const ref = try expr(b, s, const_decl.val);
-    _ = try addDebugValue(b, ref, id, node);
+    _ = try b.addDebugValue(ref, id, node);
 
     if (metadata.ty == 0) {
         // untyped (inferred) declaration
@@ -789,7 +549,7 @@ fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Ref {
     }
 }
 
-fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
+fn varDecl(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     // "initializes" mutable variables
     // unlike constant declarations, mutable variables are stored in "memory"
     // so we have to create alloc instructions in addition to computing the value
@@ -798,56 +558,38 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Ref {
     const val = try expr(b, s, var_decl.val);
     if (var_decl.ty == 0) {
         // untyped (inferred) declaration
-        return indexToRef(try addPush(b, val, node));
+        return indexToRef(try b.addPush(val, node));
     } else {
         // type annotated declaration
         const dest_ty = try ty(b, s, var_decl.ty);
         const coerced = try coerce(b, s, val, dest_ty, node);
-        return indexToRef(try addPush(b, coerced, node));
+        return indexToRef(try b.addPush(coerced, node));
     }
 }
 
-fn globalConst(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
-    // "initializes" constant variables
-    // this doesn't actually create any instructions for declaring the constant
-    // instead, the value to set the constant to is computed, and the resulting
-    // instruction return value is stored in the scope such that future
-    // code that needs to access this constant can simply look up the identifier
-    // and refer to the associated value instruction
-    const hg = b.hg;
+fn globalConst(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
+    // global constants are read only variable that exist at runtime
+    // (they aren't inlined by the frontend, but can be by the backend)
+    // they are created by initializing a inline block that contains the
+    // constexpr instructions for computing the rvalue of the constant
     const const_decl = hg.tree.data(node).const_decl;
 
-    const ident_index = hg.tree.mainToken(node);
-    const ident_str = hg.tree.tokenString(ident_index + 1);
-    const id = try hg.interner.intern(ident_str);
-    _ = id;
+    var inline_block = try Block.initInline(hg, s);
+    defer inline_block.deinit();
+    const scope = &inline_block.base;
 
-    var block_inline = try Block.init(b, s);
-    const scope = &block_inline.base;
-    defer block_inline.deinit();
-
-    const ref = try expr(&block_inline, scope, const_decl.val);
-    const val = if (const_decl.ty == 0) ref: {
-        // untyped (inferred) declaration
-        break :ref ref;
-    } else ref: {
-        const dest_ty = try ty(&block_inline, scope, const_decl.ty);
-        break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
+    const rvalue_inner = try expr(&inline_block.editor, scope, const_decl.val);
+    const rvalue = if (const_decl.ty == 0) rvalue_inner else ref: {
+        // if this is typed, add a coerce
+        const dest_ty = try ty(&inline_block.editor, scope, const_decl.ty);
+        break :ref try coerce(&inline_block.editor, scope, rvalue_inner, dest_ty, node);
     };
 
-    const yield_val = val: {
-        if (refToIndex(val)) |index| {
-            if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
-        }
-
-        break :val indexToRef(try addDeclConst(&block_inline, val, node));
-    };
-
-    _ = try addYieldInline(&block_inline, yield_val, node);
-    return addBlockInline(b, &block_inline, node);
+    _ = try inline_block.editor.addYieldInline(rvalue, node);
+    return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
 }
 
-fn globalConstAttr(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
+fn globalConstAttr(b: *BlockEditor, s: *Scope, node: Node.Index) !Hir.Index {
     // "initializes" constant variables
     // this doesn't actually create any instructions for declaring the constant
     // instead, the value to set the constant to is computed, and the resulting
@@ -881,94 +623,59 @@ fn globalConstAttr(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
             if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
         }
 
-        break :val indexToRef(try addDeclConst(&block_inline, val, node));
+        break :val indexToRef(try block_inline.addDeclConst(val, node));
     };
 
     const attrs = hg.tree.extra_data[metadata.attrs_start..metadata.attrs_end];
     for (attrs) |attr| {
         switch (hg.tree.tokenTag(hg.tree.mainToken(attr))) {
-            .a_export => yield_val = indexToRef(try addDeclExport(&block_inline, yield_val, node)),
+            .a_export => yield_val = indexToRef(try block_inline.addDeclExport(yield_val, node)),
             else => unreachable,
         }
     }
 
-    _ = try addYieldInline(&block_inline, yield_val, node);
-    return addBlockInline(b, &block_inline, node);
+    _ = try block_inline.addYieldInline(yield_val, node);
+    return b.addBlockInline(&block_inline, node);
 }
 
-fn globalVar(b: *Block, s: *Scope, node: Node.Index) !Hir.Index {
+fn globalVar(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     // "initializes" mutable variables
     // unlike constant declarations, mutable variables are stored in "memory"
     // so we have to create alloc instructions in addition to computing the value
     // otherwise, this function operates like constDecl
-    const hg = b.hg;
     const var_decl = hg.tree.data(node).var_decl;
 
-    const ident_index = hg.tree.mainToken(node);
-    const ident_str = hg.tree.tokenString(ident_index + 2);
-    const id = try hg.interner.intern(ident_str);
-    _ = id;
+    var inline_block = try Block.initInline(hg, s);
+    defer inline_block.deinit();
+    const scope = &inline_block.base;
 
-    var block_inline = try Block.init(b, s);
-    const scope = &block_inline.base;
-    defer block_inline.deinit();
-
-    const ref = try expr(&block_inline, scope, var_decl.val);
-    const val = if (var_decl.ty == 0) ref: {
-        // untyped (inferred) declaration
-        break :ref ref;
-    } else ref: {
-        const dest_ty = try ty(&block_inline, scope, var_decl.ty);
-        break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
+    const rvalue_inner = try expr(&inline_block.editor, scope, var_decl.val);
+    const rvalue = if (var_decl.ty == 0) rvalue_inner else ref: {
+        // if this is typed, add a coerce
+        const dest_ty = try ty(&inline_block.editor, scope, var_decl.ty);
+        break :ref try coerce(&inline_block.editor, scope, rvalue_inner, dest_ty, node);
     };
 
-    const yield_val = val: {
-        if (refToIndex(val)) |index| {
-            if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
-        }
-
-        break :val indexToRef(try addDeclMut(&block_inline, val, node));
-    };
-
-    _ = try addYieldInline(&block_inline, yield_val, node);
-    return addBlockInline(b, &block_inline, node);
+    const mut = try inline_block.editor.addPush(rvalue, node);
+    _ = try inline_block.editor.addYieldInline(indexToRef(mut), node);
+    return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
 }
 
-fn assignLocalPtr(b: *Block, scope: *Scope, node: Node.Index, id: u32, val: Ref) !Hir.Index {
-    const var_scope = (try scope.resolveVar(id)) orelse {
-        try b.hg.errors.append(b.hg.gpa, .{
-            .tag = .invalid_identifer,
-            .token = b.hg.tree.mainToken(node),
-        });
-        return error.InvalidIdentifier;
-    };
+fn assignLocalPtr(b: *BlockEditor, scope: *Scope, node: Node.Index, id: u32, val: Ref) !Hir.Index {
+    const var_scope = (try scope.resolveVar(id)).?;
     const local_ptr = var_scope.cast(Scope.LocalPtr).?;
     const addr = refToIndex(local_ptr.ptr).?;
-    return addStore(b, addr, val, node);
+
+    return b.addStore(addr, val, node);
 }
 
-fn assignNamespace(b: *Block, scope: *Scope, node: Node.Index, id: Node.Index, val: Ref) !Hir.Index {
-    const hg = b.hg;
-    const var_scope = (try scope.resolveVar(id)) orelse {
-        try hg.errors.append(b.hg.gpa, .{
-            .tag = .invalid_identifer,
-            .token = hg.tree.mainToken(node),
-        });
-        return error.InvalidIdentifier;
-    };
-    const namespace = var_scope.cast(Scope.Namespace).?;
-    const decl = namespace.decls.get(id).?;
-
-    if (hg.forward_map.get(decl)) |ref| {
-        const addr = refToIndex(ref).?;
-        return addStore(b, addr, val, node);
-    } else {
-        const addr = try addLoadInline(b, decl, node);
-        return addStore(b, addr, val, node);
-    }
+fn assignNamespace(b: *BlockEditor, scope: *Scope, node: Node.Index, id: Node.Index, val: Ref) !Hir.Index {
+    _ = scope;
+    const addr = try b.addLoadGlobal(id, node);
+    return b.addStore(addr, val, node);
 }
 
-fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const assign = hg.tree.data(node).assign_simple;
 
@@ -1003,12 +710,12 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     }
 }
 
-fn branchCondition(b: *Block, scope: *Scope, node: Node.Index) !Ref {
+fn branchCondition(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
     const ref = try expr(b, scope, node);
     return coerce(b, scope, ref, Ref.bool_ty, node);
 }
 
-fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn assignBinary(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const assign = hg.tree.data(node).assign_binary;
 
@@ -1046,18 +753,18 @@ fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     }
 }
 
-fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn ifSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_simple = b.hg.tree.data(node).if_simple;
     var block_scope = try Block.init(b, scope);
     defer block_scope.deinit();
     const s = &block_scope.base;
 
     const condition = try branchCondition(b, scope, if_simple.condition);
-    const exec = try block(&block_scope, s, if_simple.exec_true);
-    return addBranchSingle(b, condition, exec, node);
+    const exec = try block(&block_scope.editor, s, if_simple.exec_true);
+    return b.addBranchSingle(condition, exec, node);
 }
 
-fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn ifElse(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_else = b.hg.tree.data(node).if_else;
 
     const condition = try branchCondition(b, scope, if_else.condition);
@@ -1065,17 +772,17 @@ fn ifElse(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const exec_true = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
-        break :block try block(&block_scope, &block_scope.base, exec.exec_true);
+        break :block try block(&block_scope.editor, &block_scope.base, exec.exec_true);
     };
     const exec_false = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
-        break :block try block(&block_scope, &block_scope.base, exec.exec_false);
+        break :block try block(&block_scope.editor, &block_scope.base, exec.exec_false);
     };
-    return addBranchDouble(b, condition, exec_true, exec_false, node);
+    return b.addBranchDouble(condition, exec_true, exec_false, node);
 }
 
-fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn ifChain(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_chain = b.hg.tree.data(node).if_chain;
 
     const condition = try branchCondition(b, scope, if_chain.condition);
@@ -1083,80 +790,75 @@ fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const exec_true = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
-        break :block try block(&block_scope, &block_scope.base, chain.exec_true);
+        break :block try block(&block_scope.editor, &block_scope.base, chain.exec_true);
     };
     const next = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
         _ = switch (b.hg.tree.data(chain.next)) {
-            .if_simple => try ifSimple(&block_scope, &block_scope.base, chain.next),
-            .if_else => try ifElse(&block_scope, &block_scope.base, chain.next),
+            .if_simple => try ifSimple(&block_scope.editor, &block_scope.base, chain.next),
+            .if_else => try ifElse(&block_scope.editor, &block_scope.base, chain.next),
             else => unreachable,
         };
 
-        // TODO: another regression that needs to be tested
-        // break :block try addBlock(&block_scope, block_scope.instructions.items, node);
-        break :block try addBlockUnlinked(b, &block_scope, node);
+        break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
 
-    return addBranchDouble(b, condition, exec_true, next, node);
+    return b.addBranchDouble(condition, exec_true, next, node);
 }
 
-fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn returnStmt(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const return_val = b.hg.tree.data(node).return_val;
-
-    const operand = if (return_val.val == 0) op: {
-        break :op Ref.void_val;
-    } else op: {
+    const operand = if (return_val.val == 0) Ref.void_val else op: {
         const ref = try expr(b, scope, return_val.val);
-        break :op try coerce(b, scope, ref, b.return_ty, node);
+        const bl = scope.resolveBlock().?;
+        break :op try coerce(b, scope, ref, bl.return_ty, node);
     };
-    return addRetNode(b, operand, node);
+
+    return b.addRetNode(operand, node);
 }
 
-fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn loopForever(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const loop_forever = b.hg.tree.data(node).loop_forever;
     var loop_scope = try Block.init(b, scope);
     defer loop_scope.deinit();
-    const body = try block(&loop_scope, &loop_scope.base, loop_forever.body);
+    const body = try block(&loop_scope.editor, &loop_scope.base, loop_forever.body);
 
     const condition = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
 
         // TODO: should be implicit not node
-        const condition = try coerce(&block_scope, scope, Ref.btrue_val, Ref.bool_ty, node);
+        const condition = try coerce(&block_scope.editor, scope, Ref.btrue_val, Ref.bool_ty, node);
         const index = refToIndex(condition).?;
-        // _ = try addYieldImplicit(&block_scope, condition, undefined); // TODO: specify token
-        // break :block try addBlock(&block_scope, block_scope.instructions.items, node);
-        // try b.instructions.linkInst(index);
         break :block index;
     };
 
-    return addLoop(b, condition, body, node);
+    return b.addLoop(condition, body, node);
 }
 
-fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn loopConditional(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const loop_conditional = b.hg.tree.data(node).loop_conditional;
 
     const condition = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
-        // TODO: coerce this to bool, waiting for test infra
-        const condition = try expr(&block_scope, &block_scope.base, loop_conditional.condition);
-        _ = try addYieldImplicit(&block_scope, condition, undefined);
-        // break :block try addBlock(&block_scope, block_scope.instructions.items, node);
-        break :block try addBlockUnlinked(b, &block_scope, node);
+        const s = &block_scope.base;
+
+        const condition_inner = try expr(&block_scope.editor, s, loop_conditional.condition);
+        const condition = try coerce(&block_scope.editor, s, condition_inner, Ref.bool_ty, node);
+        _ = try block_scope.editor.addYieldImplicit(condition, node);
+        break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
 
     var loop_scope = try Block.init(b, scope);
     defer loop_scope.deinit();
-    const body = try block(&loop_scope, &loop_scope.base, loop_conditional.body);
+    const body = try block(&loop_scope.editor, &loop_scope.base, loop_conditional.body);
 
-    return addLoop(b, condition, body, node);
+    return b.addLoop(condition, body, node);
 }
 
-fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn loopRange(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const loop_range = hg.tree.data(node).loop_range;
     const signature = hg.tree.extraData(loop_range.signature, Node.RangeSignature);
@@ -1171,10 +873,12 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const condition = block: {
         var block_scope = try Block.init(b, s);
         defer block_scope.deinit();
-        const condition = try expr(&block_scope, &block_scope.base, signature.condition);
-        _ = try addYieldImplicit(&block_scope, condition, undefined);
-        // break :block try addBlock(&block_scope, block_scope.instructions.items, node);
-        break :block try addBlockUnlinked(b, &block_scope, node);
+        const bs = &block_scope.base;
+
+        const condition_inner = try expr(&block_scope.editor, bs, signature.condition);
+        const condition = try coerce(&block_scope.editor, bs, condition_inner, Ref.bool_ty, node);
+        _ = try block_scope.editor.addYieldImplicit(condition, undefined);
+        break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
 
     // we have a block (loop outer body) that contains the afterthought
@@ -1182,38 +886,46 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
     const body = body: {
         var block_scope = try Block.init(b, s);
         defer block_scope.deinit();
-        var body_scope = try Block.init(&block_scope, &block_scope.base);
+        var body_scope = try Block.init(&block_scope.editor, &block_scope.base);
         defer body_scope.deinit();
-        const index = try block(&body_scope, &body_scope.base, loop_range.body);
+        const index = try block(&body_scope.editor, &body_scope.base, loop_range.body);
         _ = index;
         // try block_scope.instructions.append(hg.gpa, index);
         // TODO: figure out why this is needed/different
         // try block_scope.linkInst(index);
-        _ = try addBlock(&block_scope, &body_scope, node);
+        _ = try block_scope.editor.addBlock(&body_scope.editor, node);
 
-        if (try statement(&block_scope, &block_scope.base, signature.afterthought)) |_| {
+        if (try statement(&block_scope.editor, &block_scope.base, signature.afterthought)) |_| {
             return error.AfterthoughtDecl;
         }
 
-        // break :body try addBlock(&block_scope, block_scope.instructions.items, node);
-        break :body try addBlockUnlinked(b, &block_scope, node);
+        break :body try b.addBlockUnlinked(&block_scope.editor, node);
     };
 
-    return addLoop(b, condition, body, node);
+    return b.addLoop(condition, body, node);
 }
 
-fn loopBreak(b: *Block, scope: *Scope, node: Node.Index) !Hir.Index {
+fn loopBreak(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     _ = scope;
-    return addBreak(b, node);
+    return b.addBreak(node);
 }
 
-fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
-    const hg = b.hg;
-    const data = b.hg.tree.data(node).module;
-    var namespace = Scope.Namespace.init(scope);
+fn globalIdentId(hg: *HirGen, stmt: u32) !u32 {
+    const ident = switch (hg.tree.data(stmt)) {
+        .const_decl, .const_decl_attr => hg.tree.tokenString(hg.tree.mainToken(stmt) + 1),
+        .var_decl => hg.tree.tokenString(hg.tree.mainToken(stmt) + 2),
+        else => unreachable,
+    };
 
-    const scratch_top = b.scratch.items.len;
-    defer b.scratch.shrinkRetainingCapacity(scratch_top);
+    const id = try hg.interner.intern(ident);
+    return id;
+}
+
+fn module(hg: *HirGen, node: Node.Index) !Hir.Index {
+    const data = hg.tree.data(node).module;
+
+    var module_scope = Scope.Module{}; // doesn't hold anything, just a toplevel sentinel
+    var namespace = Scope.Namespace.init(&module_scope.base);
 
     // first pass through statements - "forward declare" all identifiers
     // in the toplevel namespace so that forward-referencing and recursive
@@ -1222,84 +934,25 @@ fn module(b: *Block, scope: *Scope, node: Node.Index) !void {
     // that haven't been irgen'ed yet
     var stmts = hg.tree.extra_data[data.stmts_start..data.stmts_end];
     for (stmts) |stmt| {
-        const id = switch (hg.tree.data(stmt)) {
-            .const_decl => id: {
-                const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
-                break :id try hg.interner.intern(ident);
-            },
-            .const_decl_attr => id: {
-                const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
-                break :id try hg.interner.intern(ident);
-            },
-            .var_decl => id: {
-                const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 2);
-                break :id try hg.interner.intern(ident);
-            },
-            else => {
-                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
-                return GenError.NotImplemented;
-            },
-        };
-
-        try namespace.decls.put(hg.arena, id, stmt);
-        try b.scratch.append(hg.arena, id);
+        const id = try globalIdentId(hg, stmt);
+        try namespace.decls.put(hg.arena, id, {});
     }
 
     // second pass - generate the value/expression and update the resolution map
     // so we can link node ids to instructions
     for (stmts) |stmt| {
-        const inst = try globalStatement(b, &namespace.base, stmt);
-        const ref = indexToRef(inst);
+        const id = try globalIdentId(hg, stmt);
+        const inst = try globalStatement(hg, &namespace.base, stmt);
         switch (hg.tree.data(stmt)) {
-            .const_decl, .const_decl_attr, .var_decl => try hg.forward_map.put(hg.gpa, stmt, ref),
-            else => {},
+            .const_decl, .const_decl_attr, .var_decl => {
+                try hg.untyped_decls.put(hg.gpa, id, inst);
+            },
+            else => {
+                std.debug.print("Unexpected node: {}\n", .{hg.tree.data(node)});
+                return GenError.NotImplemented;
+            },
         }
-
-        try b.scratch.append(hg.arena, inst);
     }
 
-    const members = b.scratch.items[scratch_top..];
-    _ = try addModule(b, members, node); // TODO: maybe just return this
-}
-
-fn instructionReturns(hg: *HirGen, inst: u32) bool {
-    switch (hg.instructions.items(.tag)[inst]) {
-        .block => {
-            const data = hg.instructions.items(.data)[inst];
-            const insts_len = hg.extra.items[data.pl_node.pl];
-            if (insts_len == 0) return false;
-            return instructionReturns(hg, hg.extra.items[data.pl_node.pl + insts_len]);
-        },
-        .branch_single => return false,
-        .branch_double => {
-            const data = hg.instructions.items(.data)[inst];
-            const lret = instructionReturns(hg, hg.extra.items[data.pl_node.pl + 1]);
-            const rret = instructionReturns(hg, hg.extra.items[data.pl_node.pl + 2]);
-            return lret and rret;
-        },
-        .ret_implicit, .ret_node => return true,
-        else => return false,
-    }
-}
-
-fn blockReturns(b: *Block) bool {
-    // const inst = b.instructions.items[b.instructions.items.len - 1];
-    // const inst = b.getInst(b.numInsts());
-    var last: Hir.Index = undefined;
-    var it = b.instructions.iterate();
-    while (it.next()) |inst| {
-        last = inst;
-    }
-
-    return instructionReturns(b.hg, last);
-}
-
-fn getTempHir(hg: *HirGen) Hir {
-    return .{
-        .insts = hg.instructions.slice(),
-        .block_tape = hg.block_tape.items,
-        .extra_data = hg.extra.items,
-        .interner = hg.interner,
-        .resolution_map = hg.forward_map, // TODO: this may not be optimal
-    };
+    return try addModule(hg, node);
 }

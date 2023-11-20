@@ -12,10 +12,11 @@ pub const Error = error{InvalidRef};
 pub const Hir = @This();
 
 insts: std.MultiArrayList(Inst).Slice,
+module_index: Index,
 block_tape: []InstList.LinkedNode,
 extra_data: []const u32,
 interner: Interner,
-resolution_map: std.AutoHashMapUnmanaged(Node.Index, Hir.Ref),
+untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 errors: []error_handler.SourceError,
 
 pub const Inst = struct {
@@ -73,6 +74,7 @@ pub const Inst = struct {
         // coerces (expands to constant, cast, or noop in mir)
         // data.pl_node.pl = Inst.Coerce
         coerce,
+        constant,
         zext,
         sext,
         fpext,
@@ -81,7 +83,8 @@ pub const Inst = struct {
         // that is, ref is not available during generation but will
         // be by the time the entire hir is generated and mir is running
         // data.pl_node.pl = decl
-        load_inline,
+        // load_inline,
+        load_global,
         // pushes a value onto the stack and returns the memory address
         // data.un_node.operand = ref to push
         push,
@@ -244,6 +247,11 @@ pub const Inst = struct {
         ty: Ref,
     };
 
+    pub const Constant = struct {
+        val: Ref,
+        ty: Ref,
+    };
+
     pub const BranchSingle = struct {
         condition: Ref,
         exec_true: Index,
@@ -281,6 +289,12 @@ pub const Inst = struct {
     pub const DebugValue = struct {
         name: u32,
         value: Ref,
+    };
+
+    pub const Function = struct {
+        params: []Param,
+        return_type: Ref,
+        body: Index,
     };
 };
 

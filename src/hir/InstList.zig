@@ -7,10 +7,12 @@ gpa: Allocator,
 tape: *std.ArrayListUnmanaged(LinkedNode),
 head: u32,
 len: u32,
-cursor: struct {
+cursor: Loc,
+
+const Loc = struct {
     node: u32,
     pos: u8,
-},
+};
 
 pub const LinkedNode = struct {
     link: u32,

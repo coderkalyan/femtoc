@@ -45,7 +45,7 @@ pub const Value = extern union {
 
         pub const Function = struct {
             base: Payload = .{ .tag = .function },
-            func: *Decl.Function,
+            func: *Hir.Inst.Function,
         };
 
         pub const Reference = struct {

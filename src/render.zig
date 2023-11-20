@@ -233,20 +233,20 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         }
 
         pub fn render(r: *Self) !void {
-            const module_index = r.hir.insts.len - 1;
-            const module = r.hir.insts.items(.data)[module_index];
-            const data = r.hir.extraData(module.pl_node.pl, Hir.Inst.Module);
             const writer = r.stream.writer();
 
+            const module_pl = r.hir.insts.items(.data)[r.hir.module_index].pl_node.pl;
+            const data = r.hir.extraData(module_pl, Hir.Inst.Module);
+
             var extra_index: u32 = 0;
-            while (extra_index < data.len) : (extra_index += 1) {
-                const base = module.pl_node.pl + 1;
+            while (extra_index < data.len * 2) : (extra_index += 2) {
+                const base = module_pl + 1;
                 const id = r.hir.extra_data[base + extra_index];
+                const inst = r.hir.extra_data[base + extra_index + 1];
                 const member_str = try r.hir.interner.get(id);
-                const stmt = r.hir.extra_data[base + extra_index + data.len];
-                // const index = r.hir.extra_data[module.pl_node.pl + 1 + extra_index];
+
                 try writer.print("{s}: ", .{member_str});
-                try r.renderInst(stmt);
+                try r.renderInst(inst);
             }
         }
 
@@ -305,11 +305,12 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatIndex(pl, &lbuf);
                     try writer.print("load({s})", .{lbuf});
                 },
-                .load_inline => {
+                .load_global => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const ref = ir.resolution_map.get(pl).?;
-                    try self.formatRef(ref, &lbuf);
-                    try writer.print("load_inline({s})", .{lbuf});
+                    const inst = ir.untyped_decls.get(pl).?;
+                    const ident = try ir.interner.get(pl);
+                    try self.formatIndex(inst, &lbuf);
+                    try writer.print("load_global({s}) = {s}", .{ ident, lbuf });
                 },
                 .fn_decl => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
