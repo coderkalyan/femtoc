@@ -4,6 +4,7 @@ const lex = @import("lex.zig");
 const Hir = @import("Hir.zig");
 const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
+const Value = @import("value.zig").Value;
 
 const io = std.io;
 
@@ -255,8 +256,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             const writer = self.stream.writer();
 
             try writer.print("%{} = ", .{index});
-            var lbuf: [32]u8 = [_]u8{0} ** 32;
-            var rbuf: [32]u8 = [_]u8{0} ** 32;
+            var lbuf: [256]u8 = [_]u8{0} ** 256;
+            var rbuf: [256]u8 = [_]u8{0} ** 256;
             switch (ir.insts.items(.tag)[index]) {
                 .int => try writer.print("int({})", .{ir.insts.items(.data)[index].int}),
                 .float => try writer.print("float({})", .{ir.insts.items(.data)[index].float}),
@@ -310,7 +311,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const inst = ir.untyped_decls.get(pl).?;
                     const ident = try ir.interner.get(pl);
                     try self.formatIndex(inst, &lbuf);
-                    try writer.print("load_global({s}) = {s}", .{ ident, lbuf });
+                    try writer.print("load_global({s}) [{s}]", .{ ident, lbuf });
                 },
                 .fn_decl => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
@@ -351,8 +352,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     self.stream.indent();
                     try self.stream.newline();
 
-                    var it = block.iterate(ir.block_tape);
-                    while (it.next()) |inst| {
+                    const insts = ir.block_slices[block.head];
+                    for (insts) |inst| {
                         try self.renderInst(inst);
                     }
 
@@ -367,8 +368,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     self.stream.indent();
                     try self.stream.newline();
 
-                    var it = block.iterate(ir.block_tape);
-                    while (it.next()) |inst| {
+                    const insts = ir.block_slices[block.head];
+                    for (insts) |inst| {
                         try self.renderInst(inst);
                     }
 
@@ -482,6 +483,54 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(data.value, &lbuf);
                     try writer.print("dbg_value({s}, {s})", .{ ident_str, lbuf });
                 },
+                .constant => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const data = ir.extraData(pl, Hir.Inst.Constant);
+                    const ty = ir.resolveType(data.ty);
+                    try self.formatRef(data.ty, &lbuf);
+                    switch (ty.kind()) {
+                        .comptime_uint, .uint => {
+                            const val = ir.refToInt(Hir.Inst.indexToRef(index));
+                            try writer.print("constant({s}, {})", .{ lbuf, val });
+                        },
+                        .comptime_sint, .sint => {
+                            const val = ir.refToInt(Hir.Inst.indexToRef(index));
+                            const signed: i32 = @bitCast(@as(u32, @truncate(val)));
+                            try writer.print("constant({s}, {})", .{ lbuf, signed });
+                        },
+                        .comptime_float, .float => {
+                            const val = ir.refToFloat(Hir.Inst.indexToRef(index));
+                            try writer.print("constant({s}, {})", .{ lbuf, val });
+                        },
+                        .function => {
+                            const val = ir.values[data.val];
+                            const payload = val.payload.cast(Value.Payload.Function).?;
+                            const func = payload.func;
+
+                            try writer.print("constant({s}, body={{", .{lbuf});
+                            self.stream.indent();
+                            try self.stream.newline();
+                            try self.renderInst(func.body);
+                            self.stream.dedent();
+                            try writer.print("}})", .{});
+                            // try writer.print("func(ret_ty={s}, params={{", .{lbuf});
+                            // self.stream.indent();
+                            // self.stream.indent();
+                            // try self.stream.newline();
+                            // var extra_index: u32 = fn_decl.params_start;
+                            // while (extra_index < fn_decl.params_end) : (extra_index += 1) {
+                            //     const param = ir.extra_data[extra_index];
+                            //     try self.renderInst(param);
+                            // }
+                        },
+                        else => {},
+                    }
+                },
+                .ty => {
+                    const ty = ir.insts.items(.data)[index].ty;
+                    try self.formatType(ty, &lbuf);
+                    try writer.print("type({s})", .{lbuf});
+                },
                 else => {
                     try writer.print("{}", .{ir.insts.items(.tag)[index]});
                 },
@@ -490,37 +539,76 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             try self.stream.newline();
         }
 
-        fn formatRef(_: *Self, ref: Hir.Ref, buf: []u8) !void {
+        fn formatRef(self: *Self, ref: Hir.Ref, buf: []u8) !void {
             @memset(buf, 0);
-            if (Hir.Inst.refToIndex(ref)) |index| {
+            const resolved_ref = self.hir.resolveRef(ref);
+            if (Hir.Inst.refToIndex(resolved_ref)) |index| {
                 _ = try std.fmt.bufPrint(buf, "%{}", .{index});
             } else {
-                _ = try std.fmt.bufPrint(buf, "@Ref.{s}", .{switch (ref) {
-                    .zero_val => "zero",
-                    .one_val => "one",
-                    .btrue_val => "btrue",
-                    .bfalse_val => "bfalse",
-                    .void_val => "void_val",
-                    .u8_ty => "u8",
-                    .u16_ty => "u16",
-                    .u32_ty => "u32",
-                    .u64_ty => "u64",
-                    .i8_ty => "i8",
-                    .i16_ty => "i16",
-                    .i32_ty => "i32",
-                    .i64_ty => "i64",
-                    .f32_ty => "f32",
-                    .f64_ty => "f64",
-                    .bool_ty => "bool",
-                    .void_ty => "void",
-                    else => unreachable,
-                }});
+                try self.formatPrimitiveRef(ref, buf);
             }
+        }
+
+        fn formatPrimitiveRef(_: *Self, ref: Hir.Ref, buf: []u8) !void {
+            _ = try std.fmt.bufPrint(buf, "@Ref.{s}", .{switch (ref) {
+                .zero_val => "zero",
+                .one_val => "one",
+                .btrue_val => "btrue",
+                .bfalse_val => "bfalse",
+                .void_val => "void_val",
+                .u8_ty => "u8",
+                .u16_ty => "u16",
+                .u32_ty => "u32",
+                .u64_ty => "u64",
+                .i8_ty => "i8",
+                .i16_ty => "i16",
+                .i32_ty => "i32",
+                .i64_ty => "i64",
+                .f32_ty => "f32",
+                .f64_ty => "f64",
+                .bool_ty => "bool",
+                .void_ty => "void",
+                .comptime_uint => "comptime_uint",
+                .comptime_sint => "comptime_sint",
+                .comptime_float => "comptime_float",
+                _ => unreachable,
+            }});
         }
 
         fn formatIndex(_: *Self, index: Hir.Index, buf: []u8) !void {
             @memset(buf, 0);
             _ = try std.fmt.bufPrint(buf, "%{}", .{index});
+        }
+
+        fn formatType(self: *Self, ty: Type, buf: []u8) !void {
+            @memset(buf, 0);
+            _ = try std.fmt.bufPrint(buf, "{s}", .{switch (ty.kind()) {
+                .void => "void",
+                .comptime_uint => "comptime_uint",
+                .comptime_sint => "comptime_sint",
+                .comptime_float => "comptime_float",
+                .uint => {
+                    _ = try std.fmt.bufPrint(buf, "u{}", .{ty.basic.width});
+                    return;
+                },
+                .sint => {
+                    _ = try std.fmt.bufPrint(buf, "i{}", .{ty.basic.width});
+                    return;
+                },
+                .float => {
+                    _ = try std.fmt.bufPrint(buf, "f{}", .{ty.basic.width});
+                    return;
+                },
+                .function => {
+                    const function = ty.extended.cast(Type.Function).?;
+                    var ret_buf: [128]u8 = [_]u8{0} ** 128;
+                    std.debug.print("ret ty: {}\n", .{function.return_type.basic});
+                    try self.formatType(function.return_type, &ret_buf);
+                    _ = try std.fmt.bufPrint(buf, "function(return_ty = {s})", .{ret_buf});
+                    return;
+                },
+                else => unreachable, //return error.NotImplemented,
+            }});
         }
     };
 }

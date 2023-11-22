@@ -9,11 +9,13 @@ const Scope = @import("scope.zig").Scope;
 const interner = @import("interner.zig");
 const Interner = interner.Interner;
 const error_handler = @import("error_handler.zig");
-const InstList = @import("hir/InstList.zig");
 const Value = @import("value.zig").Value;
 const Type = @import("typing.zig").Type;
-const implicit_return = @import("hir/implicit_return.zig");
 const BlockEditor = @import("hir/BlockEditor.zig");
+const coercion = @import("hir/coercion.zig");
+
+const implicit_return = @import("hir/implicit_return.zig");
+const type_analysis = @import("hir/type_analysis.zig");
 
 const Allocator = std.mem.Allocator;
 const Inst = Hir.Inst;
@@ -42,12 +44,13 @@ arena: Allocator,
 tree: *const Ast,
 insts: std.MultiArrayList(Inst),
 extra: std.ArrayListUnmanaged(u32),
-block_tape: std.ArrayListUnmanaged(InstList.LinkedNode),
+block_slices: std.ArrayListUnmanaged([]Hir.Index),
 values: std.ArrayListUnmanaged(Value),
 types: std.ArrayListUnmanaged(Type),
 untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 interner: Interner,
 errors: std.ArrayListUnmanaged(error_handler.SourceError),
+instmap: std.ArrayListUnmanaged(Ref),
 
 pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -59,27 +62,32 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .tree = tree,
         .insts = .{},
         .extra = .{},
-        .block_tape = .{},
+        .block_slices = .{},
         .values = .{},
         .types = .{},
         .untyped_decls = .{},
         .interner = Interner.init(gpa),
         .errors = .{},
+        .instmap = .{},
     };
 
     // post order format guarantees that the module node will be the last
     const module_node: u32 = @intCast(tree.nodes.len - 1);
     const module_index = try module(&hirgen, module_node);
-    try implicit_return.executePass(&hirgen);
+    // try implicit_return.executePass(&hirgen, module_index);
+    // try type_analysis.executePass(&hirgen, module_index);
 
     return Hir{
         .insts = hirgen.insts.toOwnedSlice(),
         .module_index = module_index,
-        .block_tape = try hirgen.block_tape.toOwnedSlice(gpa),
+        .block_slices = try hirgen.block_slices.toOwnedSlice(gpa),
         .extra_data = try hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
+        .types = try hirgen.types.toOwnedSlice(gpa),
+        .values = try hirgen.values.toOwnedSlice(gpa),
         .untyped_decls = try hirgen.untyped_decls.clone(gpa),
         .errors = try hirgen.errors.toOwnedSlice(gpa),
+        .instmap = try hirgen.instmap.toOwnedSlice(gpa),
     };
 }
 
@@ -138,9 +146,22 @@ pub fn extraData(hg: *HirGen, index: Hir.ExtraIndex, comptime T: type) T {
 
 pub inline fn addInstUnlinked(hg: *HirGen, inst: Inst) !Hir.Index {
     const array_index: Hir.Index = @intCast(hg.insts.len);
-    try hg.insts.append(hg.gpa, inst);
+
+    try hg.insts.ensureUnusedCapacity(hg.gpa, 1);
+    try hg.instmap.ensureUnusedCapacity(hg.gpa, 1);
+
+    hg.insts.appendAssumeCapacity(inst);
+    hg.instmap.appendAssumeCapacity(indexToRef(array_index));
 
     return array_index;
+}
+
+pub inline fn updateRef(hg: *HirGen, index: Hir.Index, ref: Ref) void {
+    hg.instmap.items[index] = ref;
+}
+
+pub inline fn resolveRef(hg: *HirGen, ref: Ref) Ref {
+    return if (refToIndex(ref)) |index| hg.instmap[index] else ref;
 }
 
 fn addModule(hg: *HirGen, node: Node.Index) !Hir.Index {
@@ -354,7 +375,7 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 
     const return_type = try ty(&body_scope.editor, &body_scope.base, signature.return_ty);
     body_scope.return_ty = return_type;
-    const body = try block(&body_scope.editor, &body_scope.base, fn_decl.body);
+    const body = try block(&body_scope.editor, &body_scope.base, fn_decl.body, true);
     var hash: u64 = undefined;
     computeFunctionHash(hg.tree, node, std.mem.asBytes(&hash));
 
@@ -442,14 +463,15 @@ fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return b.addCall(addr, args, node);
 }
 
-fn block(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn block(b: *BlockEditor, scope: *Scope, node: Node.Index, comptime add_unlinked: bool) Error!Hir.Index {
     const hg = b.hg;
     const data = hg.tree.data(node).block;
 
     var s: *Scope = scope;
     const stmts = hg.tree.extra_data[data.stmts_start..data.stmts_end];
     for (stmts) |stmt| {
-        const ref = statement(b, s, stmt) catch continue;
+        // const ref = statement(b, s, stmt) catch continue;
+        const ref = try statement(b, s, stmt);
         switch (b.hg.tree.data(stmt)) {
             .const_decl, .const_decl_attr => {
                 const ident = hg.tree.tokenString(hg.tree.mainToken(stmt) + 1);
@@ -476,7 +498,12 @@ fn block(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         s = parent;
     }
 
-    return b.addBlockUnlinked(b, node);
+    if (add_unlinked) {
+        return b.addBlockUnlinked(b, node);
+        // return b.addBlock(b, node);
+    } else {
+        return undefined;
+    }
 }
 
 fn coerce(b: *BlockEditor, s: *Scope, val: Ref, dest_ty: Ref, node: Node.Index) !Ref {
@@ -512,7 +539,8 @@ fn constDecl(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
     const ref = try expr(b, s, const_decl.val);
-    _ = try b.addDebugValue(ref, id, node);
+    _ = id;
+    // _ = try b.addDebugValue(ref, id, node);
 
     if (const_decl.ty == 0) {
         // untyped (inferred) declaration
@@ -538,7 +566,8 @@ fn constDeclAttr(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
     const ref = try expr(b, s, const_decl.val);
-    _ = try b.addDebugValue(ref, id, node);
+    _ = id;
+    // _ = try b.addDebugValue(ref, id, node);
 
     if (metadata.ty == 0) {
         // untyped (inferred) declaration
@@ -760,7 +789,7 @@ fn ifSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const s = &block_scope.base;
 
     const condition = try branchCondition(b, scope, if_simple.condition);
-    const exec = try block(&block_scope.editor, s, if_simple.exec_true);
+    const exec = try block(&block_scope.editor, s, if_simple.exec_true, true);
     return b.addBranchSingle(condition, exec, node);
 }
 
@@ -772,12 +801,12 @@ fn ifElse(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const exec_true = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
-        break :block try block(&block_scope.editor, &block_scope.base, exec.exec_true);
+        break :block try block(&block_scope.editor, &block_scope.base, exec.exec_true, true);
     };
     const exec_false = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
-        break :block try block(&block_scope.editor, &block_scope.base, exec.exec_false);
+        break :block try block(&block_scope.editor, &block_scope.base, exec.exec_false, true);
     };
     return b.addBranchDouble(condition, exec_true, exec_false, node);
 }
@@ -790,7 +819,7 @@ fn ifChain(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const exec_true = block: {
         var block_scope = try Block.init(b, scope);
         defer block_scope.deinit();
-        break :block try block(&block_scope.editor, &block_scope.base, chain.exec_true);
+        break :block try block(&block_scope.editor, &block_scope.base, chain.exec_true, true);
     };
     const next = block: {
         var block_scope = try Block.init(b, scope);
@@ -822,7 +851,7 @@ fn loopForever(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const loop_forever = b.hg.tree.data(node).loop_forever;
     var loop_scope = try Block.init(b, scope);
     defer loop_scope.deinit();
-    const body = try block(&loop_scope.editor, &loop_scope.base, loop_forever.body);
+    const body = try block(&loop_scope.editor, &loop_scope.base, loop_forever.body, true);
 
     const condition = block: {
         var block_scope = try Block.init(b, scope);
@@ -853,7 +882,7 @@ fn loopConditional(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index 
 
     var loop_scope = try Block.init(b, scope);
     defer loop_scope.deinit();
-    const body = try block(&loop_scope.editor, &loop_scope.base, loop_conditional.body);
+    const body = try block(&loop_scope.editor, &loop_scope.base, loop_conditional.body, true);
 
     return b.addLoop(condition, body, node);
 }
@@ -884,22 +913,20 @@ fn loopRange(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     // we have a block (loop outer body) that contains the afterthought
     // and then an inner nested block that contains the user loop body
     const body = body: {
-        var block_scope = try Block.init(b, s);
-        defer block_scope.deinit();
-        var body_scope = try Block.init(&block_scope.editor, &block_scope.base);
-        defer body_scope.deinit();
-        const index = try block(&body_scope.editor, &body_scope.base, loop_range.body);
-        _ = index;
-        // try block_scope.instructions.append(hg.gpa, index);
-        // TODO: figure out why this is needed/different
-        // try block_scope.linkInst(index);
-        _ = try block_scope.editor.addBlock(&body_scope.editor, node);
+        var outer_scope = try Block.init(b, s);
+        defer outer_scope.deinit();
 
-        if (try statement(&block_scope.editor, &block_scope.base, signature.afterthought)) |_| {
+        var inner_scope = try Block.init(&outer_scope.editor, &outer_scope.base);
+        defer inner_scope.deinit();
+
+        _ = try block(&inner_scope.editor, &inner_scope.base, loop_range.body, false);
+        _ = try outer_scope.editor.addBlock(&inner_scope.editor, node);
+
+        if (try statement(&outer_scope.editor, &outer_scope.base, signature.afterthought)) |_| {
             return error.AfterthoughtDecl;
         }
 
-        break :body try b.addBlockUnlinked(&block_scope.editor, node);
+        break :body try b.addBlockUnlinked(&outer_scope.editor, node);
     };
 
     return b.addLoop(condition, body, node);
@@ -955,4 +982,31 @@ fn module(hg: *HirGen, node: Node.Index) !Hir.Index {
     }
 
     return try addModule(hg, node);
+}
+
+pub inline fn resolveType(hg: *HirGen, ref: Ref) Type {
+    return hg.getTempHir().resolveType(ref);
+}
+
+fn getTempHir(hg: *HirGen) Hir {
+    return .{
+        .insts = hg.insts.slice(),
+        .extra_data = hg.extra.items,
+        .values = hg.values.items,
+        .types = hg.types.items,
+        .block_slices = hg.block_slices.items,
+        .interner = hg.interner,
+        .instmap = hg.instmap.items,
+        .untyped_decls = hg.untyped_decls, // TODO: not good
+        .errors = hg.errors.items,
+        .module_index = undefined,
+    };
+}
+
+pub inline fn refToInt(hg: *HirGen, ref: Hir.Ref) u64 {
+    return hg.getTempHir().refToInt(ref);
+}
+
+pub inline fn refToFloat(hg: *HirGen, ref: Hir.Ref) f64 {
+    return hg.getTempHir().refToFloat(ref);
 }

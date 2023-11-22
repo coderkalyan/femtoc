@@ -3,6 +3,8 @@ const Hir = @import("Hir.zig");
 const Type = @import("typing.zig").Type;
 const Compilation = @import("Compilation.zig");
 const Decl = Compilation.Decl;
+const HirGen = @import("HirGen.zig");
+const Allocator = std.mem.Allocator;
 
 pub const Value = extern union {
     // int: u64,

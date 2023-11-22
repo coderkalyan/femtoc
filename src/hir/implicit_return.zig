@@ -10,8 +10,7 @@ const HirGen = @import("../HirGen.zig");
 const BlockEditor = @import("BlockEditor.zig");
 const Ref = Hir.Ref;
 
-pub fn executePass(hg: *HirGen) !void {
-    const module_index = hg.insts.len - 1;
+pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
     const module_pl = hg.insts.items(.data)[module_index].pl_node.pl;
     const data = hg.extraData(module_pl, Hir.Inst.Module);
 
@@ -24,8 +23,8 @@ pub fn executePass(hg: *HirGen) !void {
         const block_inline_pl = hg.insts.items(.data)[inst].pl_node.pl;
         const block_inline = hg.extraData(block_inline_pl, Hir.Inst.Block);
 
-        var it = block_inline.iterate(hg.block_tape.items);
-        while (it.next()) |block_inst| {
+        const inline_slice = hg.block_slices.items[block_inline.head];
+        for (inline_slice) |block_inst| {
             if (hg.insts.items(.tag)[block_inst] == .fn_decl) {
                 const fn_pl = hg.insts.items(.data)[block_inst].pl_node.pl;
                 const fn_decl = hg.extraData(fn_pl, Hir.Inst.FnDecl);
@@ -33,13 +32,17 @@ pub fn executePass(hg: *HirGen) !void {
                 if (!instructionReturns(hg, fn_decl.body)) {
                     const block_pl = hg.insts.items(.data)[fn_decl.body].pl_node.pl;
                     const block = hg.extraData(block_pl, Hir.Inst.Block);
-                    var editor = try BlockEditor.edit(hg, &block);
+                    var editor = try BlockEditor.init(hg);
 
-                    editor.insts.cursorSeekToTail();
+                    // copy all existing instructions, we just want to append
+                    // an implicit return to the end
+                    const slice = hg.block_slices.items[block.head];
+                    for (slice) |_inst| {
+                        try editor.linkInst(_inst);
+                    }
+
                     _ = try editor.addRetImplicit(Ref.void_val, undefined);
-
-                    const new_block = editor.commit();
-                    hg.updateExtra(block_pl, new_block);
+                    try BlockEditor.updateBlock(hg, &editor, fn_decl.body);
                 }
             }
         }
@@ -57,11 +60,8 @@ fn instructionReturns(hg: *HirGen, inst: u32) bool {
                 return false;
             }
 
-            var last: Hir.Index = undefined;
-            var it = block.iterate(hg.block_tape.items);
-            while (it.next()) |block_inst| {
-                last = block_inst;
-            }
+            const slice = hg.block_slices.items[block.head];
+            const last = slice[slice.len - 1];
 
             return instructionReturns(hg, last);
         },

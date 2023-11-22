@@ -3,7 +3,6 @@ const Hir = @import("Hir.zig");
 const HirGen = @import("HirGen.zig");
 const Ast = @import("Ast.zig");
 const Interner = @import("interner.zig").Interner;
-const InstList = @import("hir/InstList.zig");
 const BlockEditor = @import("hir/BlockEditor.zig");
 
 const Node = Ast.Node;
@@ -73,11 +72,16 @@ pub const Scope = struct {
         return_ty: Hir.Ref,
 
         pub fn init(b: *BlockEditor, s: *Scope) !Block {
+            var return_ty: Hir.Ref = undefined;
+            if (s.resolveBlock()) |outer_block| {
+                return_ty = outer_block.return_ty;
+            }
+
             return .{
                 .parent = s,
                 .editor = try BlockEditor.init(b.hg),
                 .hg = b.hg,
-                .return_ty = undefined,
+                .return_ty = return_ty,
             };
         }
 
