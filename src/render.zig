@@ -261,7 +261,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             switch (ir.insts.items(.tag)[index]) {
                 .int => try writer.print("int({})", .{ir.insts.items(.data)[index].int}),
                 .float => try writer.print("float({})", .{ir.insts.items(.data)[index].float}),
-                .add, .sub, .mul, .div, .mod, .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge, .cmp_lt, .cmp_gt => {
+                .add, .sub, .mul, .div, .mod, .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge, .cmp_lt, .cmp_gt, .icmp_eq, .icmp_ne, .icmp_ugt, .icmp_uge, .icmp_ult, .icmp_ule, .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle, .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => {
                     try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
                         .add => "add",
                         .sub => "sub",
@@ -270,10 +270,24 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         .mod => "mod",
                         .cmp_eq => "cmp_eq",
                         .cmp_ne => "cmp_ne",
-                        .cmp_le => "cmp_le",
+                        .cmp_gt => "cmp_gt",
                         .cmp_ge => "cmp_ge",
                         .cmp_lt => "cmp_lt",
-                        .cmp_gt => "cmp_gt",
+                        .cmp_le => "cmp_le",
+                        .icmp_eq => "icmp_eq",
+                        .icmp_ne => "icmp_ne",
+                        .icmp_ugt => "icmp_ugt",
+                        .icmp_uge => "icmp_uge",
+                        .icmp_ult => "icmp_ult",
+                        .icmp_ule => "icmp_ule",
+                        .icmp_sgt => "icmp_sgt",
+                        .icmp_sge => "icmp_sge",
+                        .icmp_slt => "icmp_slt",
+                        .icmp_sle => "icmp_le",
+                        .fcmp_gt => "fcmp_gt",
+                        .fcmp_ge => "fcmp_ge",
+                        .fcmp_lt => "fcmp_lt",
+                        .fcmp_le => "fcmp_le",
                         else => unreachable,
                     });
 
@@ -289,6 +303,27 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(coerce.ty, &lbuf);
                     try self.formatRef(coerce.val, &rbuf);
                     try writer.print("coerce({s}, {s})", .{ lbuf, rbuf });
+                },
+                .zext => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const zext = ir.extraData(pl, Hir.Inst.Extend);
+                    try self.formatRef(zext.ty, &lbuf);
+                    try self.formatRef(zext.val, &rbuf);
+                    try writer.print("zext({s}, {s})", .{ lbuf, rbuf });
+                },
+                .sext => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const sext = ir.extraData(pl, Hir.Inst.Extend);
+                    try self.formatRef(sext.ty, &lbuf);
+                    try self.formatRef(sext.val, &rbuf);
+                    try writer.print("sext({s}, {s})", .{ lbuf, rbuf });
+                },
+                .fpext => {
+                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const fpext = ir.extraData(pl, Hir.Inst.Extend);
+                    try self.formatRef(fpext.ty, &lbuf);
+                    try self.formatRef(fpext.val, &rbuf);
+                    try writer.print("fpext({s}, {s})", .{ lbuf, rbuf });
                 },
                 .push => {
                     try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);

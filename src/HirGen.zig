@@ -74,8 +74,8 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     // post order format guarantees that the module node will be the last
     const module_node: u32 = @intCast(tree.nodes.len - 1);
     const module_index = try module(&hirgen, module_node);
-    // try implicit_return.executePass(&hirgen, module_index);
-    // try type_analysis.executePass(&hirgen, module_index);
+    try implicit_return.executePass(&hirgen, module_index);
+    try type_analysis.executePass(&hirgen, module_index);
 
     return Hir{
         .insts = hirgen.insts.toOwnedSlice(),

@@ -25,6 +25,16 @@ let main = fn () void {
         let mut c = a + b;
     }
 
+    let i: i32 = 5;
+    let j: i32 = 10;
+    if (i >= j) {
+        return;
+    } else {
+        let a: i32 = 5;
+        let b: i32 = 6;
+        let mut c = a + b;
+    }
+
     let f: f32 = 1.23;
     let mut g: f64 = 2.34;
     if f < g {

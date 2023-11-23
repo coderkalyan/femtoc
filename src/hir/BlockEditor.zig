@@ -267,7 +267,7 @@ pub fn updateBlock(hg: *HirGen, data_block: *BlockEditor, inst: Hir.Index) !void
     commitRemap(hg, &data_block.remaps, data.head);
 }
 
-fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref), head: u32) void {
+pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref), head: u32) void {
     const slice = hg.block_slices.items[head];
     for (slice) |inst| {
         switch (hg.insts.items(.tag)[inst]) {
@@ -290,7 +290,12 @@ fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
                 remapRefPl(hg, remaps, pl + 1); // ty
             },
-            .zext, .sext, .fpext => unreachable,
+            .zext, .sext, .fpext => {
+                // Extend
+                const pl = hg.insts.items(.data)[inst].pl_node.pl;
+                remapRefPl(hg, remaps, pl + 0); // val
+                remapRefPl(hg, remaps, pl + 1); // ty
+            },
             .push => {
                 // unary operand
                 var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
@@ -313,7 +318,6 @@ fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref
 
                 const block_pl = hg.insts.items(.data)[data.body].pl_node.pl;
                 const block_data = hg.extraData(block_pl, Hir.Inst.Block);
-
                 commitRemap(hg, remaps, block_data.head);
             },
             .param => unreachable,
@@ -328,7 +332,37 @@ fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref
                     remapRefPl(hg, remaps, extra_index);
                 }
             },
-            .block, .block_inline, .branch_single, .branch_double, .loop => unreachable,
+            .block, .block_inline => {
+                const pl = hg.insts.items(.data)[inst].pl_node.pl;
+                const data = hg.extraData(pl, Hir.Inst.Block);
+
+                commitRemap(hg, remaps, data.head);
+            },
+            .branch_single => {
+                const pl = hg.insts.items(.data)[inst].pl_node.pl;
+                const data = hg.extraData(pl, Hir.Inst.BranchSingle);
+
+                remapRefPl(hg, remaps, pl + 0); // condition
+
+                const block_pl = hg.insts.items(.data)[data.exec_true].pl_node.pl;
+                const block_data = hg.extraData(block_pl, Hir.Inst.Block);
+                commitRemap(hg, remaps, block_data.head);
+            },
+            .branch_double => {
+                const pl = hg.insts.items(.data)[inst].pl_node.pl;
+                const data = hg.extraData(pl, Hir.Inst.BranchDouble);
+
+                remapRefPl(hg, remaps, pl + 0); // condition
+
+                const block1_pl = hg.insts.items(.data)[data.exec_true].pl_node.pl;
+                const block1_data = hg.extraData(block1_pl, Hir.Inst.Block);
+                commitRemap(hg, remaps, block1_data.head);
+
+                const block2_pl = hg.insts.items(.data)[data.exec_false].pl_node.pl;
+                const block2_data = hg.extraData(block2_pl, Hir.Inst.Block);
+                commitRemap(hg, remaps, block2_data.head);
+            },
+            .loop => unreachable,
             .loop_break => {},
             .ret_implicit, .yield_implicit => {
                 // unary operand
