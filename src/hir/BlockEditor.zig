@@ -304,12 +304,14 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             .load => {
                 // Payload
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapRefPl(hg, remaps, pl);
+                if (remaps.get(pl)) |new| {
+                    hg.insts.items(.data)[inst].pl_node.pl = Hir.Inst.refToIndex(new).?;
+                }
             },
             .store => {
                 // Store
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 0); // addr
+                // remapIndexPl(hg, remaps, pl + 0); // addr
                 remapRefPl(hg, remaps, pl + 1); // val
             },
             .fn_decl => {
@@ -596,5 +598,48 @@ pub fn addDeclExport(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index
     return b.addInst(.{
         .tag = .decl_export,
         .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+pub fn addZext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Hir.Inst.Extend{
+        .val = val,
+        .ty = ty,
+    });
+
+    return b.addInst(.{
+        .tag = .zext,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+pub fn addSext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Hir.Inst.Extend{
+        .val = val,
+        .ty = ty,
+    });
+
+    return b.addInst(.{
+        .tag = .sext,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+pub fn addFpext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+    const pl = try b.hg.addExtra(Hir.Inst.Extend{
+        .val = val,
+        .ty = ty,
+    });
+
+    return b.addInst(.{
+        .tag = .fpext,
+        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    });
+}
+
+pub fn addAllocaUnlinked(b: *BlockEditor, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.hg.addInstUnlinked(.{
+        .tag = .alloca,
+        .data = .{ .un_node = .{ .operand = ty, .node = node } },
     });
 }

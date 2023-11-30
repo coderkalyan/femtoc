@@ -16,6 +16,8 @@ const coercion = @import("hir/coercion.zig");
 
 const implicit_return = @import("hir/implicit_return.zig");
 const type_analysis = @import("hir/type_analysis.zig");
+const dead_code_elimination = @import("hir/dead_code_elimination.zig");
+const stack_analysis = @import("hir/stack_analysis.zig");
 
 const Allocator = std.mem.Allocator;
 const Inst = Hir.Inst;
@@ -76,6 +78,8 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     const module_index = try module(&hirgen, module_node);
     try implicit_return.executePass(&hirgen, module_index);
     try type_analysis.executePass(&hirgen, module_index);
+    try stack_analysis.executePass(&hirgen, module_index);
+    // try dead_code_elimination.executePass(&hirgen, module_index);
 
     return Hir{
         .insts = hirgen.insts.toOwnedSlice(),

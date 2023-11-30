@@ -39,8 +39,6 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
         var editor = try BlockEditor.init(hg);
 
         const slice = hg.block_slices.items[block_inline.head];
-        std.debug.print("{any}\n", .{slice});
-        // if (true) continue;
         for (slice) |block_inst| {
             try processInst(&editor, block_inst, &inner_blocks);
             // TODO: we need a better solution to this
@@ -50,7 +48,9 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
         try BlockEditor.updateBlock(hg, &editor, inst);
     }
 
-    for (inner_blocks.items) |inst| {
+    // for (inner_blocks.items) |inst| {
+    while (inner_blocks.items.len > 0) {
+        const inst = inner_blocks.pop();
         const block_inline_pl = hg.insts.items(.data)[inst].pl_node.pl;
         const block_inline = hg.extraData(block_inline_pl, Hir.Inst.Block);
 
@@ -68,12 +68,16 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
 }
 
 fn processInst(b: *BlockEditor, inst: Hir.Index, inner_blocks: *std.ArrayListUnmanaged(Hir.Index)) !void {
-    switch (b.hg.insts.items(.tag)[inst]) {
+    const hg = b.hg;
+    switch (hg.insts.items(.tag)[inst]) {
         .fn_decl => try fnDecl(b, inst, inner_blocks),
         .int => _ = try integer(b, inst),
         .float => _ = try float(b, inst),
         .coerce => try coerce(b, inst),
         .cmp_eq, .cmp_ne, .cmp_gt, .cmp_ge, .cmp_lt, .cmp_le => try binaryCmp(b, inst),
+        .branch_single => try branchSingle(b, inst, inner_blocks),
+        .branch_double => try branchDouble(b, inst, inner_blocks),
+        .loop => try loop(b, inst, inner_blocks),
         else => try b.linkInst(inst),
     }
 }
@@ -543,4 +547,32 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
         },
         else => unreachable,
     }
+}
+
+fn branchSingle(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
+    const hg = b.hg;
+    const pl = hg.insts.items(.data)[inst].pl_node.pl;
+    const branch_single = hg.extraData(pl, Hir.Inst.BranchSingle);
+
+    try inner.append(hg.arena, branch_single.exec_true);
+    try b.linkInst(inst);
+}
+
+fn branchDouble(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
+    const hg = b.hg;
+    const pl = hg.insts.items(.data)[inst].pl_node.pl;
+    const branch_double = hg.extraData(pl, Hir.Inst.BranchDouble);
+
+    try inner.append(hg.arena, branch_double.exec_true);
+    try inner.append(hg.arena, branch_double.exec_false);
+    try b.linkInst(inst);
+}
+
+fn loop(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
+    const hg = b.hg;
+    const pl = hg.insts.items(.data)[inst].pl_node.pl;
+    const loop_data = hg.extraData(pl, Hir.Inst.Loop);
+
+    try inner.append(hg.arena, loop_data.body);
+    try b.linkInst(inst);
 }

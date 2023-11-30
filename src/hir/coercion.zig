@@ -3,164 +3,120 @@ const Type = @import("../typing.zig").Type;
 const Hir = @import("../Hir.zig");
 const BlockEditor = @import("BlockEditor.zig");
 
+const indexToRef = Hir.Inst.indexToRef;
+const refToIndex = Hir.Inst.refToIndex;
+
 pub const Error = error{
     InvalidCoercion,
     Truncated,
 };
 
 pub fn coerce(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+    // if the source has the dest type, just return the existing ref
+    const src_ty = b.hg.resolveType(src);
+    // TODO: this doesn't work on complex types, we need proper deep comparison
+    // IF this fails (check this first)
+    const src_bits: u64 = @bitCast(src_ty);
+    const dest_bits: u64 = @bitCast(dest_ty);
+    if (src_bits == dest_bits) return src;
+
     return switch (dest_ty.kind()) {
-        .uint, .sint => coerceToInt(b, src, dest_ty),
-        .comptime_uint, .comptime_sint => coerceToComptimeInt(b, src, dest_ty),
-        .float => coerceToFloat(b, src, dest_ty),
-        .comptime_float => coerceToComptimeFloat(b, src, dest_ty),
+        .uint => uint(b, src, dest_ty),
+        .sint => sint(b, src, dest_ty),
+        .float => float(b, src, dest_ty),
         else => error.NotImplemented,
     };
 }
 
-fn coerceToInt(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+// coerce anything to a fixed-size unsigned int
+fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     const hg = b.hg;
-    const src_ty = hg.resolveType(b.resolveRef(src));
-    if (@as(u64, @bitCast(dest_ty)) == @as(u64, @bitCast(src_ty))) return src;
+    const src_ty = hg.resolveType(src);
 
-    const src_sign = src_ty.intSign();
-    const dest_sign = dest_ty.intSign();
-    switch (src_ty.basic.kind) {
+    switch (src_ty.kind()) {
+        // can coerce to a fixed uint if the comptime value fits in bounds
         .comptime_uint => {
-            const val: u64 = hg.refToInt(b.resolveRef(src));
-            if ((val >= dest_ty.minInt()) and (val <= dest_ty.maxInt())) {
-                const index = try b.addIntConstant(dest_ty, val, undefined); // TODO: node
-                return Hir.Inst.indexToRef(index);
-            } else return error.Truncated;
+            const val: u64 = hg.refToInt(src);
+            if (val > dest_ty.maxInt()) {
+                return error.Truncated;
+            }
+            return indexToRef(try b.addIntConstant(dest_ty, val, undefined)); // TODO: node
         },
-        .comptime_sint => {
-            const val: i64 = @bitCast(hg.refToInt(b.resolveRef(src)));
-            if ((val >= dest_ty.minInt()) and (val <= dest_ty.maxInt())) {
-                const index = try b.addIntConstant(dest_ty, @bitCast(val), undefined); // TODO: node
-                return Hir.Inst.indexToRef(index);
-            } else return error.Truncated;
-        },
+        // comptime sints are always < 0, so can never fit in a uint
+        .comptime_sint => return error.Truncated,
+        // can coerce only if the destination uint is larger (same size would be caught earlier)
         .uint => {
-            if (src_sign != dest_sign) return error.Truncated;
-            if (dest_ty.maxInt() < src_ty.maxInt()) return error.Truncated;
-            const zext_data = try hg.addExtra(Hir.Inst.Extend{
-                .val = src,
-                .ty = try b.typeToRef(dest_ty),
-            });
-
-            const index = try b.addInst(.{
-                .tag = .zext,
-                .data = .{ .pl_node = .{ .pl = zext_data, .node = undefined } }, // TODO: node
-            });
-            return Hir.Inst.indexToRef(index);
+            if (dest_ty.basic.width < src_ty.basic.width) {
+                return error.Truncated;
+            }
+            return indexToRef(try b.addZext(src, try b.typeToRef(dest_ty), undefined)); // TODO: node
         },
-        .sint => {
-            if (src_sign != dest_sign) return error.Truncated;
-            if (dest_ty.maxInt() < src_ty.maxInt()) return error.Truncated;
-            if (dest_ty.minInt() > src_ty.minInt()) return error.Truncated;
-            const sext_data = try hg.addExtra(Hir.Inst.Extend{
-                .val = src,
-                .ty = try b.typeToRef(dest_ty),
-            });
-
-            const index = try b.addInst(.{
-                .tag = .sext,
-                .data = .{ .pl_node = .{ .pl = sext_data, .node = undefined } }, // TODO: node
-            });
-            return Hir.Inst.indexToRef(index);
-        },
+        // could overflow/underflow, so not allowed
+        .sint => return error.Truncated,
+        // lossy
+        .float => return error.Truncated, // TODO: more specific error
         else => return error.InvalidCoercion,
     }
 }
 
-fn coerceToComptimeInt(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+// coerce anything to a fixed-size signed int
+fn sint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     const hg = b.hg;
-    const src_ty = hg.resolveType(b.resolveRef(src));
-    switch (dest_ty.basic.kind) {
-        .comptime_uint => switch (src_ty.kind()) {
-            .comptime_uint => return src,
-            .comptime_sint => {
-                const val: i64 = @bitCast(hg.refToInt(b.resolveRef(src)));
-                if (val < 0) return error.Truncated;
-                const index = try b.addIntConstant(dest_ty, @bitCast(val), undefined); // TODO: node
-                return Hir.Inst.indexToRef(index);
-            },
-            else => unreachable,
+    const src_ty = hg.resolveType(src);
+
+    switch (src_ty.kind()) {
+        // can coerce to a fixed sint if the comptime value fits in bounds
+        .comptime_uint => {
+            const val: u64 = hg.refToInt(src);
+            if (val > dest_ty.maxInt()) {
+                return error.Truncated;
+            }
+            return indexToRef(try b.addIntConstant(dest_ty, val, undefined)); // TODO: node
         },
-        .comptime_sint => switch (src_ty.kind()) {
-            .comptime_uint => {
-                const val: u64 = hg.refToInt(b.resolveRef(src));
-                if (val > std.math.maxInt(i64)) return error.Truncated;
-                const index = try b.addIntConstant(dest_ty, val, undefined); // TODO: node
-                return Hir.Inst.indexToRef(index);
-            },
-            .comptime_sint => return src,
-            else => unreachable,
+        // can coerce to a fixed sint if the comptime value fits in bounds
+        .comptime_sint => {
+            const val: i64 = @bitCast(hg.refToInt(src));
+            if (val < dest_ty.minInt() or val > dest_ty.maxInt()) {
+                return error.Truncated;
+            }
+            return indexToRef(try b.addIntConstant(dest_ty, @bitCast(val), undefined)); // TODO: node
         },
-        else => unreachable,
+        // could overflow/underflow, so not allowed
+        .uint => return error.Truncated,
+        // can coerce only if the destination sint is larger (same size would be caught earlier)
+        .sint => {
+            if (dest_ty.basic.width < src_ty.basic.width) {
+                return error.Truncated;
+            }
+            return indexToRef(try b.addSext(src, try b.typeToRef(dest_ty), undefined)); // TODO: node
+        },
+        // lossy
+        .float => return error.Truncated, // TODO: more specific error
+        else => return error.InvalidCoercion,
     }
 }
 
-// given two types in a binary operation, returns the coercion target type
-// that both references should be coerced to. generally this will be one of
-// the two existing types - whichever is more "well known" or "safe"
-// for instance, comptime numbers cast to fixed width numbers, and
-// ints cast upwards in bitwidth
-// if this function returns, it does NOT necessarily mean the coercion will
-// succeed (coerce() will determine that)
-pub fn binaryCoerceTo(lty: Type, rty: Type) !Type {
-    switch (lty.kind()) {
-        .comptime_uint, .comptime_sint, .comptime_float => return rty,
-        .uint, .sint => switch (rty.kind()) {
-            .comptime_uint, .comptime_sint, .comptime_float => return lty,
-            .uint, .sint => {
-                const lsize = lty.size();
-                const rsize = rty.size();
-                return if (rsize > lsize) rty else lty;
-            },
-            else => return error.NotImplemented,
+// coerce anything to a fixed-size float
+fn float(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+    const hg = b.hg;
+    const src_ty = hg.resolveType(src);
+
+    switch (src_ty.kind()) {
+        // can coerce to a fixed float if the comptime value fits in bounds
+        // TODO: we don't check that right now
+        .comptime_float => {
+            const val: f64 = hg.refToFloat(src);
+            return indexToRef(try b.addFloatConstant(dest_ty, val, undefined)); // TODO: node
         },
+        // lossy and ambiguous, so not allowed
+        .comptime_uint, .comptime_sint, .uint, .sint => return error.Truncated,
+        // can coerce only if the destination float is larger (same size would be caught earlier)
         .float => {
-            if (lty.basic.width == 64) return lty;
-            return if (rty.kind() == .comptime_float) lty else rty;
+            if (dest_ty.basic.width < src_ty.basic.width) {
+                return error.Truncated;
+            }
+            return indexToRef(try b.addFpext(src, try b.typeToRef(dest_ty), undefined)); // TODO: node
         },
-        else => return error.NotImplemented,
+        else => return error.InvalidCoercion,
     }
-}
-
-pub fn coerceToFloat(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
-    const hg = b.hg;
-    const src_ty = hg.resolveType(b.resolveRef(src));
-    if (@as(u64, @bitCast(src_ty)) == @as(u64, @bitCast(dest_ty))) return src;
-    if (dest_ty.basic.width == 64) {
-        if (src_ty.kind() == .comptime_float) {
-            const val = hg.refToFloat(b.resolveRef(src));
-            const index = try b.addFloatConstant(dest_ty, val, undefined); // TODO: node
-            return Hir.Inst.indexToRef(index);
-        } else if (src_ty.basic.width == 32) {
-            const fpext_data = try hg.addExtra(Hir.Inst.Extend{
-                .val = src,
-                .ty = try b.typeToRef(Type.initFloat(64)),
-            });
-
-            const index = try b.addInst(.{
-                .tag = .fpext,
-                .data = .{ .pl_node = .{ .pl = fpext_data, .node = undefined } }, // TODO: node
-            });
-            return Hir.Inst.indexToRef(index);
-        } else return error.InvalidCoercion;
-    } else {
-        if (src_ty.kind() == .comptime_float) {
-            const val = hg.refToFloat(b.resolveRef(src));
-            const index = try b.addFloatConstant(dest_ty, val, undefined); // TODO: node
-            return Hir.Inst.indexToRef(index);
-        } else return error.InvalidCoercion;
-    }
-}
-
-pub fn coerceToComptimeFloat(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
-    _ = dest_ty;
-    const src_ty = b.hg.resolveType(b.resolveRef(src));
-    if (src_ty.kind() == .comptime_float) return src;
-    return error.InvalidCoercion;
 }

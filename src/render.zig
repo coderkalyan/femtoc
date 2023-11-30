@@ -329,6 +329,10 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);
                     try writer.print("push({s})", .{lbuf});
                 },
+                .alloca => {
+                    try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);
+                    try writer.print("alloca({s})", .{lbuf});
+                },
                 .store => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
                     const store = ir.extraData(pl, Hir.Inst.Store);
