@@ -20,6 +20,10 @@ const Error = Allocator.Error || @import("../interner.zig").Error || error{NotIm
 pub fn generate(codegen: *CodeGen) !void {
     var builder = codegen.builder;
 
+    // for (codegen.func.params) |param| {
+    //     std.debug.print("{}\n", .{param});
+    // }
+
     const entry = builder.appendBlock("entry");
     builder.positionAtEnd(entry);
     _ = try codegen.block(codegen.func.body);
@@ -62,7 +66,6 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
 
     const insts = hir.block_slices[block_data.head];
     for (insts, 0..) |inst, i| {
-        _ = i;
         const ref = switch (hir.insts.items(.tag)[inst]) {
             .constant => try codegen.constant(inst),
             .add, .sub, .mul, .div, .mod => try codegen.binaryOp(inst),
@@ -78,7 +81,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .sext => try codegen.sext(inst),
             .fpext => try codegen.fpext(inst),
             // TODO
-            // .param => try codegen.functionParam(inst, @intCast(i)),
+            .param => try codegen.functionParam(inst, @intCast(i)),
             .call => try codegen.call(inst),
             .branch_single => {
                 try codegen.branchSingle(inst);
@@ -299,16 +302,16 @@ fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!void {
     builder.positionAtEnd(exit);
 }
 
-// fn functionParam(codegen: *CodeGen, inst: Hir.Index, index: u32) !c.LLVMValueRef {
-//     const hir = codegen.hir;
-//     const data = hir.insts.items(.data)[inst];
+fn functionParam(codegen: *CodeGen, inst: Hir.Index, index: u32) !c.LLVMValueRef {
+    const hir = codegen.hir;
+    const pl = hir.insts.items(.data)[inst].pl_node.pl;
+    const data = hir.extraData(pl, Hir.Inst.Param);
 
-//     const id = data.ty_pl.pl;
-//     const param_str = try hir.interner.get(id);
-//     const param_ref = c.LLVMGetParam(codegen.builder.function, index);
-//     c.LLVMSetValueName2(param_ref, param_str.ptr, param_str.len);
-//     return param_ref;
-// }
+    const param_str = try hir.interner.get(data.name);
+    const param_ref = c.LLVMGetParam(codegen.builder.function, index);
+    c.LLVMSetValueName2(param_ref, param_str.ptr, param_str.len);
+    return param_ref;
+}
 
 fn dbgValue(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
@@ -370,18 +373,18 @@ fn loop(codegen: *CodeGen, inst: Hir.Index) !void {
     var builder = codegen.builder;
 
     const prev = builder.getInsertBlock();
-    const entry_block = builder.appendBlock("loop.entry");
+    const entry_block = builder.appendBlock("loop_entry");
     builder.positionAtEnd(entry_block);
     _ = try codegen.block(data.body);
 
-    const condition_block = builder.appendBlock("loop.cond");
+    const condition_block = builder.appendBlock("loop_cond");
     builder.addBranch(condition_block);
     builder.positionAtEnd(prev);
     builder.addBranch(condition_block);
     builder.positionAtEnd(condition_block);
     const condition_ref = try codegen.block(data.condition);
 
-    const exit_block = builder.appendBlock("loop.exit");
+    const exit_block = builder.appendBlock("loop_exit");
     builder.addCondBranch(condition_ref, entry_block, exit_block);
 
     builder.positionAtEnd(exit_block);

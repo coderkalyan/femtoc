@@ -863,8 +863,10 @@ fn loopForever(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 
         // TODO: should be implicit not node
         const condition = try coerce(&block_scope.editor, scope, Ref.btrue_val, Ref.bool_ty, node);
-        const index = refToIndex(condition).?;
-        break :block index;
+        // const index = refToIndex(condition).?;
+        // break :block index;
+        _ = try block_scope.editor.addYieldImplicit(condition, node);
+        break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
 
     return b.addLoop(condition, body, node);

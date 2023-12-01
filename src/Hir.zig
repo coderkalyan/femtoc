@@ -368,13 +368,14 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .icmp_ugt, .icmp_uge, .icmp_ult, .icmp_ule => Type.initInt(1, false),
             .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle => Type.initInt(1, false),
             .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => Type.initInt(1, false),
-            // .alloca => hir.resolveType(data.un_node.operand),
             .push => hir.resolveType(data.un_node.operand),
-            .alloca => hir.resolveType(data.un_node.operand), // TODO
+            .alloca => hir.resolveType(data.un_node.operand),
             .store => unreachable, // shouldn't be referenced
             .load => hir.resolveType(Inst.indexToRef(data.pl_node.pl)),
-            .param => hir.resolveType(data.ty_pl.ty),
-            // .load_decl => hir.comp.declPtr(data.pl).ty,
+            .param => ty: {
+                const param_data = hir.extraData(data.pl_node.pl, Hir.Inst.Param);
+                break :ty hir.resolveType(param_data.ty);
+            },
             .call => ty: {
                 const call_data = hir.extraData(data.pl_node.pl, Hir.Inst.Call);
                 const call_ty = hir.resolveType(call_data.addr);

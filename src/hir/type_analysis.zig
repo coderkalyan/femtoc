@@ -118,7 +118,6 @@ fn fnDecl(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32))
             ptr.params[extra_index] = param_data;
         }
 
-        std.debug.print("{any}\n", .{ptr.params});
         break :ptr ptr;
     };
 
@@ -573,6 +572,7 @@ fn loop(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !
     const pl = hg.insts.items(.data)[inst].pl_node.pl;
     const loop_data = hg.extraData(pl, Hir.Inst.Loop);
 
+    try inner.append(hg.arena, loop_data.condition);
     try inner.append(hg.arena, loop_data.body);
     try b.linkInst(inst);
 }

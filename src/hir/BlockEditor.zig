@@ -311,7 +311,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             .store => {
                 // Store
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                // remapIndexPl(hg, remaps, pl + 0); // addr
+                remapIndexPl(hg, remaps, pl + 0); // addr
                 remapRefPl(hg, remaps, pl + 1); // val
             },
             .fn_decl => {
@@ -364,7 +364,18 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 const block2_data = hg.extraData(block2_pl, Hir.Inst.Block);
                 commitRemap(hg, remaps, block2_data.head);
             },
-            .loop => unreachable,
+            .loop => {
+                const pl = hg.insts.items(.data)[inst].pl_node.pl;
+                const data = hg.extraData(pl, Hir.Inst.Loop);
+
+                const condition_pl = hg.insts.items(.data)[data.condition].pl_node.pl;
+                const condition_data = hg.extraData(condition_pl, Hir.Inst.Block);
+                commitRemap(hg, remaps, condition_data.head);
+
+                const body_pl = hg.insts.items(.data)[data.body].pl_node.pl;
+                const body_data = hg.extraData(body_pl, Hir.Inst.Block);
+                commitRemap(hg, remaps, body_data.head);
+            },
             .loop_break => {},
             .ret_implicit, .yield_implicit => {
                 // unary operand
