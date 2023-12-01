@@ -370,7 +370,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => Type.initInt(1, false),
             // .alloca => hir.resolveType(data.un_node.operand),
             .push => hir.resolveType(data.un_node.operand),
-            .alloca => unreachable, // TODO
+            .alloca => hir.resolveType(data.un_node.operand), // TODO
             .store => unreachable, // shouldn't be referenced
             .load => hir.resolveType(Inst.indexToRef(data.pl_node.pl)),
             .param => hir.resolveType(data.ty_pl.ty),

@@ -449,7 +449,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initInt(rty.basic.width, false));
+                        const dest_ty = try b.typeToRef(Type.initFloat(rty.basic.width));
                         const pl = try b.hg.addExtra(Hir.Inst.Extend{
                             .val = cmp_lref,
                             .ty = dest_ty,
@@ -459,7 +459,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                             .data = .{ .pl_node = .{ .pl = pl, .node = data.pl_node.node } },
                         }));
                     } else if (rty.basic.width < lty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initInt(lty.basic.width, false));
+                        const dest_ty = try b.typeToRef(Type.initFloat(lty.basic.width));
                         const pl = try b.hg.addExtra(Hir.Inst.Extend{
                             .val = cmp_rref,
                             .ty = dest_ty,

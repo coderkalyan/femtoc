@@ -1,8 +1,8 @@
 const std = @import("std");
 const Hir = @import("Hir.zig");
 const Type = @import("typing.zig").Type;
-const Compilation = @import("Compilation.zig");
-const Decl = Compilation.Decl;
+// const Compilation = @import("Compilation.zig");
+// const Decl = Compilation.Decl;
 const HirGen = @import("HirGen.zig");
 const Allocator = std.mem.Allocator;
 
@@ -52,7 +52,7 @@ pub const Value = extern union {
 
         pub const Reference = struct {
             base: Payload = .{ .tag = .reference },
-            ref: Decl.Index,
+            // ref: Decl.Index,
         };
 
         pub inline fn cast(base: *const Payload, comptime T: type) ?*const T {

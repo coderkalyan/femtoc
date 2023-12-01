@@ -1,5 +1,5 @@
 const std = @import("std");
-const Mir = @import("../../Mir.zig");
+const Hir = @import("../../Hir.zig");
 const typing = @import("../../typing.zig");
 const DeclGen = @import("DeclGen.zig");
 const CodeGen = @import("CodeGen.zig");
@@ -83,71 +83,18 @@ pub const Module = struct {
     }
 };
 
-pub const Backend = struct {
-    gpa: Allocator,
-    comp: *Compilation,
-    context: Context,
-    module: Module,
-    // TODO: change to Decl.Index
-    globals: std.AutoHashMapUnmanaged(*Decl, c.LLVMValueRef),
-
-    pub fn create(gpa: Allocator, comp: *Compilation, name: [:0]const u8) Backend {
-        const context = Context.create();
-        return .{
-            .gpa = gpa,
-            .comp = comp,
-            .context = context,
-            .module = Module.create(context, name),
-            .globals = .{},
-        };
-    }
-
-    pub fn destroy(backend: *Backend) void {
-        backend.globals.deinit(backend.gpa);
-        backend.module.destroy();
-        backend.context.destroy();
-    }
-
-    pub fn updateDecl(backend: *Backend, decl_index: Decl.Index) !void {
-        var dg = DeclGen{
-            .gpa = backend.gpa,
-            .decl_index = decl_index,
-            .backend = backend,
-        };
-        try dg.generate();
-    }
-
-    pub fn generateBody(backend: *Backend, decl: *Decl, mir: *const Mir) !void {
-        const function = c.LLVMGetNamedFunction(backend.module.module, decl.name);
-        const builder = Builder.create(backend, function);
-        defer builder.destroy();
-
-        var codegen = CodeGen{
-            .gpa = backend.gpa,
-            .mir = mir,
-            .comp = backend.comp,
-            .map = .{},
-            .builder = builder,
-            .alloc_block = null,
-        };
-        try codegen.generate();
-    }
-};
-
 pub const Builder = struct {
     gpa: Allocator,
-    backend: *Backend,
     context: c.LLVMContextRef,
     function: c.LLVMValueRef,
     builder: c.LLVMBuilderRef,
 
-    pub fn create(backend: *Backend, function: c.LLVMValueRef) Builder {
+    pub fn create(gpa: Allocator, context: *Context, function: c.LLVMValueRef) Builder {
         return .{
-            .gpa = backend.gpa,
-            .backend = backend,
-            .context = backend.context.context,
+            .gpa = gpa,
+            .context = context.context,
             .function = function,
-            .builder = c.LLVMCreateBuilderInContext(backend.context.context),
+            .builder = c.LLVMCreateBuilderInContext(context.context),
         };
     }
 

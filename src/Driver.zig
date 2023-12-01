@@ -1,9 +1,10 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 const HirGen = @import("HirGen.zig");
-const Compilation = @import("Compilation.zig");
+// const Compilation = @import("Compilation.zig");
 const render = @import("render.zig");
 const error_handler = @import("error_handler.zig");
+const LlvmBackend = @import("_llvm/Backend.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -76,5 +77,6 @@ pub fn build(gpa: Allocator, config: *Configuration) !void {
         try buffered_out.flush();
     }
 
-    try Compilation.compile(gpa, &hir, config);
+    var backend = LlvmBackend.init(gpa);
+    backend.iface.generate(&hir);
 }
