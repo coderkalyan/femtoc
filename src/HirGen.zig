@@ -618,6 +618,7 @@ fn globalConst(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
         break :ref try coerce(&inline_block.editor, scope, rvalue_inner, dest_ty, node);
     };
 
+    // const global = try inline_block.editor.addGlobal(rvalue, node);
     _ = try inline_block.editor.addYieldInline(rvalue, node);
     return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
 }
@@ -667,6 +668,7 @@ fn globalConstAttr(b: *BlockEditor, s: *Scope, node: Node.Index) !Hir.Index {
         }
     }
 
+    // const global = try block_inline.editor.addGlobal(yield_val, node);
     _ = try block_inline.addYieldInline(yield_val, node);
     return b.addBlockInline(&block_inline, node);
 }
@@ -689,7 +691,7 @@ fn globalVar(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
         break :ref try coerce(&inline_block.editor, scope, rvalue_inner, dest_ty, node);
     };
 
-    const mut = try inline_block.editor.addPush(rvalue, node);
+    const mut = try inline_block.editor.addGlobalMut(rvalue, node);
     _ = try inline_block.editor.addYieldInline(indexToRef(mut), node);
     return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
 }

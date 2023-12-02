@@ -77,6 +77,14 @@ pub fn addFunction(context: *Context, name: [:0]const u8, ty: c.LLVMTypeRef) c.L
     return c.LLVMAddFunction(context.module, name.ptr, ty);
 }
 
+pub fn getNamedFunction(context: *Context, name: [:0]const u8) c.LLVMValueRef {
+    return c.LLVMGetNamedFunction(context.module, name.ptr);
+}
+
+pub fn addGlobal(context: *Context, name: [:0]const u8, ty: c.LLVMTypeRef) c.LLVMValueRef {
+    return c.LLVMAddGlobal(context.module, ty, name.ptr);
+}
+
 pub const Builder = struct {
     arena: Allocator,
     context: *Context,

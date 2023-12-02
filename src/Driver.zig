@@ -78,5 +78,5 @@ pub fn build(gpa: Allocator, config: *Configuration) !void {
     }
 
     var backend = LlvmBackend.init(gpa);
-    backend.iface.generate(&hir);
+    try backend.iface.generate(&hir);
 }

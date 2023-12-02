@@ -19,6 +19,17 @@ pub fn coerce(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.
     };
 }
 
+// coerce but with static dispatch to a comptime known destination type
+pub fn coerceStatic(analyzer: *Analyzer, b: *Block, src: Mir.Ref, comptime dest_ty: Type) !Mir.Ref {
+    return switch (dest_ty.kind()) {
+        .uint, .sint => coerceToInt(analyzer, b, src, dest_ty),
+        .comptime_uint, .comptime_sint => coerceToComptimeInt(analyzer, b, src, dest_ty),
+        .float => coerceToFloat(analyzer, b, src, dest_ty),
+        .comptime_float => coerceToComptimeFloat(analyzer, b, src, dest_ty),
+        else => error.NotImplemented,
+    };
+}
+
 fn coerceToInt(analyzer: *Analyzer, b: *Block, src: Mir.Ref, dest_ty: Type) !Mir.Ref {
     const src_ty = try analyzer.resolveType(b, src);
     if (@as(u64, @bitCast(dest_ty)) == @as(u64, @bitCast(src_ty))) return src;

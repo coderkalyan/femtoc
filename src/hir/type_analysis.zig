@@ -74,6 +74,7 @@ fn processInst(b: *BlockEditor, inst: Hir.Index, inner_blocks: *std.ArrayListUnm
         .int => _ = try integer(b, inst),
         .float => _ = try float(b, inst),
         .coerce => try coerce(b, inst),
+        .add, .sub, .mul, .div, .mod => try binaryArithOp(b, inst),
         .cmp_eq, .cmp_ne, .cmp_gt, .cmp_ge, .cmp_lt, .cmp_le => try binaryCmp(b, inst),
         .branch_single => try branchSingle(b, inst, inner_blocks),
         .branch_double => try branchDouble(b, inst, inner_blocks),
@@ -159,37 +160,86 @@ fn coerce(b: *BlockEditor, inst: Hir.Index) !void {
     try b.addRemap(inst, new_ref);
 }
 
-// fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
-//     const hg = b.hg;
-//     const data = b.hir.insts.items(.data)[inst];
-//     const binary = b.hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
-//     const lref = try hg.resolveRef(b, binary.lref);
-//     const rref = try hg.resolveRef(b, binary.rref);
-//     const lty = try hg.resolveType(b, lref);
-//     const rty = try hg.resolveType(b, rref);
+fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
+    const hg = b.hg;
+    const data = hg.insts.items(.data)[inst];
+    const binary = hg.extraData(data.pl_node.pl, Hir.Inst.Binary);
 
-//     if (lty.kind() == .comptime_uint or lty.kind() == .comptime_sint) {
-//         if (rty.kind() == .comptime_uint or rty.kind() == .comptime_sint) {
-//             return b.analyzeComptimeArithmetic(b, inst);
-//         }
-//     }
+    const lty = hg.resolveType(binary.lref);
+    const rty = hg.resolveType(binary.rref);
+    const lkind = lty.kind();
+    const rkind = rty.kind();
+    const lbits: u64 = @bitCast(lty.basic);
+    const rbits: u64 = @bitCast(rty.basic);
 
-//     const dest_ty = try coercion.binaryCoerceTo(lty, rty);
-//     const lval = try coercion.coerce(b, lref, dest_ty);
-//     const rval = try coercion.coerce(b, rref, dest_ty);
+    // pending a discussion on arithmetic overflow semantics,
+    // femto only allows addition between variables of the same type
+    // comptime literals coerce to the fixed type of the other value
+    // if both are comptime literals, the arithmetic is evaluated at
+    // compile time (constant folding)
+    switch (lkind) {
+        .uint => {
+            switch (rkind) {
+                .uint => {
+                    if (lbits != rbits) {
+                        return error.Truncated;
+                    }
+                    try b.linkInst(inst);
+                },
+                .sint => return error.Truncated,
+                .comptime_uint, .comptime_sint => {
+                    const lref = binary.lref;
+                    const rref = try coercion.coerce(b, binary.rref, lty);
 
-//     try b.addInst(.{
-//         .tag = switch (b.hir.insts.items(.tag)[inst]) {
-//             .add => .add,
-//             .sub => .sub,
-//             .mul => .mul,
-//             .div => .div,
-//             .mod => .mod,
-//             else => return error.NotImplemented,
-//         },
-//         .data = .{ .bin_op = .{ .lref = lval, .rref = rval } },
-//     });
-// }
+                    const new_arith = try b.addBinary(lref, rref, hg.insts.items(.tag)[inst], data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_arith));
+                },
+                else => unreachable, // TODO: should emit error
+            }
+        },
+        .sint => {
+            switch (rkind) {
+                .uint => return error.Truncated,
+                .sint => {
+                    if (lbits != rbits) {
+                        return error.Truncated;
+                    }
+                    try b.linkInst(inst);
+                },
+                .comptime_uint, .comptime_sint => {
+                    const lref = binary.lref;
+                    const rref = try coercion.coerce(b, binary.rref, lty);
+
+                    const new_arith = try b.addBinary(lref, rref, hg.insts.items(.tag)[inst], data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_arith));
+                },
+                else => unreachable, // TODO: should emit error
+            }
+        },
+        .comptime_uint, .comptime_sint => {
+            switch (rkind) {
+                .uint, .sint => {
+                    const lref = try coercion.coerce(b, binary.lref, rty);
+                    const rref = binary.rref;
+
+                    const new_arith = try b.addBinary(lref, rref, hg.insts.items(.tag)[inst], data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_arith));
+                },
+                .comptime_uint, .comptime_sint => {
+                    unreachable; // TODO: constant folding
+                },
+                else => unreachable, // TODO: should emit error
+            }
+        },
+        else => unreachable,
+    }
+
+    // if (lty.kind() == .comptime_uint or lty.kind() == .comptime_sint) {
+    //     if (rty.kind() == .comptime_uint or rty.kind() == .comptime_sint) {
+    //         return b.analyzeComptimeArithmetic(b, inst);
+    //     }
+    // }
+}
 
 // this function performs simple constant folding of compile time arithmetic.
 // this is necessary because constants produce `comptime_int` and `comptime_float`
@@ -260,25 +310,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initInt(rty.basic.width, false));
-                        const pl = try b.hg.addExtra(Hir.Inst.Extend{
-                            .val = cmp_lref,
-                            .ty = dest_ty,
-                        });
-                        cmp_lref = indexToRef(try b.addInst(.{
-                            .tag = .zext,
-                            .data = .{ .pl_node = .{ .pl = pl, .node = data.pl_node.node } },
-                        }));
+                        const dest_ty = Type.initInt(rty.basic.width, false);
+                        cmp_lref = try coercion.coerce(b, cmp_lref, dest_ty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initInt(lty.basic.width, false));
-                        const pl = try b.hg.addExtra(Hir.Inst.Extend{
-                            .val = cmp_rref,
-                            .ty = dest_ty,
-                        });
-                        cmp_rref = indexToRef(try b.addInst(.{
-                            .tag = .zext,
-                            .data = .{ .pl_node = .{ .pl = pl, .node = data.pl_node.node } },
-                        }));
+                        const dest_ty = Type.initInt(lty.basic.width, false);
+                        cmp_rref = try coercion.coerce(b, cmp_rref, dest_ty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -329,25 +365,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initInt(rty.basic.width, true));
-                        const pl = try b.hg.addExtra(Hir.Inst.Extend{
-                            .val = cmp_lref,
-                            .ty = dest_ty,
-                        });
-                        cmp_lref = indexToRef(try b.addInst(.{
-                            .tag = .sext,
-                            .data = .{ .pl_node = .{ .pl = pl, .node = data.pl_node.node } },
-                        }));
+                        const dest_ty = Type.initInt(rty.basic.width, true);
+                        cmp_lref = try coercion.coerce(b, cmp_lref, dest_ty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initInt(lty.basic.width, true));
-                        const pl = try b.hg.addExtra(Hir.Inst.Extend{
-                            .val = cmp_rref,
-                            .ty = dest_ty,
-                        });
-                        cmp_rref = indexToRef(try b.addInst(.{
-                            .tag = .sext,
-                            .data = .{ .pl_node = .{ .pl = pl, .node = data.pl_node.node } },
-                        }));
+                        const dest_ty = Type.initInt(lty.basic.width, true);
+                        cmp_rref = try coercion.coerce(b, cmp_rref, dest_ty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -448,25 +470,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initFloat(rty.basic.width));
-                        const pl = try b.hg.addExtra(Hir.Inst.Extend{
-                            .val = cmp_lref,
-                            .ty = dest_ty,
-                        });
-                        cmp_lref = indexToRef(try b.addInst(.{
-                            .tag = .fpext,
-                            .data = .{ .pl_node = .{ .pl = pl, .node = data.pl_node.node } },
-                        }));
+                        const dest_ty = Type.initFloat(rty.basic.width);
+                        cmp_lref = try coercion.coerce(b, cmp_lref, dest_ty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        const dest_ty = try b.typeToRef(Type.initFloat(lty.basic.width));
-                        const pl = try b.hg.addExtra(Hir.Inst.Extend{
-                            .val = cmp_rref,
-                            .ty = dest_ty,
-                        });
-                        cmp_rref = indexToRef(try b.addInst(.{
-                            .tag = .fpext,
-                            .data = .{ .pl_node = .{ .pl = pl, .node = data.pl_node.node } },
-                        }));
+                        const dest_ty = Type.initFloat(lty.basic.width);
+                        cmp_rref = try coercion.coerce(b, cmp_rref, dest_ty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {

@@ -14,6 +14,7 @@ hir: *const Hir,
 func: *Hir.Inst.Function,
 // TODO: is LLVM thread safe?
 map: std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
+global_map: *std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
 
 const Error = Allocator.Error || @import("../interner.zig").Error || error{NotImplemented};
 
@@ -33,11 +34,11 @@ fn resolveRef(codegen: *CodeGen, ref: Hir.Ref) c.LLVMValueRef {
     if (Hir.Inst.refToIndex(ref)) |index| {
         const hir = codegen.hir;
         if (hir.insts.items(.tag)[index] == .load_global) {
-            // TODO: we probably still have forward declaration issues
-            unreachable;
-            // const pl = hir.insts.items(.data)[index].pl;
-            // const decl = codegen.comp.decls.at(pl);
-            // const backend = codegen.builder.backend;
+            const pl = hir.insts.items(.data)[index].pl_node.pl;
+            // const ident = hir.interner.get(pl) catch unreachable;
+            // TODO: we can probably remove global map and just use llvm to look it up
+            // via the name
+            return codegen.global_map.get(pl).?;
             // if (decl.val.kind() == .function) {
             //     return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
             // } else {
@@ -48,8 +49,10 @@ fn resolveRef(codegen: *CodeGen, ref: Hir.Ref) c.LLVMValueRef {
         }
     } else {
         return switch (ref) {
-            .zero_val, .btrue_val => codegen.builder.addUint(Type.initInt(64, false), 0) catch unreachable,
-            .one_val, .bfalse_val => codegen.builder.addUint(Type.initInt(64, false), 1) catch unreachable,
+            .zero_val => codegen.builder.addUint(Type.initInt(64, false), 0) catch unreachable,
+            .bfalse_val => codegen.builder.addUint(Type.initInt(1, false), 0) catch unreachable,
+            .one_val => codegen.builder.addUint(Type.initInt(64, false), 1) catch unreachable,
+            .btrue_val => codegen.builder.addUint(Type.initInt(1, false), 1) catch unreachable,
             else => unreachable,
         };
     }
@@ -60,7 +63,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
     const data = hir.insts.items(.data)[block_inst];
     const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
 
-    const after_block = codegen.builder.appendBlock("yield_exit");
+    const after_block = codegen.builder.appendBlock("yield.exit");
     var yield_val: c.LLVMValueRef = null;
     var yield_jump: bool = false;
 
@@ -254,13 +257,13 @@ fn branchSingle(codegen: *CodeGen, inst: Hir.Index) Error!void {
     var builder = codegen.builder;
 
     const condition = codegen.resolveRef(data.condition);
-    const exec_true = builder.appendBlock("if_true");
+    const exec_true = builder.appendBlock("if.true");
     const prev = builder.getInsertBlock();
     builder.positionAtEnd(exec_true);
 
     // TODO: branch expressions
     _ = try codegen.block(data.exec_true);
-    const exit = builder.appendBlock("if_exit");
+    const exit = builder.appendBlock("if.exit");
     if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null)
         builder.addBranch(exit);
 
@@ -280,18 +283,18 @@ fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!void {
 
     // TODO: branch expressions
     const prev = builder.getInsertBlock();
-    const exec_true = builder.appendBlock("ifelse_true");
+    const exec_true = builder.appendBlock("ifelse.true");
     builder.positionAtEnd(exec_true);
     _ = try codegen.block(data.exec_true);
 
     const false_prev = builder.getInsertBlock();
-    const exec_false = builder.appendBlock("ifelse_false");
+    const exec_false = builder.appendBlock("ifelse.false");
     builder.positionAtEnd(prev);
     builder.addCondBranch(condition, exec_true, exec_false);
     builder.positionAtEnd(exec_false);
     _ = try codegen.block(data.exec_false);
 
-    const exit = builder.appendBlock("ifelse_exit");
+    const exit = builder.appendBlock("ifelse.exit");
     if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null)
         builder.addBranch(exit);
     if (c.LLVMGetBasicBlockTerminator(false_prev) == null) {
@@ -373,18 +376,18 @@ fn loop(codegen: *CodeGen, inst: Hir.Index) !void {
     var builder = codegen.builder;
 
     const prev = builder.getInsertBlock();
-    const entry_block = builder.appendBlock("loop_entry");
+    const entry_block = builder.appendBlock("loop.entry");
     builder.positionAtEnd(entry_block);
     _ = try codegen.block(data.body);
 
-    const condition_block = builder.appendBlock("loop_cond");
+    const condition_block = builder.appendBlock("loop.cond");
     builder.addBranch(condition_block);
     builder.positionAtEnd(prev);
     builder.addBranch(condition_block);
     builder.positionAtEnd(condition_block);
     const condition_ref = try codegen.block(data.condition);
 
-    const exit_block = builder.appendBlock("loop_exit");
+    const exit_block = builder.appendBlock("loop.exit");
     builder.addCondBranch(condition_ref, entry_block, exit_block);
 
     builder.positionAtEnd(exit_block);

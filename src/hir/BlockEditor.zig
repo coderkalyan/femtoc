@@ -296,7 +296,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 remapRefPl(hg, remaps, pl + 0); // val
                 remapRefPl(hg, remaps, pl + 1); // ty
             },
-            .push => {
+            .push, .global, .global_mut => {
                 // unary operand
                 var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
                 remapRef(hg, remaps, op);
@@ -489,6 +489,20 @@ pub fn addDebugValue(b: *BlockEditor, val: Hir.Ref, name: u32, node: Node.Index)
 pub fn addPush(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .push,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+pub fn addGlobal(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .global,
+        .data = .{ .un_node = .{ .operand = val, .node = node } },
+    });
+}
+
+pub fn addGlobalMut(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .global_mut,
         .data = .{ .un_node = .{ .operand = val, .node = node } },
     });
 }

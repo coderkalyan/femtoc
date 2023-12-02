@@ -2,7 +2,6 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const Hir = @import("Hir.zig");
-const Mir = @import("Mir.zig");
 const Type = @import("typing.zig").Type;
 
 const io = std.io;

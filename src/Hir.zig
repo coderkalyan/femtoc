@@ -95,6 +95,8 @@ pub const Inst = struct {
         push,
         // TODO
         alloca,
+        global,
+        global_mut,
         // loads data from a memory address and returns a ref to the value
         // data.un_node.operand = memory address (ref to alloc_push or decl)
         load,
@@ -369,7 +371,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle => Type.initInt(1, false),
             .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => Type.initInt(1, false),
             .push => hir.resolveType(data.un_node.operand),
-            .alloca => hir.resolveType(data.un_node.operand),
+            .alloca, .global, .global_mut => hir.resolveType(data.un_node.operand),
             .store => unreachable, // shouldn't be referenced
             .load => hir.resolveType(Inst.indexToRef(data.pl_node.pl)),
             .param => ty: {
