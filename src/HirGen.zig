@@ -442,9 +442,10 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!?Ref {
 
 fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const data = hg.tree.data(node);
+    std.debug.print("global node: {}\n", .{data});
     return try switch (data) {
         .const_decl => globalConst(hg, scope, node),
-        .const_decl_attr => return try globalConstAttr(hg, scope, node),
+        .const_decl_attr => globalConstAttr(hg, scope, node),
         .var_decl => globalVar(hg, scope, node),
         else => {
             std.debug.print("Unexpected node: {}\n", .{hg.tree.data(node)});
@@ -653,8 +654,10 @@ fn globalConstAttr(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     const id = try hg.interner.intern(ident_str);
     _ = id;
 
+    std.debug.print("attring: {} {}\n", .{ metadata.attrs_start, metadata.attrs_end });
     const attrs = hg.tree.extra_data[metadata.attrs_start..metadata.attrs_end];
     for (attrs) |attr| {
+        std.debug.print("attr: {} {}\n", .{ attr, hg.tree.mainToken(attr) });
         switch (hg.tree.tokenTag(hg.tree.mainToken(attr))) {
             .a_export => rvalue = indexToRef(try b.addLinkExtern(rvalue, node)),
             else => unreachable,

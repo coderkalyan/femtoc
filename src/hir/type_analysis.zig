@@ -164,18 +164,18 @@ fn coerce(b: *BlockEditor, inst: Hir.Index) !void {
 
 fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
     const hg = b.hg;
+    const tag = hg.insts.items(.tag)[inst];
     const data = hg.insts.items(.data)[inst];
     const binary = hg.extraData(data.pl_node.pl, Hir.Inst.Binary);
+    const op_token = hg.tree.mainToken(data.pl_node.node);
 
     const lty = hg.resolveType(binary.lref);
     const rty = hg.resolveType(binary.rref);
     const lkind = lty.kind();
     const rkind = rty.kind();
-    const lbits: u64 = @bitCast(lty.basic);
-    const rbits: u64 = @bitCast(rty.basic);
 
     // pending a discussion on arithmetic overflow semantics,
-    // femto only allows addition between variables of the same type
+    // femto only allows addition between variables of the same sign
     // comptime literals coerce to the fixed type of the other value
     // if both are comptime literals, the arithmetic is evaluated at
     // compile time (constant folding)
@@ -183,17 +183,24 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
         .uint => {
             switch (rkind) {
                 .uint => {
-                    if (lbits != rbits) {
-                        return error.Truncated;
-                    }
-                    try b.linkInst(inst);
+                    const bits = @max(lty.basic.width, rty.basic.width);
+                    const dest_ty = Type.initInt(bits, false);
+                    const lref = try coercion.coerce(b, binary.lref, dest_ty);
+                    const rref = try coercion.coerce(b, binary.rref, dest_ty);
+                    const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_arith));
                 },
-                .sint => return error.Truncated,
+                .sint => {
+                    try hg.errors.append(hg.gpa, .{
+                        .tag = .binary_diffsign,
+                        .token = op_token,
+                    });
+                    return error.HandledUserError;
+                },
                 .comptime_uint, .comptime_sint => {
                     const lref = binary.lref;
                     const rref = try coercion.coerce(b, binary.rref, lty);
-
-                    const new_arith = try b.addBinary(lref, rref, hg.insts.items(.tag)[inst], data.pl_node.node);
+                    const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
                     try b.addRemap(inst, indexToRef(new_arith));
                 },
                 else => unreachable, // TODO: should emit error
@@ -201,12 +208,20 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
         },
         .sint => {
             switch (rkind) {
-                .uint => return error.Truncated,
+                .uint => {
+                    try hg.errors.append(hg.gpa, .{
+                        .tag = .binary_diffsign,
+                        .token = op_token,
+                    });
+                    return error.HandledUserError;
+                },
                 .sint => {
-                    if (lbits != rbits) {
-                        return error.Truncated;
-                    }
-                    try b.linkInst(inst);
+                    const bits = @max(lty.basic.width, rty.basic.width);
+                    const dest_ty = Type.initInt(bits, false);
+                    const lref = try coercion.coerce(b, binary.lref, dest_ty);
+                    const rref = try coercion.coerce(b, binary.rref, dest_ty);
+                    const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_arith));
                 },
                 .comptime_uint, .comptime_sint => {
                     const lref = binary.lref;
@@ -312,52 +327,10 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        const dest_ty = Type.initInt(rty.basic.width, false);
-                        cmp_lref = try coercion.coerce(b, cmp_lref, dest_ty);
+                        cmp_lref = try coercion.coerce(b, cmp_lref, rty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        const dest_ty = Type.initInt(lty.basic.width, false);
-                        cmp_rref = try coercion.coerce(b, cmp_rref, dest_ty);
+                        cmp_rref = try coercion.coerce(b, cmp_rref, lty);
                     }
-
-                    const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
-                        .cmp_eq => .icmp_eq,
-                        .cmp_ne => .icmp_ne,
-                        .cmp_gt => .icmp_ugt,
-                        .cmp_ge => .icmp_uge,
-                        .cmp_lt => .icmp_ult,
-                        .cmp_le => .icmp_ule,
-                        else => unreachable,
-                    };
-                    const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
-                },
-                .comptime_uint => {
-                    const rval: u64 = hg.refToInt(binary.rref);
-                    if (rval > lty.maxInt()) {
-                        return error.Truncated;
-                    }
-                    const cmp_lref = binary.lref;
-                    const cmp_rref = indexToRef(try b.addIntConstant(lty, rval, data.pl_node.node));
-
-                    const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
-                        .cmp_eq => .icmp_eq,
-                        .cmp_ne => .icmp_ne,
-                        .cmp_gt => .icmp_ugt,
-                        .cmp_ge => .icmp_uge,
-                        .cmp_lt => .icmp_ult,
-                        .cmp_le => .icmp_ule,
-                        else => unreachable,
-                    };
-                    const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
-                },
-                .comptime_sint => {
-                    const rval: i64 = @bitCast(hg.refToInt(binary.rref));
-                    if (rval < lty.minInt() or rval > lty.maxInt()) {
-                        return error.Truncated;
-                    }
-                    const cmp_lref = binary.lref;
-                    const cmp_rref = indexToRef(try b.addIntConstant(lty, @bitCast(rval), data.pl_node.node));
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq => .icmp_eq,
@@ -372,6 +345,22 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     try b.addRemap(inst, indexToRef(new_cmp));
                 },
                 .sint => return error.Truncated, // TODO: should emit error
+                .comptime_uint, .comptime_sint => {
+                    const cmp_lref = binary.lref;
+                    const cmp_rref = try coercion.coerce(b, binary.rref, lty);
+
+                    const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
+                        .cmp_eq => .icmp_eq,
+                        .cmp_ne => .icmp_ne,
+                        .cmp_gt => .icmp_ugt,
+                        .cmp_ge => .icmp_uge,
+                        .cmp_lt => .icmp_ult,
+                        .cmp_le => .icmp_ule,
+                        else => unreachable,
+                    };
+                    const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_cmp));
+                },
                 else => unreachable, // TODO: should emit error
             }
         },
@@ -382,16 +371,15 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
             // if the other type is a comptime_sint, it will be coerced to a concrete
             // type of the right size
             switch (rkind) {
+                .uint => return error.Truncated, // TODO: should emit error
                 .sint => {
                     var cmp_lref = binary.lref;
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        const dest_ty = Type.initInt(rty.basic.width, true);
-                        cmp_lref = try coercion.coerce(b, cmp_lref, dest_ty);
+                        cmp_lref = try coercion.coerce(b, cmp_lref, rty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        const dest_ty = Type.initInt(lty.basic.width, true);
-                        cmp_rref = try coercion.coerce(b, cmp_rref, dest_ty);
+                        cmp_rref = try coercion.coerce(b, cmp_rref, lty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -406,13 +394,9 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
                     try b.addRemap(inst, indexToRef(new_cmp));
                 },
-                .comptime_sint => {
-                    const rval: i64 = @bitCast(hg.refToInt(binary.rref));
-                    if (rval < lty.minInt() or rval > lty.maxInt()) {
-                        return error.Truncated;
-                    }
+                .comptime_uint, .comptime_sint => {
                     const cmp_lref = binary.lref;
-                    const cmp_rref = indexToRef(try b.addIntConstant(lty, @bitCast(rval), data.pl_node.node));
+                    const cmp_rref = try coercion.coerce(b, binary.rref, lty);
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq => .icmp_eq,
@@ -426,27 +410,6 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
                     try b.addRemap(inst, indexToRef(new_cmp));
                 },
-                .comptime_uint => {
-                    const rval: u64 = hg.refToInt(binary.rref);
-                    if (rval > lty.maxInt()) {
-                        return error.Truncated;
-                    }
-                    const cmp_lref = binary.lref;
-                    const cmp_rref = indexToRef(try b.addIntConstant(lty, @bitCast(rval), data.pl_node.node));
-
-                    const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
-                        .cmp_eq => .icmp_eq,
-                        .cmp_ne => .icmp_ne,
-                        .cmp_gt => .icmp_sgt,
-                        .cmp_ge => .icmp_sge,
-                        .cmp_lt => .icmp_slt,
-                        .cmp_le => .icmp_sle,
-                        else => unreachable,
-                    };
-                    const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
-                },
-                .uint => return error.Truncated, // TODO: should emit error
                 else => unreachable, // TODO: should emit error
             }
         },
@@ -457,11 +420,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
             // and a constant bool emitted
             switch (rkind) {
                 .uint => {
-                    const lval: u64 = hg.refToInt(binary.lref);
-                    if (lval > rty.maxInt()) {
-                        return error.Truncated;
-                    }
-                    const cmp_lref = indexToRef(try b.addIntConstant(rty, lval, data.pl_node.node));
+                    const cmp_lref = try coercion.coerce(b, binary.lref, rty);
                     const cmp_rref = binary.rref;
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -512,11 +471,9 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        const dest_ty = Type.initFloat(rty.basic.width);
-                        cmp_lref = try coercion.coerce(b, cmp_lref, dest_ty);
+                        cmp_lref = try coercion.coerce(b, cmp_lref, rty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        const dest_ty = Type.initFloat(lty.basic.width);
-                        cmp_rref = try coercion.coerce(b, cmp_rref, dest_ty);
+                        cmp_rref = try coercion.coerce(b, cmp_rref, lty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -531,9 +488,8 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     try b.addRemap(inst, indexToRef(new_cmp));
                 },
                 .comptime_float => {
-                    const rval: f64 = hg.refToFloat(binary.rref);
                     const cmp_lref = binary.lref;
-                    const cmp_rref = indexToRef(try b.addFloatConstant(lty, rval, data.pl_node.node));
+                    const cmp_rref = try coercion.coerce(b, binary.rref, lty);
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq, .cmp_ne => unreachable, // TODO: generate float comparison error
@@ -556,8 +512,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
             // and a constant bool emitted
             switch (rkind) {
                 .float => {
-                    const lval: f64 = hg.refToFloat(binary.lref);
-                    const cmp_lref = indexToRef(try b.addFloatConstant(rty, lval, data.pl_node.node));
+                    const cmp_lref = try coercion.coerce(b, binary.lref, rty);
                     const cmp_rref = binary.rref;
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {

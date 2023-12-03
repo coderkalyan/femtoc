@@ -32,6 +32,7 @@ pub const SourceError = struct {
         invalid_identifer,
         call_nonfunc,
         call_argcount,
+        binary_diffsign,
     };
 };
 
@@ -147,6 +148,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .invalid_identifer => "identifier doesn't exist in current context",
                 .call_nonfunc => "attempted to call non-function type",
                 .call_argcount => "incorrect number of arguments to function call",
+                .binary_diffsign => "operands to binary arithmetic must have same sign",
             };
 
             r.stream.indent();
