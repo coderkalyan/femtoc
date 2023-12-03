@@ -79,6 +79,7 @@ fn processInst(b: *BlockEditor, inst: Hir.Index, inner_blocks: *std.ArrayListUnm
         .branch_single => try branchSingle(b, inst, inner_blocks),
         .branch_double => try branchDouble(b, inst, inner_blocks),
         .loop => try loop(b, inst, inner_blocks),
+        .block => try block(b, inst, inner_blocks),
         else => try b.linkInst(inst),
     }
 }
@@ -349,6 +350,26 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
                     try b.addRemap(inst, indexToRef(new_cmp));
                 },
+                .comptime_sint => {
+                    const rval: i64 = @bitCast(hg.refToInt(binary.rref));
+                    if (rval < lty.minInt() or rval > lty.maxInt()) {
+                        return error.Truncated;
+                    }
+                    const cmp_lref = binary.lref;
+                    const cmp_rref = indexToRef(try b.addIntConstant(lty, @bitCast(rval), data.pl_node.node));
+
+                    const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
+                        .cmp_eq => .icmp_eq,
+                        .cmp_ne => .icmp_ne,
+                        .cmp_gt => .icmp_ugt,
+                        .cmp_ge => .icmp_uge,
+                        .cmp_lt => .icmp_ult,
+                        .cmp_le => .icmp_ule,
+                        else => unreachable,
+                    };
+                    const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_cmp));
+                },
                 .sint => return error.Truncated, // TODO: should emit error
                 else => unreachable, // TODO: should emit error
             }
@@ -387,6 +408,26 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                 .comptime_sint => {
                     const rval: i64 = @bitCast(hg.refToInt(binary.rref));
                     if (rval < lty.minInt() or rval > lty.maxInt()) {
+                        return error.Truncated;
+                    }
+                    const cmp_lref = binary.lref;
+                    const cmp_rref = indexToRef(try b.addIntConstant(lty, @bitCast(rval), data.pl_node.node));
+
+                    const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
+                        .cmp_eq => .icmp_eq,
+                        .cmp_ne => .icmp_ne,
+                        .cmp_gt => .icmp_sgt,
+                        .cmp_ge => .icmp_sge,
+                        .cmp_lt => .icmp_slt,
+                        .cmp_le => .icmp_sle,
+                        else => unreachable,
+                    };
+                    const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
+                    try b.addRemap(inst, indexToRef(new_cmp));
+                },
+                .comptime_uint => {
+                    const rval: u64 = hg.refToInt(binary.rref);
+                    if (rval > lty.maxInt()) {
                         return error.Truncated;
                     }
                     const cmp_lref = binary.lref;
@@ -582,5 +623,10 @@ fn loop(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !
 
     try inner.append(hg.arena, loop_data.condition);
     try inner.append(hg.arena, loop_data.body);
+    try b.linkInst(inst);
+}
+
+fn block(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
+    try inner.append(b.hg.arena, inst);
     try b.linkInst(inst);
 }

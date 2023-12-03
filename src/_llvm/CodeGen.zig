@@ -401,7 +401,7 @@ fn call(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const addr = codegen.resolveRef(data.addr);
     const args = try codegen.arena.alloc(c.LLVMValueRef, data.args_len);
     defer codegen.arena.free(args);
-    const hir_args = hir.extra_data[pl + 1 .. pl + 1 + data.args_len];
+    const hir_args = hir.extra_data[pl + 2 .. pl + 2 + data.args_len];
     for (hir_args, 0..) |arg, i| {
         args[i] = codegen.resolveRef(@enumFromInt(arg));
     }

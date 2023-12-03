@@ -95,8 +95,8 @@ pub const Inst = struct {
         push,
         // TODO
         alloca,
-        global,
         global_mut,
+        link_extern,
         // loads data from a memory address and returns a ref to the value
         // data.un_node.operand = memory address (ref to alloc_push or decl)
         load,
@@ -371,7 +371,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle => Type.initInt(1, false),
             .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => Type.initInt(1, false),
             .push => hir.resolveType(data.un_node.operand),
-            .alloca, .global, .global_mut => hir.resolveType(data.un_node.operand),
+            .alloca, .global_mut, .link_extern => hir.resolveType(data.un_node.operand),
             .store => unreachable, // shouldn't be referenced
             .load => hir.resolveType(Inst.indexToRef(data.pl_node.pl)),
             .param => ty: {
@@ -380,20 +380,31 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             },
             .call => ty: {
                 const call_data = hir.extraData(data.pl_node.pl, Hir.Inst.Call);
+                // std.debug.print("addr: {}\n", .{Inst.refToIndex(call_data.addr).?});
                 const call_ty = hir.resolveType(call_data.addr);
                 const fn_type = call_ty.extended.cast(Type.Function).?;
+                // std.debug.print("fn: {}\n", .{@as(u64, @bitCast(call_ty))});
                 break :ty fn_type.return_type;
             },
             .zext, .sext, .fpext => ty: {
                 const ext_data = hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
                 break :ty hir.resolveType(ext_data.lref);
             },
-            .block, .block_inline, .branch_single, .branch_double, .loop => Type.initVoid(), // TODO: follow into the block
+            .block, .block_inline => ty: {
+                const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
+                const insts = hir.block_slices[block_data.head];
+                break :ty hir.resolveType(Inst.indexToRef(insts[insts.len - 1]));
+            },
+            .branch_single, .branch_double, .loop => Type.initVoid(), // TODO: follow into the block
             .yield_node, .yield_implicit, .yield_inline => hir.resolveType(data.un_node.operand),
             .dbg_value, .dbg_declare, .dbg_assign => unreachable, // should not be referenced
             .ret_node, .ret_implicit => unreachable, // always end a function, can't be referenced
             .lsl, .lsr, .asl, .asr => unreachable, // TODO
-            .load_global => unreachable, // TODO
+            .load_global => ty: {
+                const pl = hir.insts.items(.data)[index].pl_node.pl;
+                const inst = hir.untyped_decls.get(pl).?;
+                break :ty hir.resolveType(Inst.indexToRef(inst));
+            },
             // untyped instructions should be replaced before they're referred to
             .int, .float => unreachable,
             .cmp_eq, .cmp_ne, .cmp_gt, .cmp_ge, .cmp_lt, .cmp_le => unreachable,

@@ -377,6 +377,11 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     var body_scope = try Block.init(b, s);
     defer body_scope.deinit();
 
+    const hir_params = b.scratch.items[scratch_top..];
+    for (hir_params) |param| {
+        try body_scope.editor.linkInst(param);
+    }
+
     const return_type = try ty(&body_scope.editor, &body_scope.base, signature.return_ty);
     body_scope.return_ty = return_type;
     const body = try block(&body_scope.editor, &body_scope.base, fn_decl.body, true);
@@ -391,7 +396,6 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         s = parent;
     }
 
-    const hir_params = b.scratch.items[scratch_top..];
     return b.addFnDecl(hir_params, return_type, body, hash, node);
 }
 
@@ -440,7 +444,7 @@ fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index
     const data = hg.tree.data(node);
     return try switch (data) {
         .const_decl => globalConst(hg, scope, node),
-        // .const_decl_attr => return try globalConstAttr(hg, scope, node),
+        .const_decl_attr => return try globalConstAttr(hg, scope, node),
         .var_decl => globalVar(hg, scope, node),
         else => {
             std.debug.print("Unexpected node: {}\n", .{hg.tree.data(node)});
@@ -623,54 +627,42 @@ fn globalConst(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
 }
 
-fn globalConstAttr(b: *BlockEditor, s: *Scope, node: Node.Index) !Hir.Index {
-    // "initializes" constant variables
-    // this doesn't actually create any instructions for declaring the constant
-    // instead, the value to set the constant to is computed, and the resulting
-    // instruction return value is stored in the scope such that future
-    // code that needs to access this constant can simply look up the identifier
-    // and refer to the associated value instruction
-    const hg = b.hg;
+fn globalConstAttr(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
+    // global constants are read only variable that exist at runtime
+    // (they aren't inlined by the frontend, but can be by the backend)
+    // they are created by initializing a inline block that contains the
+    // constexpr instructions for computing the rvalue of the constant
+    // this version supports attributes
+
     const const_decl = hg.tree.data(node).const_decl_attr;
     const metadata = hg.tree.extraData(const_decl.metadata, Node.DeclMetadata);
+
+    var inline_block = try Block.initInline(hg, s);
+    defer inline_block.deinit();
+    const scope = &inline_block.base;
+    const b = &inline_block.editor;
+
+    var rvalue = try expr(b, scope, const_decl.val);
+    if (metadata.ty != 0) {
+        const dest_ty = try ty(b, scope, metadata.ty);
+        rvalue = try coerce(b, scope, rvalue, dest_ty, node);
+    }
 
     const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
     _ = id;
 
-    var block_inline = try Block.init(b, s);
-    const scope = &block_inline.base;
-    defer block_inline.deinit();
-
-    const ref = try expr(&block_inline, scope, const_decl.val);
-    const val = if (metadata.ty == 0) ref: {
-        // untyped (inferred) declaration
-        break :ref ref;
-    } else ref: {
-        const dest_ty = try ty(&block_inline, scope, metadata.ty);
-        break :ref try coerce(&block_inline, scope, ref, dest_ty, node);
-    };
-
-    var yield_val = val: {
-        if (refToIndex(val)) |index| {
-            if (hg.instructions.items(.tag)[index] == .fn_decl) break :val val;
-        }
-
-        break :val indexToRef(try block_inline.addDeclConst(val, node));
-    };
-
     const attrs = hg.tree.extra_data[metadata.attrs_start..metadata.attrs_end];
     for (attrs) |attr| {
         switch (hg.tree.tokenTag(hg.tree.mainToken(attr))) {
-            .a_export => yield_val = indexToRef(try block_inline.addDeclExport(yield_val, node)),
+            .a_export => rvalue = indexToRef(try b.addLinkExtern(rvalue, node)),
             else => unreachable,
         }
     }
 
-    // const global = try block_inline.editor.addGlobal(yield_val, node);
-    _ = try block_inline.addYieldInline(yield_val, node);
-    return b.addBlockInline(&block_inline, node);
+    _ = try b.addYieldInline(rvalue, node);
+    return BlockEditor.addBlockInlineUnlinked(hg, b, node);
 }
 
 fn globalVar(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {

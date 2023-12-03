@@ -296,7 +296,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 remapRefPl(hg, remaps, pl + 0); // val
                 remapRefPl(hg, remaps, pl + 1); // ty
             },
-            .push, .global, .global_mut => {
+            .push, .global_mut, .link_extern => {
                 // unary operand
                 var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
                 remapRef(hg, remaps, op);
@@ -322,16 +322,20 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 const block_data = hg.extraData(block_pl, Hir.Inst.Block);
                 commitRemap(hg, remaps, block_data.head);
             },
-            .param => unreachable,
+            .param => {
+                const pl = hg.insts.items(.data)[inst].pl_node.pl;
+                remapRefPl(hg, remaps, pl + 1); // ty
+            },
             .call => {
                 // Call
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
                 const data = hg.extraData(pl, Hir.Inst.Call);
                 remapRefPl(hg, remaps, pl + 0); // addr
 
-                var extra_index: u32 = pl + 2;
+                var extra_index: u32 = 0;
                 while (extra_index < data.args_len) : (extra_index += 1) {
-                    remapRefPl(hg, remaps, extra_index);
+                    // std.debug.print("remapping {} {}\n", .{ extra_index, hg.extra.items[extra_index] });
+                    remapRefPl(hg, remaps, pl + 2 + extra_index);
                 }
             },
             .block, .block_inline => {
@@ -605,24 +609,10 @@ pub fn addBreak(b: *BlockEditor, node: Node.Index) !Hir.Index {
     });
 }
 
-pub fn addDeclConst(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addLinkExtern(b: *BlockEditor, ref: Hir.Ref, node: Node.Index) !Hir.Index {
     return b.addInst(.{
-        .tag = .decl_const,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-pub fn addDeclMut(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .decl_mut,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-pub fn addDeclExport(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .decl_export,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
+        .tag = .link_extern,
+        .data = .{ .un_node = .{ .operand = ref, .node = node } },
     });
 }
 

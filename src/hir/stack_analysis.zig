@@ -55,10 +55,16 @@ fn processFunction(hg: *HirGen, body: Hir.Index) !void {
     const data = hg.insts.items(.data)[body];
     const block_data = hg.extraData(data.pl_node.pl, Hir.Inst.Block);
     const insts = hg.block_slices.items[block_data.head];
+    // params need to be first
+    for (insts) |inst| {
+        if (hg.insts.items(.tag)[inst] != .param) break;
+        try b.linkInst(inst);
+    }
     for (allocas.items) |alloca| {
         try b.linkInst(alloca);
     }
     for (insts) |inst| {
+        if (hg.insts.items(.tag)[inst] == .param) continue;
         try b.linkInst(inst);
     }
 

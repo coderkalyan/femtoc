@@ -332,10 +332,6 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);
                     try writer.print("alloca({s})", .{lbuf});
                 },
-                .global => {
-                    try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);
-                    try writer.print("global({s})", .{lbuf});
-                },
                 .global_mut => {
                     try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);
                     try writer.print("global_mut({s})", .{lbuf});
@@ -553,21 +549,23 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                             const payload = val.payload.cast(Value.Payload.Function).?;
                             const func = payload.func;
 
-                            try writer.print("constant({s}, body={{", .{lbuf});
+                            try writer.print("constant({s}, params={{", .{lbuf});
+                            self.stream.indent();
+                            try self.stream.newline();
+                            self.stream.indent();
+                            for (func.params) |param| {
+                                const ident_str = try ir.interner.get(param.name);
+                                try self.formatRef(param.ty, &lbuf);
+                                try writer.print("{s}: {s},", .{ ident_str, lbuf });
+                                try self.stream.newline();
+                            }
+                            self.stream.dedent();
+                            try writer.print("}}, body={{", .{});
                             self.stream.indent();
                             try self.stream.newline();
                             try self.renderInst(func.body);
                             self.stream.dedent();
                             try writer.print("}})", .{});
-                            // try writer.print("func(ret_ty={s}, params={{", .{lbuf});
-                            // self.stream.indent();
-                            // self.stream.indent();
-                            // try self.stream.newline();
-                            // var extra_index: u32 = fn_decl.params_start;
-                            // while (extra_index < fn_decl.params_end) : (extra_index += 1) {
-                            //     const param = ir.extra_data[extra_index];
-                            //     try self.renderInst(param);
-                            // }
                         },
                         else => {},
                     }
@@ -648,7 +646,6 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .function => {
                     const function = ty.extended.cast(Type.Function).?;
                     var ret_buf: [128]u8 = [_]u8{0} ** 128;
-                    std.debug.print("ret ty: {}\n", .{function.return_type.basic});
                     try self.formatType(function.return_type, &ret_buf);
                     _ = try std.fmt.bufPrint(buf, "function(return_ty = {s})", .{ret_buf});
                     return;

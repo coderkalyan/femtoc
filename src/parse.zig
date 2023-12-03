@@ -766,6 +766,7 @@ const Parser = struct {
                         .attrs_start = attrs_start,
                         .attrs_end = attrs_end,
                     });
+                    p.attributes.clearRetainingCapacity();
                     return p.addNode(.{
                         .main_token = let_token,
                         .data = .{ .const_decl_attr = .{ .metadata = data, .val = val } },

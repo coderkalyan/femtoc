@@ -50,6 +50,13 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
                 return dg.resolveRef(operand);
             },
             .ty => continue,
+            .link_extern => ref: {
+                const operand = hir.insts.items(.data)[inst].un_node.operand;
+                const g = dg.resolveRef(operand);
+                c.LLVMSetLinkage(g, c.LLVMExternalLinkage);
+                std.debug.print("setting linkage\n", .{});
+                break :ref g;
+            },
             else => {
                 std.debug.print("{}\n", .{hir.insts.items(.tag)[inst]});
                 unreachable;
@@ -105,6 +112,7 @@ fn function(dg: *DeclGen, inst: Hir.Index, codegens: *std.ArrayList(CodeGen)) !c
 
     const llvm_type = try dg.context.convertType(ty);
     const ref = dg.context.addFunction(name, llvm_type);
+    c.LLVMSetLinkage(ref, c.LLVMInternalLinkage);
 
     const builder = try dg.gpa.create(Context.Builder);
     builder.* = Context.Builder.init(dg.context, ref);
