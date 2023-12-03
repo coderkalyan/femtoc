@@ -1,0 +1,10 @@
+let factorial: fn (n: u32) u32 = fn (n: u32) u32 {};
+let factorial = fn (n: u32) u32 {};
+fn factorial (n: u32) u32 {}
+
+@export let factorial: fn (n: u32) u32 = fn (n: u32) u32 {};
+@export let factorial = fn (n: u32) u32 {};
+@export fn factorial (n: u32) u32 {}
+
+@import let factorial: fn (n: u32) u32;
+@import fn factorial (n: u32) u32;
