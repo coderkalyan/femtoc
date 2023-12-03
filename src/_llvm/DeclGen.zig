@@ -54,7 +54,6 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
                 const operand = hir.insts.items(.data)[inst].un_node.operand;
                 const g = dg.resolveRef(operand);
                 c.LLVMSetLinkage(g, c.LLVMExternalLinkage);
-                std.debug.print("setting linkage\n", .{});
                 break :ref g;
             },
             else => {

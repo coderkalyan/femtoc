@@ -77,7 +77,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     const module_node: u32 = @intCast(tree.nodes.len - 1);
     const module_index = try module(&hirgen, module_node);
     try implicit_return.executePass(&hirgen, module_index);
-    try type_analysis.executePass(&hirgen, module_index);
+    type_analysis.executePass(&hirgen, module_index) catch {};
     try stack_analysis.executePass(&hirgen, module_index);
     // try dead_code_elimination.executePass(&hirgen, module_index);
 

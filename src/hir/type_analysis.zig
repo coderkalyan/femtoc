@@ -80,6 +80,7 @@ fn processInst(b: *BlockEditor, inst: Hir.Index, inner_blocks: *std.ArrayListUnm
         .branch_double => try branchDouble(b, inst, inner_blocks),
         .loop => try loop(b, inst, inner_blocks),
         .block => try block(b, inst, inner_blocks),
+        .call => try call(b, inst),
         else => try b.linkInst(inst),
     }
 }
@@ -629,4 +630,45 @@ fn loop(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !
 fn block(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
     try inner.append(b.hg.arena, inst);
     try b.linkInst(inst);
+}
+
+fn call(b: *BlockEditor, inst: Hir.Index) !void {
+    const hg = b.hg;
+    const data = hg.insts.items(.data)[inst].pl_node;
+    const call_data = hg.extraData(data.pl, Hir.Inst.Call);
+    const addr_token = hg.tree.mainToken(data.node);
+
+    // TODO: should we try to coerce this? not sure yet
+    const addr_type = hg.resolveType(call_data.addr);
+    if (addr_type.kind() != .function) {
+        // you can only call a function
+        try hg.errors.append(hg.gpa, .{
+            .tag = .call_nonfunc,
+            .token = addr_token,
+        });
+        return error.HandledUserError;
+    }
+
+    const func_type = addr_type.extended.cast(Type.Function).?;
+    if (func_type.param_types.len != call_data.args_len) {
+        // incorrect number of arguments to function call
+        try hg.errors.append(hg.gpa, .{
+            .tag = .call_argcount,
+            .token = addr_token, // TODO: maybe something better we can use here?
+        });
+        return error.HandledUserError;
+    }
+
+    const src_args = hg.extra.items[data.pl + 2 .. data.pl + 2 + call_data.args_len];
+    const dest_args = try hg.arena.alloc(u32, call_data.args_len);
+    defer hg.arena.free(dest_args);
+    for (src_args, func_type.param_types, 0..) |src_arg, param_type, i| {
+        // identify the type of the ith parameter of the function type
+        // and coerce the src_arg to that type
+        const dest_arg = try coercion.coerce(b, @enumFromInt(src_arg), param_type);
+        dest_args[i] = @intFromEnum(dest_arg);
+    }
+
+    const new_call = try b.addCall(call_data.addr, dest_args, data.node);
+    try b.addRemap(inst, indexToRef(new_call));
 }

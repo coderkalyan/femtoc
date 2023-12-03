@@ -30,6 +30,8 @@ pub const SourceError = struct {
 
         const_assign,
         invalid_identifer,
+        call_nonfunc,
+        call_argcount,
     };
 };
 
@@ -143,6 +145,8 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .unexpected_token => "unexpected token",
                 .const_assign => "cannot assign new value to constant",
                 .invalid_identifer => "identifier doesn't exist in current context",
+                .call_nonfunc => "attempted to call non-function type",
+                .call_argcount => "incorrect number of arguments to function call",
             };
 
             r.stream.indent();
