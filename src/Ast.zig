@@ -84,8 +84,8 @@ pub const Node = struct {
 
         // expressions
         // integer literal '123_456'
-        // main_token = unparsed literal string
-        integer_literal: void,
+        // main_token = literal string
+        integer_literal: u64,
         // float literal '1.2345'
         // main_token = unparsed literal string
         float_literal: void,

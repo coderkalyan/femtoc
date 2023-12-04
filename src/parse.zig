@@ -17,6 +17,8 @@ const null_node: Node.Index = 0;
 pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
     var tokens = Ast.TokenList{};
     defer tokens.deinit(gpa);
+    var integers = std.ArrayListUnmanaged(u64){};
+    defer integers.deinit(gpa);
 
     // lex entire source file into token list
     var lexer = Lexer.init(source);
@@ -26,11 +28,15 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
             .tag = token.tag,
             .start = @intCast(token.loc.start),
         });
-        if (token.tag == .eof) break;
+        switch (token.tag) {
+            .eof => break,
+            .int_lit => try integers.append(gpa, lexer.int_value),
+            else => {},
+        }
     }
 
     // initialize parser
-    var parser = Parser.init(gpa, source, &tokens);
+    var parser = Parser.init(gpa, source, &tokens, integers.items);
     defer parser.nodes.deinit(gpa);
     defer parser.extra.deinit(gpa);
 
@@ -58,6 +64,8 @@ const Parser = struct {
     token_tags: []const Token.Tag,
     token_starts: []const u32,
     index: u32,
+    integers: []const u64,
+    int_index: u32,
 
     nodes: std.MultiArrayList(Node),
     extra: std.ArrayListUnmanaged(Node.Index),
@@ -65,13 +73,15 @@ const Parser = struct {
     attributes: std.ArrayListUnmanaged(Node.Index),
     errors: std.ArrayList(error_handler.SourceError),
 
-    pub fn init(gpa: Allocator, source: []const u8, tokens: *Ast.TokenList) Parser {
+    pub fn init(gpa: Allocator, source: []const u8, tokens: *Ast.TokenList, integers: []const u64) Parser {
         return .{
             .source = source,
             .gpa = gpa,
             .token_tags = tokens.items(.tag),
             .token_starts = tokens.items(.start),
             .index = 0,
+            .integers = integers,
+            .int_index = 0,
             .nodes = .{},
             .extra = .{},
             .scratch = std.ArrayList(Node.Index).init(gpa),
@@ -316,12 +326,16 @@ const Parser = struct {
                 .l_paren => p.expectCall(),
                 else => p.expectVarExpr(),
             },
-            .int_lit => p.addNode(.{
-                .main_token = try p.expectToken(.int_lit),
-                .data = .{
-                    .integer_literal = {},
-                },
-            }),
+            .int_lit => expr: {
+                const literal = p.addNode(.{
+                    .main_token = try p.expectToken(.int_lit),
+                    .data = .{
+                        .integer_literal = p.integers[p.int_index],
+                    },
+                });
+                p.int_index += 1;
+                break :expr literal;
+            },
             .float_lit => p.addNode(.{
                 .main_token = try p.expectToken(.float_lit),
                 .data = .{

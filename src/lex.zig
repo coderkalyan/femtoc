@@ -151,6 +151,8 @@ pub const Lexer = struct {
     source: [:0]const u8,
     // current lexer index in source
     index: u32,
+    // most recent integer literal parsed
+    int_value: u64,
 
     const State = enum {
         start,
@@ -162,7 +164,7 @@ pub const Lexer = struct {
 
         // literals
         str_lit,
-        int_base,
+        radix,
         binary,
         octal,
         decimal,
@@ -201,6 +203,7 @@ pub const Lexer = struct {
         return Lexer{
             .source = source,
             .index = index,
+            .int_value = undefined,
         };
     }
 
@@ -296,10 +299,12 @@ pub const Lexer = struct {
                     },
                     // number literal
                     '0' => {
-                        state = .int_base;
+                        state = .radix;
+                        self.int_value = 0;
                     },
                     '1'...'9' => {
                         state = .decimal;
+                        self.int_value = c - '0';
                     },
 
                     // punctuation
@@ -423,11 +428,14 @@ pub const Lexer = struct {
                     },
                     else => {},
                 },
-                .int_base => switch (c) {
+                .radix => switch (c) {
                     'b' => state = .binary,
                     'o' => state = .octal,
                     'x' => state = .hex,
-                    '0'...'9' => state = .decimal,
+                    '0'...'9' => {
+                        state = .decimal;
+                        self.int_value = c - '0';
+                    },
                     '.' => state = .float_base,
                     'a', 'c'...'n', 'p'...'w', 'y'...'z', 'A'...'Z' => {
                         self.index += 1;
@@ -442,7 +450,8 @@ pub const Lexer = struct {
                     },
                 },
                 .binary => switch (c) {
-                    '0'...'1', '_' => {},
+                    '0'...'1' => self.int_value = (self.int_value << 1) | ((c - '0') & 1),
+                    '_' => {},
                     '2'...'9', 'a'...'z', 'A'...'Z' => {
                         while (true) {
                             self.index += 1;
@@ -460,7 +469,8 @@ pub const Lexer = struct {
                     },
                 },
                 .octal => switch (c) {
-                    '0'...'7', '_' => {},
+                    '0'...'7' => self.int_value = (self.int_value << 3) | ((c - '0') & 7),
+                    '_' => {},
                     '8'...'9', 'a'...'z', 'A'...'Z' => {
                         while (true) {
                             self.index += 1;
@@ -478,7 +488,8 @@ pub const Lexer = struct {
                     },
                 },
                 .decimal => switch (c) {
-                    '0'...'9', '_' => {},
+                    '0'...'9' => self.int_value = (self.int_value * 10) + (c - '0'),
+                    '_' => {},
                     '.', 'e' => state = .float_base,
                     'a'...'d', 'f'...'z', 'A'...'Z' => {
                         self.index += 1;
@@ -493,7 +504,16 @@ pub const Lexer = struct {
                     },
                 },
                 .hex => switch (c) {
-                    '0'...'9', 'a'...'f', 'A'...'F', '_' => {},
+                    '0'...'9' => self.int_value = (self.int_value << 4) | ((c - '0') & 0xF),
+                    'a'...'f' => {
+                        const digit = (c - 'a' + 10) & 0xF;
+                        self.int_value = (self.int_value << 4) | digit;
+                    },
+                    'A'...'F' => {
+                        const digit = (c - 'A' + 10) & 0xF;
+                        self.int_value = (self.int_value << 4) | digit;
+                    },
+                    '_' => {},
                     'g'...'z', 'G'...'Z' => {
                         self.index += 1;
                         const invalid_length = self.eatInvalidLiteral();
@@ -777,6 +797,23 @@ fn testLex(source: [:0]const u8, expected_token_tags: []const Token.Tag) !void {
     try std.testing.expectEqual(@as(u32, @intCast(source.len)), eof.loc.end);
 }
 
+fn testParseInt(source: [:0]const u8, expected_token_tags: []const Token.Tag, expected_literals: []const u64) !void {
+    var lexer = Lexer.init(source);
+    var literal_i: usize = 0;
+    for (expected_token_tags) |expected_token_tag| {
+        const token = lexer.next();
+        try std.testing.expectEqual(expected_token_tag, token.tag);
+        if (expected_token_tag == .int_lit) {
+            try std.testing.expectEqual(lexer.int_value, expected_literals[literal_i]);
+            literal_i += 1;
+        }
+    }
+    const eof = lexer.next();
+    try std.testing.expectEqual(Token.Tag.eof, eof.tag);
+    try std.testing.expectEqual(@as(u32, @intCast(source.len)), eof.loc.start);
+    try std.testing.expectEqual(@as(u32, @intCast(source.len)), eof.loc.end);
+}
+
 test "identifier" {
     try testLex("x", &.{.ident});
     try testLex("abc", &.{.ident});
@@ -802,40 +839,48 @@ test "character literal" {
 
 test "integer literal" {
     // decimal
-    try testLex("0", &.{.int_lit});
-    try testLex("123", &.{.int_lit});
-    try testLex("123(", &.{ .int_lit, .l_paren });
-    try testLex("123;", &.{ .int_lit, .semi });
-    try testLex("123abc", &.{.invalid});
-    try testLex("123_456", &.{.int_lit});
-    try testLex("123_456_789", &.{.int_lit});
+    try testParseInt("0", &.{.int_lit}, &.{0});
+    try testParseInt("1", &.{.int_lit}, &.{1});
+    try testParseInt("123", &.{.int_lit}, &.{123});
+    try testParseInt("0123", &.{.int_lit}, &.{123});
+    try testParseInt("000123", &.{.int_lit}, &.{123});
+    try testParseInt("123456789", &.{.int_lit}, &.{123456789});
+    try testParseInt("123(", &.{ .int_lit, .l_paren }, &.{123});
+    try testParseInt("123;", &.{ .int_lit, .semi }, &.{123});
+    try testParseInt("123abc", &.{.invalid}, &.{});
+    try testParseInt("123_456", &.{.int_lit}, &.{123456});
+    try testParseInt("123_456_789", &.{.int_lit}, &.{123456789});
 
     // binary
-    try testLex("0b0", &.{.int_lit});
-    try testLex("0b1", &.{.int_lit});
-    try testLex("0b0101011", &.{.int_lit});
-    try testLex("0b1234", &.{.invalid});
+    try testParseInt("0b0", &.{.int_lit}, &.{0});
+    try testParseInt("0b1", &.{.int_lit}, &.{1});
+    try testParseInt("0b01", &.{.int_lit}, &.{1});
+    try testParseInt("0b0101011", &.{.int_lit}, &.{0b101011});
+    try testParseInt("0b1234", &.{.invalid}, &.{});
 
     // octal
-    try testLex("0o0", &.{.int_lit});
-    try testLex("0o1", &.{.int_lit});
-    try testLex("0o0123456", &.{.int_lit});
-    try testLex("0o17", &.{.int_lit});
-    try testLex("0o178", &.{.invalid});
-    try testLex("0o17abc", &.{.invalid});
-    try testLex("0o12345_67", &.{.int_lit});
-    try testLex("0o12399", &.{.invalid});
+    try testParseInt("0o0", &.{.int_lit}, &.{0});
+    try testParseInt("0o1", &.{.int_lit}, &.{1});
+    try testParseInt("0o01", &.{.int_lit}, &.{1});
+    try testParseInt("0o0123456", &.{.int_lit}, &.{0o123456});
+    try testParseInt("0o17", &.{.int_lit}, &.{0o17});
+    try testParseInt("0o178", &.{.invalid}, &.{});
+    try testParseInt("0o17abc", &.{.invalid}, &.{});
+    try testParseInt("0o12345_67", &.{.int_lit}, &.{0o1234567});
+    try testParseInt("0o12399", &.{.invalid}, &.{});
 
     // hex
-    try testLex("0x0", &.{.int_lit});
-    try testLex("0x1", &.{.int_lit});
-    try testLex("0x018ADFF", &.{.int_lit});
-    try testLex("0x0123456", &.{.int_lit});
-    try testLex("0x789", &.{.int_lit});
-    try testLex("0xabcdef", &.{.int_lit});
-    try testLex("0xABCDEF", &.{.int_lit});
-    try testLex("0x123G", &.{.invalid});
-    try testLex("0x12_3456_789_a_b_CDEF", &.{.int_lit});
+    try testParseInt("0x0", &.{.int_lit}, &.{0});
+    try testParseInt("0x1", &.{.int_lit}, &.{1});
+    try testParseInt("0x018ADFF", &.{.int_lit}, &.{0x18adff});
+    try testParseInt("0x0123456", &.{.int_lit}, &.{0x123456});
+    try testParseInt("0x789", &.{.int_lit}, &.{0x789});
+    try testParseInt("0x789A", &.{.int_lit}, &.{0x789a});
+    try testParseInt("0x789a", &.{.int_lit}, &.{0x789a});
+    try testParseInt("0xabcdef", &.{.int_lit}, &.{0xabcdef});
+    try testParseInt("0xABCDEF", &.{.int_lit}, &.{0xabcdef});
+    try testParseInt("0x123G", &.{.invalid}, &.{});
+    try testParseInt("0x12_3456_789_a_b_CDEF", &.{.int_lit}, &.{0x123456789abcdef});
 }
 
 test "float literal" {

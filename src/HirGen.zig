@@ -3,7 +3,6 @@ const Hir = @import("Hir.zig");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const parse = @import("parse.zig");
-const parseInt = @import("integerLiteral.zig").parseInt;
 const parseFloat = @import("floatLiteral.zig").parseFloat;
 const Scope = @import("scope.zig").Scope;
 const interner = @import("interner.zig");
@@ -37,9 +36,10 @@ pub const GenError = error{
     IdentifierShadowed,
     ConstAssign,
     AfterthoughtDecl,
+    InvalidCharacter, // TODO: this doesn't belong here or even need to exist
 };
 
-const Error = GenError || interner.Error || Allocator.Error || @import("integerLiteral.zig").ParseError;
+const Error = GenError || interner.Error || Allocator.Error;
 
 gpa: Allocator,
 arena: Allocator,
@@ -186,9 +186,7 @@ fn addModule(hg: *HirGen, node: Node.Index) !Hir.Index {
 }
 
 fn integerLiteral(b: *BlockEditor, node: Node.Index) !Ref {
-    const int_token = b.hg.tree.mainToken(node);
-    const int_str = b.hg.tree.tokenString(int_token);
-    const int = try parseInt(int_str);
+    const int = b.hg.tree.data(node).integer_literal;
 
     return switch (int) {
         0 => .zero_val,
