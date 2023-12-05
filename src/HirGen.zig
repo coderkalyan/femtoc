@@ -344,6 +344,21 @@ fn binary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return binaryRaw(b, node, operator_token, try expr(b, scope, binary_expr.left), try expr(b, scope, binary_expr.right));
 }
 
+fn unary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const unary_expr = hg.tree.data(node).unary_expr;
+    const operator_token = hg.tree.mainToken(node);
+    const tag: Inst.Tag = switch (b.hg.tree.tokenTag(operator_token)) {
+        .plus => return node, // no-op
+        .minus => .neg,
+        .bang => .log_not,
+        .tilde => .bit_not,
+        else => return Error.UnexpectedToken,
+    };
+
+    return b.addUnary(try expr(b, scope, unary_expr), tag, node);
+}
+
 fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const arena = hg.arena;
@@ -405,6 +420,7 @@ fn expr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
         .var_expr => variable(b, scope, node),
         .call_expr => indexToRef(try call(b, scope, node)),
         .binary_expr => indexToRef(try binary(b, scope, node)),
+        .unary_expr => indexToRef(try unary(b, scope, node)),
         .fn_decl => indexToRef(try fnDecl(b, scope, node)),
         else => {
             std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});

@@ -98,6 +98,8 @@ pub const Node = struct {
             left: Index,
             right: Index,
         },
+        // unary expression '[+-!~]a'
+        unary_expr: Index,
         // variable value 'x'
         // main_token = variable identifier
         var_expr: void,

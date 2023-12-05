@@ -76,6 +76,11 @@ pub const Inst = struct {
         asl,
         asr,
 
+        // unary operators
+        neg,
+        log_not,
+        bit_not,
+
         // coerces (expands to constant, cast, or noop in mir)
         // data.pl_node.pl = Inst.Coerce
         coerce,
@@ -366,6 +371,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
                 const bin_data = hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
                 break :ty hir.resolveType(bin_data.lref);
             },
+            .neg, .log_not, .bit_not => hir.resolveType(data.un_node.operand),
             .icmp_eq, .icmp_ne => Type.initInt(1, false),
             .icmp_ugt, .icmp_uge, .icmp_ult, .icmp_ule => Type.initInt(1, false),
             .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle => Type.initInt(1, false),

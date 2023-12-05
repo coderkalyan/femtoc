@@ -350,6 +350,10 @@ const Parser = struct {
                 .main_token = try p.expectToken(.k_false),
                 .data = .{ .bool_literal = {} },
             }),
+            .plus, .minus, .bang, .tilde => p.addNode(.{
+                .main_token = try p.expectToken(p.token_tags[p.index]),
+                .data = .{ .unary_expr = try p.expectExpr() },
+            }),
             else => return Error.UnexpectedToken,
         };
     }

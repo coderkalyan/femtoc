@@ -193,6 +193,13 @@ pub fn addBinary(b: *BlockEditor, l: Hir.Ref, r: Hir.Ref, tag: Inst.Tag, node: N
     });
 }
 
+pub fn addUnary(b: *BlockEditor, op: Hir.Ref, tag: Inst.Tag, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = tag,
+        .data = .{ .un_node = .{ .operand = op, .node = node } },
+    });
+}
+
 pub fn addBlock(b: *BlockEditor, data_block: *BlockEditor, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const pl = try hg.addExtra(Inst.Block{
@@ -297,6 +304,11 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 remapRefPl(hg, remaps, pl + 1); // ty
             },
             .push, .global_mut, .link_extern => {
+                // unary operand
+                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
+                remapRef(hg, remaps, op);
+            },
+            .neg, .log_not, .bit_not => {
                 // unary operand
                 var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
                 remapRef(hg, remaps, op);

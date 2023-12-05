@@ -296,6 +296,18 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatRef(bin.rref, &rbuf);
                     try writer.print("({s}, {s})", .{ lbuf, rbuf });
                 },
+                .neg, .log_not, .bit_not => {
+                    try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
+                        .neg => "neg",
+                        .log_not => "log_not",
+                        .bit_not => "bit_not",
+                        else => unreachable,
+                    });
+
+                    const op = ir.insts.items(.data)[index].un_node.operand;
+                    try self.formatRef(op, &lbuf);
+                    try writer.print("({s})", .{lbuf});
+                },
                 .coerce => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
                     const coerce = ir.extraData(pl, Hir.Inst.Coerce);
