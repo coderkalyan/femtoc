@@ -152,6 +152,9 @@ fn binaryOp(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const rref = codegen.resolveRef(data.rref);
     var builder = codegen.builder;
 
+    // C (clang 17) emits urem for all integer modulo
+    // in the long term, we need to decide what behavior we want for
+    // negative numbers and 0
     const lty = hir.resolveType(data.lref);
     return switch (lty.kind()) {
         .uint => switch (hir.insts.items(.tag)[inst]) {
@@ -159,7 +162,7 @@ fn binaryOp(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
             .sub => c.LLVMBuildSub(builder.builder, lref, rref, ""),
             .mul => c.LLVMBuildMul(builder.builder, lref, rref, ""),
             .div => c.LLVMBuildUDiv(builder.builder, lref, rref, ""),
-            .mod => return c.LLVMBuildURem(builder.builder, lref, rref, ""), // TODO: this is not correct
+            .mod => return c.LLVMBuildURem(builder.builder, lref, rref, ""),
             else => unreachable,
         },
         .sint => switch (hir.insts.items(.tag)[inst]) {
@@ -167,7 +170,7 @@ fn binaryOp(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
             .sub => c.LLVMBuildSub(builder.builder, lref, rref, ""),
             .mul => c.LLVMBuildMul(builder.builder, lref, rref, ""),
             .div => c.LLVMBuildSDiv(builder.builder, lref, rref, ""),
-            .mod => return c.LLVMBuildSRem(builder.builder, lref, rref, ""), // TODO: this is not correct
+            .mod => return c.LLVMBuildURem(builder.builder, lref, rref, ""),
             else => unreachable,
         },
         .float => switch (hir.insts.items(.tag)[inst]) {
