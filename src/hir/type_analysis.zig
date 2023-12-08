@@ -137,7 +137,8 @@ fn fnDecl(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32))
 fn integer(b: *BlockEditor, inst: Hir.Index) !Hir.Index {
     const data = b.hg.insts.items(.data)[inst];
     // TODO: maybe try to store the node
-    const constant = try b.addIntConstant(Type.initComptimeInt(false), data.int, undefined);
+    const dest_ty = Type.initLiteralImplicitWidth(.comptime_uint);
+    const constant = try b.addIntConstant(dest_ty, data.int, undefined);
     try b.addRemap(inst, indexToRef(constant));
 
     return constant;
@@ -146,7 +147,8 @@ fn integer(b: *BlockEditor, inst: Hir.Index) !Hir.Index {
 fn float(b: *BlockEditor, inst: Hir.Index) !Hir.Index {
     const data = b.hg.insts.items(.data)[inst];
     // TODO: maybe try to store the node
-    const constant = try b.addFloatConstant(Type.initComptimeFloat(), data.float, undefined);
+    const dest_ty = Type.initLiteralImplicitWidth(.comptime_float);
+    const constant = try b.addFloatConstant(dest_ty, data.float, undefined);
     try b.addRemap(inst, indexToRef(constant));
 
     return constant;
@@ -184,7 +186,7 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
             switch (rkind) {
                 .uint => {
                     const bits = @max(lty.basic.width, rty.basic.width);
-                    const dest_ty = Type.initInt(bits, false);
+                    const dest_ty = Type.initLiteral(.uint, bits);
                     const lref = try coercion.coerce(b, binary.lref, dest_ty);
                     const rref = try coercion.coerce(b, binary.rref, dest_ty);
                     const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
@@ -217,7 +219,7 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                 },
                 .sint => {
                     const bits = @max(lty.basic.width, rty.basic.width);
-                    const dest_ty = Type.initInt(bits, false);
+                    const dest_ty = Type.initLiteral(.sint, bits);
                     const lref = try coercion.coerce(b, binary.lref, dest_ty);
                     const rref = try coercion.coerce(b, binary.rref, dest_ty);
                     const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
@@ -450,7 +452,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     };
 
                     const result_int: u64 = if (result) 1 else 0;
-                    const dest_ty = Type.initInt(1, false);
+                    const dest_ty = Type.initLiteral(.uint, 1);
                     const result_inst = try b.addIntConstant(dest_ty, result_int, data.pl_node.node);
 
                     try b.addRemap(inst, indexToRef(result_inst));
@@ -541,7 +543,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     };
 
                     const result_int: u64 = if (result) 1 else 0;
-                    const dest_ty = Type.initInt(1, false);
+                    const dest_ty = Type.initLiteral(.uint, 1);
                     const result_inst = try b.addIntConstant(dest_ty, result_int, data.pl_node.node);
 
                     try b.addRemap(inst, indexToRef(result_inst));

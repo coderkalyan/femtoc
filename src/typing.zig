@@ -7,7 +7,7 @@ pub const Error = error{UnspecificType};
 // always pass Type by value
 pub const Type = extern union {
     basic: Basic,
-    extended: *Payload,
+    extended: *Extended,
 
     pub const basic_length = 4096;
 
@@ -36,44 +36,44 @@ pub const Type = extern union {
         padding: u52 = 0,
     };
 
-    pub const Payload = struct {
+    pub const Extended = struct {
         kind: Kind,
 
-        pub inline fn cast(base: *const Payload, comptime T: type) ?*const T {
+        pub inline fn cast(base: *const Extended, comptime T: type) ?*const T {
             return @fieldParentPtr(T, "base", base);
         }
 
-        pub fn size(p: *const Payload) !usize {
-            switch (p.kind) {
-                .void, .comptime_uint, .comptime_sint, .comptime_float, .uint, .sint, .float => unreachable,
-                .pointer => return 8,
-                .structure => {
-                    var total: usize = 0;
-                    var max: usize = 0;
-                    const structure = p.cast(Structure).?;
-                    for (structure.members) |member| {
-                        const member_alignment = member.alignment();
-                        max = @max(max, member_alignment);
-                        if (((total / member_alignment) * member_alignment) != total)
-                            total = ((total / member_alignment) + 1) * member_alignment;
-                        total += member.size();
-                    }
-                    if (((total / max) * max) != total)
-                        total = ((total / max) + 1) * max;
-                    return total;
-                },
-                .function => return error.NotImplemented,
-            }
-        }
-
-        pub inline fn alignment(p: *const Payload) usize {
-            return @as(Type, @bitCast(@intFromPtr(p))).alignment();
-        }
+        // pub fn size(p: *const Extended) !usize {
+        //     switch (p.kind) {
+        //         .void, .comptime_uint, .comptime_sint, .comptime_float, .uint, .sint, .float => unreachable,
+        //         .pointer => return 8,
+        //         .structure => {
+        //             var total: usize = 0;
+        //             var max: usize = 0;
+        //             const structure = p.cast(Structure).?;
+        //             for (structure.members) |member| {
+        //                 const member_alignment = member.alignment();
+        //                 max = @max(max, member_alignment);
+        //                 if (((total / member_alignment) * member_alignment) != total)
+        //                     total = ((total / member_alignment) + 1) * member_alignment;
+        //                 total += member.size();
+        //             }
+        //             if (((total / max) * max) != total)
+        //                 total = ((total / max) + 1) * max;
+        //             return total;
+        //         },
+        //         .function => return error.NotImplemented,
+        //     }
+        // }
+        //
+        // pub inline fn alignment(p: *const Extended) usize {
+        //     return @as(Type, @bitCast(@intFromPtr(p))).alignment();
+        // }
     };
 
     pub const Pointer = struct {
         const base_kind: Kind = .pointer;
-        base: Payload = .{ .kind = base_kind },
+        base: Extended = .{ .kind = base_kind },
         pointee: Type,
 
         pub fn init(pointee: Type) Pointer {
@@ -83,7 +83,7 @@ pub const Type = extern union {
 
     pub const Structure = struct {
         const base_kind: Kind = .structure;
-        base: Payload = .{ .kind = base_kind },
+        base: Extended = .{ .kind = base_kind },
         members: []Type,
 
         pub fn init(members: []Type) Structure {
@@ -93,7 +93,7 @@ pub const Type = extern union {
 
     pub const Function = struct {
         const base_kind: Kind = .function;
-        base: Payload = .{ .kind = base_kind },
+        base: Extended = .{ .kind = base_kind },
         param_types: []Type,
         return_type: Type,
 
@@ -105,7 +105,8 @@ pub const Type = extern union {
     };
 
     pub inline fn isBasic(ty: Type) bool {
-        return @as(u64, @bitCast(ty)) < basic_length;
+        const bits: u64 = @bitCast(ty);
+        return bits < basic_length;
     }
 
     pub fn kind(ty: Type) Kind {
@@ -113,37 +114,62 @@ pub const Type = extern union {
         return ty.extended.kind;
     }
 
+    pub fn size(ty: Type) usize {
+        return switch (ty.kind()) {
+            .void => 0,
+            .comptime_uint, .comptime_sint, .comptime_float => unreachable,
+            .uint, .sint, .float => {
+                const bytes = (ty.basic.width + 7) / 8;
+                const ans: usize = 1;
+                return ans << std.math.ceilPowerOfTwo(u6, bytes);
+            },
+            .pointer => 8, // TODO: architecture dependent
+            .structure, .function => unreachable, // TODO
+        };
+    }
+
     pub fn initVoid() Type {
         return .{ .basic = .{ .kind = .void, .width = 0 } };
     }
 
-    pub fn initInt(width: u8, sign: bool) Type {
-        std.debug.assert(width < std.math.maxInt(u7)); // TODO: large integers
-        return .{ .basic = .{ .kind = if (sign) .sint else .uint, .width = @truncate(width) } };
+    pub fn initLiteral(comptime _kind: Type.Kind, width: u8) Type {
+        // TODO: replace size guard with bigint and special floats
+        switch (_kind) {
+            .uint, .sint => std.debug.assert(width <= 127),
+            .float => std.debug.assert(width == 32 or width == 64),
+            else => unreachable,
+        }
+
+        return .{ .basic = .{ .kind = _kind, .width = @truncate(width) } };
     }
 
-    pub fn initFloat(width: u8) Type {
-        std.debug.assert(width == 32 or width == 64); // TODO: other special floats
-        return .{ .basic = .{ .kind = .float, .width = @truncate(width) } };
-    }
-
-    pub fn initComptimeInt(sign: bool) Type {
-        return .{ .basic = .{ .kind = if (sign) .comptime_sint else .comptime_uint, .width = 64 } };
-    }
-
-    pub fn initComptimeFloat() Type {
-        return .{ .basic = .{ .kind = .comptime_float, .width = 64 } };
-    }
-
-    pub fn size(ty: Type) usize {
-        return switch (ty.kind()) {
+    pub fn initLiteralImplicitWidth(comptime _kind: Type.Kind) Type {
+        const width = switch (_kind) {
+            .comptime_uint, .comptime_sint, .comptime_float => 64,
             .void => 0,
-            .uint, .sint, .float => (ty.basic.width + 7) / 8,
-            .comptime_uint, .comptime_sint, .comptime_float => 8,
-            .pointer => 8, // TODO: architecture dependent
-            .function, .structure => unreachable,
+            else => unreachable,
         };
+
+        return initLiteral(_kind, width);
     }
+
+    // pub fn initInt(width: u8, sign: bool) Type {
+    //     std.debug.assert(width < std.math.maxInt(u7)); // TODO: large integers
+    //     return .{ .basic = .{ .kind = if (sign) .sint else .uint, .width = @truncate(width) } };
+    // }
+    //
+    // pub fn initFloat(width: u8) Type {
+    //     std.debug.assert(width == 32 or width == 64); // TODO: other special floats
+    //     return .{ .basic = .{ .kind = .float, .width = @truncate(width) } };
+    // }
+    //
+    // pub fn initComptimeInt(sign: bool) Type {
+    //     return .{ .basic = .{ .kind = if (sign) .comptime_sint else .comptime_uint, .width = 64 } };
+    // }
+    //
+    // pub fn initComptimeFloat() Type {
+    //     return .{ .basic = .{ .kind = .comptime_float, .width = 64 } };
+    // }
 
     pub fn alignment(ty: Type) usize {
         return switch (ty.kind()) {
@@ -155,7 +181,7 @@ pub const Type = extern union {
             .structure => {
                 var max: usize = 0;
                 const structure = ty.extended.cast(Type.Structure).?;
-                for (structure.members) |member| max = std.math.max(max, member.alignment());
+                for (structure.members) |member| max = @max(max, member.alignment());
                 return max;
             },
         };
