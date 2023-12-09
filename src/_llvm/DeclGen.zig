@@ -1,6 +1,6 @@
 const std = @import("std");
 const Hir = @import("../Hir.zig");
-const Type = @import("../typing.zig").Type;
+const Type = @import("../hir/type.zig").Type;
 const Context = @import("Context.zig");
 const Value = @import("../value.zig").Value;
 const CodeGen = @import("CodeGen.zig");
@@ -87,12 +87,7 @@ fn resolveRef(dg: *DeclGen, ref: Hir.Ref) c.LLVMValueRef {
             return dg.map.get(index).?;
         }
     } else {
-        const ty = c.LLVMInt64TypeInContext(dg.context.context);
-        return switch (ref) {
-            .zero_val, .btrue_val => c.LLVMConstInt(ty, 0, 0),
-            .one_val, .bfalse_val => c.LLVMConstInt(ty, 1, 0),
-            else => unreachable,
-        };
+        unreachable;
     }
 }
 
@@ -102,8 +97,7 @@ fn function(dg: *DeclGen, inst: Hir.Index, codegens: *std.ArrayList(CodeGen)) !c
     const data = hir.extraData(pl, Hir.Inst.Constant);
     const ty = hir.resolveType(data.ty);
     const val = hir.values[data.val];
-    const payload = val.payload.cast(Value.Payload.Function).?;
-    const func = payload.func;
+    const func = val.extended.cast(Value.Function).?;
 
     const member_str = try hir.interner.get(dg.name);
     const name = try std.fmt.allocPrintZ(dg.arena, "{s}", .{member_str});

@@ -9,7 +9,7 @@ const interner = @import("interner.zig");
 const Interner = interner.Interner;
 const error_handler = @import("error_handler.zig");
 const Value = @import("value.zig").Value;
-const Type = @import("typing.zig").Type;
+const Type = @import("hir/type.zig").Type;
 const BlockEditor = @import("hir/BlockEditor.zig");
 const coercion = @import("hir/coercion.zig");
 
@@ -77,11 +77,12 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     const module_node: u32 = @intCast(tree.nodes.len - 1);
     const module_index = try module(&hirgen, module_node);
     try implicit_return.executePass(&hirgen, module_index);
-    type_analysis.executePass(&hirgen, module_index) catch {};
+    try type_analysis.executePass(&hirgen, module_index); // catch {};
     try stack_analysis.executePass(&hirgen, module_index);
     // try dead_code_elimination.executePass(&hirgen, module_index);
 
     return Hir{
+        .tree = tree,
         .insts = hirgen.insts.toOwnedSlice(),
         .module_index = module_index,
         .block_slices = try hirgen.block_slices.toOwnedSlice(gpa),
@@ -95,19 +96,19 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     };
 }
 
-const builtin_types = std.ComptimeStringMap(Hir.Ref, .{
-    .{ "u8", .u8_ty },
-    .{ "u16", .u16_ty },
-    .{ "u32", .u32_ty },
-    .{ "u64", .u64_ty },
-    .{ "i8", .i8_ty },
-    .{ "i16", .i16_ty },
-    .{ "i32", .i32_ty },
-    .{ "i64", .i64_ty },
-    .{ "f32", .f32_ty },
-    .{ "f64", .f64_ty },
-    .{ "bool", .bool_ty },
-    .{ "void", .void_ty },
+const builtin_types = std.ComptimeStringMap(Type, .{
+    .{ "u8", Type.Common.u8_type },
+    .{ "u16", Type.Common.u16_type },
+    .{ "u32", Type.Common.u32_type },
+    .{ "u64", Type.Common.u64_type },
+    .{ "i8", Type.Common.i8_type },
+    .{ "i16", Type.Common.i16_type },
+    .{ "i32", Type.Common.i32_type },
+    .{ "i64", Type.Common.i64_type },
+    .{ "f32", Type.Common.f32_type },
+    .{ "f64", Type.Common.f64_type },
+    .{ "bool", Type.Common.u1_type },
+    .{ "void", Type.Common.void_type },
 });
 
 pub fn addExtra(hg: *HirGen, extra: anytype) !Hir.ExtraIndex {
@@ -187,12 +188,7 @@ fn addModule(hg: *HirGen, node: Node.Index) !Hir.Index {
 
 fn integerLiteral(b: *BlockEditor, node: Node.Index) !Ref {
     const int = b.hg.tree.data(node).integer_literal;
-
-    return switch (int) {
-        0 => .zero_val,
-        1 => .one_val,
-        else => indexToRef(try b.addInt(int)),
-    };
+    return indexToRef(try b.addInt(int));
 }
 
 fn floatLiteral(b: *BlockEditor, node: Node.Index) !Ref {
@@ -203,14 +199,14 @@ fn floatLiteral(b: *BlockEditor, node: Node.Index) !Ref {
     return indexToRef(try b.addFloat(float));
 }
 
-fn boolLiteral(b: *BlockEditor, node: Node.Index) Ref {
+fn boolLiteral(b: *BlockEditor, node: Node.Index) !Ref {
     const bool_token = b.hg.tree.mainToken(node);
 
-    return switch (b.hg.tree.tokenTag(bool_token)) {
-        .k_true => .btrue_val,
-        .k_false => .bfalse_val,
+    return indexToRef(switch (b.hg.tree.tokenTag(bool_token)) {
+        .k_true => try b.addInt(1),
+        .k_false => try b.addInt(0),
         else => unreachable,
-    };
+    });
 }
 
 fn variable(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
@@ -247,45 +243,15 @@ fn variable(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
     }
 }
 
-// TODO: this entire function is a mess and out of date
 fn ty(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Ref {
+    _ = scope;
     const hg = b.hg;
     const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index);
 
-    if (builtin_types.get(ident_str)) |ref| {
-        return ref;
-    } else {
-        const id = try hg.interner.intern(ident_str);
-        const ty_scope = (try scope.resolveType(ident_index)) orelse {
-            try hg.errors.append(b.hg.gpa, .{
-                .tag = .invalid_identifer,
-                .token = ident_index,
-            });
-            return error.InvalidIdentifier;
-        };
-        switch (ty_scope.tag) {
-            .local_type => {
-                const local_type = ty_scope.cast(Scope.LocalType).?;
-                return local_type.ref;
-            },
-            .namespace => {
-                _ = id;
-                unreachable;
-                // const namespace = ty_scope.cast(Scope.Namespace).?;
-                // const decl = namespace.types.get(id).?;
-                // // have we already generated the instruction for this identifier?
-                // if (hg.forward_map.get(decl)) |ref| {
-                //     return ref;
-                // } else {
-                //     // nope, so just create a forward declaration
-                //     unreachable;
-                //     // return indexToRef(try addLoadInline(b, decl, node));
-                // }
-            },
-            else => unreachable,
-        }
-    }
+    if (builtin_types.get(ident_str)) |builtin_type| {
+        return indexToRef(try b.addType(builtin_type));
+    } else unreachable;
 }
 
 fn binaryRaw(b: *BlockEditor, node: Node.Index, op: Ast.TokenIndex, lref: Ref, rref: Ref) Error!Hir.Index {
@@ -756,7 +722,8 @@ fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 
 fn branchCondition(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
     const ref = try expr(b, scope, node);
-    return coerce(b, scope, ref, Ref.bool_ty, node);
+    const condition_type = indexToRef(try b.addType(Type.Common.u1_type));
+    return coerce(b, scope, ref, condition_type, node);
 }
 
 fn assignBinary(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -853,7 +820,7 @@ fn ifChain(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 
 fn returnStmt(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const return_val = b.hg.tree.data(node).return_val;
-    const operand = if (return_val.val == 0) Ref.void_val else op: {
+    const operand = if (return_val.val == 0) indexToRef(try b.addNone()) else op: {
         const ref = try expr(b, scope, return_val.val);
         const bl = scope.resolveBlock().?;
         break :op try coerce(b, scope, ref, bl.return_ty, node);
@@ -873,9 +840,7 @@ fn loopForever(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
         defer block_scope.deinit();
 
         // TODO: should be implicit not node
-        const condition = try coerce(&block_scope.editor, scope, Ref.btrue_val, Ref.bool_ty, node);
-        // const index = refToIndex(condition).?;
-        // break :block index;
+        const condition = indexToRef(try b.addConstant(Type.Common.u1_type, Value.Common.one, node));
         _ = try block_scope.editor.addYieldImplicit(condition, node);
         break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
@@ -892,7 +857,8 @@ fn loopConditional(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index 
         const s = &block_scope.base;
 
         const condition_inner = try expr(&block_scope.editor, s, loop_conditional.condition);
-        const condition = try coerce(&block_scope.editor, s, condition_inner, Ref.bool_ty, node);
+        const condition_type = indexToRef(try b.addType(Type.Common.u1_type));
+        const condition = try coerce(&block_scope.editor, s, condition_inner, condition_type, node);
         _ = try block_scope.editor.addYieldImplicit(condition, node);
         break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
@@ -922,7 +888,8 @@ fn loopRange(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
         const bs = &block_scope.base;
 
         const condition_inner = try expr(&block_scope.editor, bs, signature.condition);
-        const condition = try coerce(&block_scope.editor, bs, condition_inner, Ref.bool_ty, node);
+        const condition_type = indexToRef(try b.addType(Type.Common.u1_type));
+        const condition = try coerce(&block_scope.editor, bs, condition_inner, condition_type, node);
         _ = try block_scope.editor.addYieldImplicit(condition, undefined);
         break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
@@ -1007,6 +974,7 @@ pub inline fn resolveType(hg: *HirGen, ref: Ref) Type {
 
 fn getTempHir(hg: *HirGen) Hir {
     return .{
+        .tree = hg.tree,
         .insts = hg.insts.slice(),
         .extra_data = hg.extra.items,
         .values = hg.values.items,

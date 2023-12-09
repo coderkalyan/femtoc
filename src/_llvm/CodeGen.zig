@@ -2,7 +2,7 @@ const std = @import("std");
 const Context = @import("Context.zig");
 const Value = @import("../value.zig").Value;
 const Hir = @import("../Hir.zig");
-const Type = @import("../typing.zig").Type;
+const Type = @import("../hir/type.zig").Type;
 const Allocator = std.mem.Allocator;
 const c = Context.c;
 
@@ -11,7 +11,7 @@ const CodeGen = @This();
 arena: Allocator,
 builder: *Context.Builder,
 hir: *const Hir,
-func: *Hir.Inst.Function,
+func: *const Value.Function,
 // TODO: is LLVM thread safe?
 map: std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
 global_map: *std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
@@ -48,13 +48,7 @@ fn resolveRef(codegen: *CodeGen, ref: Hir.Ref) c.LLVMValueRef {
             return codegen.map.get(index).?;
         }
     } else {
-        return switch (ref) {
-            .zero_val => codegen.builder.addUint(Type.initInt(64, false), 0) catch unreachable,
-            .bfalse_val => codegen.builder.addUint(Type.initInt(1, false), 0) catch unreachable,
-            .one_val => codegen.builder.addUint(Type.initInt(64, false), 1) catch unreachable,
-            .btrue_val => codegen.builder.addUint(Type.initInt(1, false), 1) catch unreachable,
-            else => unreachable,
-        };
+        unreachable;
     }
 }
 
@@ -109,6 +103,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
                 continue;
             },
             .block => try codegen.block(inst),
+            .log_not => codegen.logNot(inst),
             else => {
                 std.debug.print("{}\n", .{hir.insts.items(.tag)[inst]});
                 continue;
@@ -190,7 +185,7 @@ fn alloca(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.insts.items(.data)[inst];
     var builder = codegen.builder;
 
-    return builder.addAlloca(hir.resolveType(data.un_node.operand));
+    return builder.addAlloca(hir.resolveType(Hir.Inst.indexToRef(data.un_node_new.operand)));
 }
 
 fn load(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
@@ -418,11 +413,20 @@ fn ret(codegen: *CodeGen, inst: Hir.Index, comptime implicit: bool) c.LLVMValueR
 
     if (implicit) {
         const data = hir.insts.items(.data)[inst].un_tok;
-        const ref = if (data.operand == Hir.Ref.void_val) null else codegen.resolveRef(data.operand);
+        const is_none = hir.insts.items(.tag)[Hir.Inst.refToIndex(data.operand).?] == .none;
+        const ref = if (is_none) null else codegen.resolveRef(data.operand);
         return codegen.builder.addReturn(ref);
     } else {
         const data = hir.insts.items(.data)[inst].un_node;
-        const ref = if (data.operand == Hir.Ref.void_val) null else codegen.resolveRef(data.operand);
+        const is_none = hir.insts.items(.tag)[Hir.Inst.refToIndex(data.operand).?] == .none;
+        const ref = if (is_none) null else codegen.resolveRef(data.operand);
         return codegen.builder.addReturn(ref);
     }
+}
+
+fn logNot(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
+    const data = codegen.hir.insts.items(.data)[inst].un_node;
+    const ref = codegen.resolveRef(data.operand);
+    const u1_type = c.LLVMInt1TypeInContext(codegen.builder.context.context);
+    return codegen.builder.addCmp(.cmp_ieq, ref, c.LLVMConstInt(u1_type, 0, 0));
 }

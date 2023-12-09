@@ -41,7 +41,8 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
                         try editor.linkInst(_inst);
                     }
 
-                    _ = try editor.addRetImplicit(Ref.void_val, undefined);
+                    const return_val = Hir.Inst.indexToRef(try editor.addNone());
+                    _ = try editor.addRetImplicit(return_val, undefined);
                     try BlockEditor.updateBlock(hg, &editor, fn_decl.body);
                 }
             }

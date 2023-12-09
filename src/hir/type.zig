@@ -96,16 +96,10 @@ pub const Type = extern union {
         base: Extended = .{ .kind = base_kind },
         param_types: []Type,
         return_type: Type,
-
-        pub fn init(gpa: Allocator, return_type: Type, param_types: []Type) !Type {
-            const function = try gpa.create(Function);
-            function.* = Function{ .param_types = param_types, .return_type = return_type };
-            return .{ .extended = &function.base };
-        }
     };
 
     pub inline fn isBasic(ty: Type) bool {
-        const bits: u64 = @bitCast(ty);
+        const bits: u64 = @bitCast(ty.basic);
         return bits < basic_length;
     }
 
@@ -114,22 +108,33 @@ pub const Type = extern union {
         return ty.extended.kind;
     }
 
+    fn intSize(width: u32) usize {
+        var s: usize = 1;
+        while (s * 8 < width) {
+            s *= 2;
+        }
+
+        return s;
+    }
+
+    pub fn eql(self: Type, other: Type) bool {
+        const self_bits: u64 = @bitCast(self.basic);
+        const other_bits: u64 = @bitCast(other.basic);
+        if (self_bits == other_bits) return true;
+        unreachable; // TODO: implement deep comparisons
+    }
+
     pub fn size(ty: Type) usize {
         return switch (ty.kind()) {
             .void => 0,
             .comptime_uint, .comptime_sint, .comptime_float => unreachable,
-            .uint, .sint, .float => {
-                const bytes = (ty.basic.width + 7) / 8;
-                const ans: usize = 1;
-                return ans << std.math.ceilPowerOfTwo(u6, bytes);
+            .uint, .sint, .float => switch (ty.basic.width) {
+                inline 1...127 => |width| comptime intSize(width),
+                else => unreachable,
             },
             .pointer => 8, // TODO: architecture dependent
             .structure, .function => unreachable, // TODO
         };
-    }
-
-    pub fn initVoid() Type {
-        return .{ .basic = .{ .kind = .void, .width = 0 } };
     }
 
     pub fn initLiteral(comptime _kind: Type.Kind, width: u8) Type {
@@ -137,39 +142,13 @@ pub const Type = extern union {
         switch (_kind) {
             .uint, .sint => std.debug.assert(width <= 127),
             .float => std.debug.assert(width == 32 or width == 64),
+            .comptime_uint, .comptime_sint, .comptime_float => std.debug.assert(width == 64),
+            .void => std.debug.assert(width == 0),
             else => unreachable,
         }
 
         return .{ .basic = .{ .kind = _kind, .width = @truncate(width) } };
     }
-
-    pub fn initLiteralImplicitWidth(comptime _kind: Type.Kind) Type {
-        const width = switch (_kind) {
-            .comptime_uint, .comptime_sint, .comptime_float => 64,
-            .void => 0,
-            else => unreachable,
-        };
-
-        return initLiteral(_kind, width);
-    }
-
-    // pub fn initInt(width: u8, sign: bool) Type {
-    //     std.debug.assert(width < std.math.maxInt(u7)); // TODO: large integers
-    //     return .{ .basic = .{ .kind = if (sign) .sint else .uint, .width = @truncate(width) } };
-    // }
-    //
-    // pub fn initFloat(width: u8) Type {
-    //     std.debug.assert(width == 32 or width == 64); // TODO: other special floats
-    //     return .{ .basic = .{ .kind = .float, .width = @truncate(width) } };
-    // }
-    //
-    // pub fn initComptimeInt(sign: bool) Type {
-    //     return .{ .basic = .{ .kind = if (sign) .comptime_sint else .comptime_uint, .width = 64 } };
-    // }
-    //
-    // pub fn initComptimeFloat() Type {
-    //     return .{ .basic = .{ .kind = .comptime_float, .width = 64 } };
-    // }
 
     pub fn alignment(ty: Type) usize {
         return switch (ty.kind()) {
@@ -215,20 +194,6 @@ pub const Type = extern union {
         return ty.basic.kind == .sint or ty.basic.kind == .comptime_sint;
     }
 
-    pub fn isComptimeInt(ty: Type) bool {
-        std.debug.assert(ty.isBasic());
-        return ty.basic.kind == .comptime_uint or ty.basic.kind == .comptime_sint;
-    }
-
-    pub fn isFixedInt(ty: Type) bool {
-        std.debug.assert(ty.isBasic());
-        return ty.basic.kind == .uint or ty.basic.kind == .sint;
-    }
-
-    pub fn isInt(ty: Type) bool {
-        return ty.isComptimeInt() or ty.isFixedInt();
-    }
-
     // pub fn alignment(t: Type) !usize {
     //     if (t.isTag()) {
     //         return switch (t.tag) {
@@ -245,51 +210,128 @@ pub const Type = extern union {
     //         return t.payload.alignment();
     //     }
     // }
+    pub const Common = .{
+        .void_type = Type.initLiteral(.void, 0),
+        .comptime_uint = Type.initLiteral(.comptime_uint, 64),
+        .comptime_sint = Type.initLiteral(.comptime_sint, 64),
+        .comptime_float = Type.initLiteral(.comptime_float, 64),
+        .u1_type = Type.initLiteral(.uint, 1),
+        .u8_type = Type.initLiteral(.uint, 8),
+        .u16_type = Type.initLiteral(.uint, 16),
+        .u32_type = Type.initLiteral(.uint, 32),
+        .u64_type = Type.initLiteral(.uint, 64),
+        .i8_type = Type.initLiteral(.sint, 8),
+        .i16_type = Type.initLiteral(.sint, 16),
+        .i32_type = Type.initLiteral(.sint, 32),
+        .i64_type = Type.initLiteral(.sint, 64),
+        .f32_type = Type.initLiteral(.float, 32),
+        .f64_type = Type.initLiteral(.float, 64),
+    };
 };
 
-test "primitives size" {
-    try std.testing.expectEqual(Type.initVoid().size(), 0);
+test "integers" {
+    const u4_type = Type.initLiteral(.uint, 4);
+    try std.testing.expectEqual(u4_type.basic.kind, .uint);
+    try std.testing.expectEqual(u4_type.basic.width, 4);
+    try std.testing.expect(u4_type.isBasic());
+    try std.testing.expectEqual(u4_type.kind(), .uint);
+    try std.testing.expectEqual(u4_type.minInt(), 0);
+    try std.testing.expectEqual(u4_type.maxInt(), 15);
+    try std.testing.expectEqual(u4_type.size(), 1);
+    try std.testing.expectEqual(u4_type.alignment(), 1);
 
-    try std.testing.expectEqual(Type.initInt(1, false).size(), 1);
-    try std.testing.expectEqual(Type.initInt(8, false).size(), 1);
-    try std.testing.expectEqual(Type.initInt(8, true).size(), 1);
-    try std.testing.expectEqual(Type.initInt(16, false).size(), 2);
-    try std.testing.expectEqual(Type.initInt(16, true).size(), 2);
-    try std.testing.expectEqual(Type.initInt(32, false).size(), 4);
-    try std.testing.expectEqual(Type.initInt(32, true).size(), 4);
-    try std.testing.expectEqual(Type.initInt(64, false).size(), 8);
-    try std.testing.expectEqual(Type.initInt(64, true).size(), 8);
+    const u8_type = Type.initLiteral(.uint, 8);
+    try std.testing.expectEqual(u8_type.basic.kind, .uint);
+    try std.testing.expectEqual(u8_type.basic.width, 8);
+    try std.testing.expect(u8_type.isBasic());
+    try std.testing.expectEqual(u8_type.kind(), .uint);
+    try std.testing.expectEqual(u8_type.minInt(), 0);
+    try std.testing.expectEqual(u8_type.maxInt(), 255);
+    try std.testing.expectEqual(u8_type.size(), 1);
+    try std.testing.expectEqual(u8_type.alignment(), 1);
+    try std.testing.expect(u8_type.eql(Type.Common.u8_type));
 
-    try std.testing.expectEqual(Type.initFloat(32).size(), 4);
-    try std.testing.expectEqual(Type.initFloat(64).size(), 8);
+    const i14_type = Type.initLiteral(.sint, 14);
+    try std.testing.expectEqual(i14_type.basic.kind, .sint);
+    try std.testing.expectEqual(i14_type.basic.width, 14);
+    try std.testing.expect(i14_type.isBasic());
+    try std.testing.expectEqual(i14_type.kind(), .sint);
+    try std.testing.expectEqual(i14_type.minInt(), -8192);
+    try std.testing.expectEqual(i14_type.maxInt(), 8191);
+    try std.testing.expectEqual(i14_type.size(), 2);
+    try std.testing.expectEqual(i14_type.alignment(), 2);
 
-    try std.testing.expectEqual(Type.initComptimeInt(false).size(), 8);
-    try std.testing.expectEqual(Type.initComptimeInt(true).size(), 8);
-    try std.testing.expectEqual(Type.initComptimeFloat().size(), 8);
+    const u32_type = Type.initLiteral(.uint, 32);
+    try std.testing.expectEqual(u32_type.basic.kind, .uint);
+    try std.testing.expectEqual(u32_type.basic.width, 32);
+    try std.testing.expect(u32_type.isBasic());
+    try std.testing.expectEqual(u32_type.kind(), .uint);
+    try std.testing.expectEqual(u32_type.minInt(), 0);
+    try std.testing.expectEqual(u32_type.maxInt(), 4294967295);
+    try std.testing.expectEqual(u32_type.size(), 4);
+    try std.testing.expectEqual(u32_type.alignment(), 4);
+    try std.testing.expect(u32_type.eql(Type.Common.u32_type));
+
+    const i64_type = Type.initLiteral(.sint, 64);
+    try std.testing.expectEqual(i64_type.basic.kind, .sint);
+    try std.testing.expectEqual(i64_type.basic.width, 64);
+    try std.testing.expect(i64_type.isBasic());
+    try std.testing.expectEqual(i64_type.kind(), .sint);
+    const i64_min: i64 = @bitCast(@as(u64, 0x8000_0000_0000_0000));
+    const i64_max: i64 = 0x7fff_ffff_ffff_ffff;
+    try std.testing.expectEqual(i64_type.minInt(), i64_min);
+    try std.testing.expectEqual(i64_type.maxInt(), i64_max);
+    try std.testing.expectEqual(i64_type.size(), 8);
+    try std.testing.expectEqual(i64_type.alignment(), 8);
+    try std.testing.expect(i64_type.eql(Type.Common.i64_type));
+
+    const uctime_type = Type.Common.comptime_uint;
+    try std.testing.expectEqual(uctime_type.basic.kind, .comptime_uint);
+    try std.testing.expectEqual(uctime_type.basic.width, 64);
+    try std.testing.expect(uctime_type.isBasic());
+    try std.testing.expectEqual(uctime_type.kind(), .comptime_uint);
+
+    const sctime_type = Type.Common.comptime_sint;
+    try std.testing.expectEqual(sctime_type.basic.kind, .comptime_sint);
+    try std.testing.expectEqual(sctime_type.basic.width, 64);
+    try std.testing.expect(sctime_type.isBasic());
+    try std.testing.expectEqual(sctime_type.kind(), .comptime_sint);
 }
 
-test "primitive alignment" {
-    try std.testing.expectEqual(Type.initVoid().alignment(), 0);
+test "floats" {
+    const f32_type = Type.initLiteral(.float, 32);
+    try std.testing.expectEqual(f32_type.basic.kind, .float);
+    try std.testing.expectEqual(f32_type.basic.width, 32);
+    try std.testing.expect(f32_type.isBasic());
+    try std.testing.expectEqual(f32_type.kind(), .float);
+    try std.testing.expectEqual(f32_type.size(), 4);
+    try std.testing.expectEqual(f32_type.alignment(), 4);
 
-    try std.testing.expectEqual(Type.initInt(1, false).alignment(), 1);
-    try std.testing.expectEqual(Type.initInt(8, false).alignment(), 1);
-    try std.testing.expectEqual(Type.initInt(8, true).alignment(), 1);
-    try std.testing.expectEqual(Type.initInt(16, false).alignment(), 2);
-    try std.testing.expectEqual(Type.initInt(16, true).alignment(), 2);
-    try std.testing.expectEqual(Type.initInt(32, false).alignment(), 4);
-    try std.testing.expectEqual(Type.initInt(32, true).alignment(), 4);
-    try std.testing.expectEqual(Type.initInt(64, false).alignment(), 8);
-    try std.testing.expectEqual(Type.initInt(64, true).alignment(), 8);
+    const f64_type = Type.initLiteral(.float, 64);
+    try std.testing.expectEqual(f64_type.basic.kind, .float);
+    try std.testing.expectEqual(f64_type.basic.width, 64);
+    try std.testing.expect(f64_type.isBasic());
+    try std.testing.expectEqual(f64_type.kind(), .float);
+    try std.testing.expectEqual(f64_type.size(), 8);
+    try std.testing.expectEqual(f64_type.alignment(), 8);
 
-    try std.testing.expectEqual(Type.initFloat(32).alignment(), 4);
-    try std.testing.expectEqual(Type.initFloat(64).alignment(), 8);
-
-    try std.testing.expectEqual(Type.initComptimeInt(false).alignment(), 8);
-    try std.testing.expectEqual(Type.initComptimeInt(true).alignment(), 8);
-    try std.testing.expectEqual(Type.initComptimeFloat().alignment(), 8);
+    const fctime_type = Type.Common.comptime_float;
+    try std.testing.expectEqual(fctime_type.basic.kind, .comptime_float);
+    try std.testing.expectEqual(fctime_type.basic.width, 64);
+    try std.testing.expect(fctime_type.isBasic());
+    try std.testing.expectEqual(fctime_type.kind(), .comptime_float);
 }
 
-// TODO: update tests
+test "void" {
+    const void_type = Type.Common.void_type;
+    try std.testing.expectEqual(void_type.basic.kind, .void);
+    try std.testing.expectEqual(void_type.basic.width, 0);
+    try std.testing.expect(void_type.isBasic());
+    try std.testing.expectEqual(void_type.kind(), .void);
+    try std.testing.expectEqual(void_type.size(), 0);
+}
+
+// TODO: enable this when enabling structs
 // test "struct size and alignment" {
 //     const ubyte = Type.initInt(8, false);
 //     const ushort = Type.initInt(16, false);

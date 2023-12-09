@@ -2,7 +2,7 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const Hir = @import("Hir.zig");
-const Type = @import("typing.zig").Type;
+const Type = @import("hir/type.zig").Type;
 const Value = @import("value.zig").Value;
 
 const io = std.io;
@@ -341,7 +341,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("push({s})", .{lbuf});
                 },
                 .alloca => {
-                    try self.formatRef(ir.insts.items(.data)[index].un_node.operand, &lbuf);
+                    try self.formatIndex(ir.insts.items(.data)[index].un_node_new.operand, &lbuf);
                     try writer.print("alloca({s})", .{lbuf});
                 },
                 .global_mut => {
@@ -558,16 +558,19 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         },
                         .function => {
                             const val = ir.values[data.val];
-                            const payload = val.payload.cast(Value.Payload.Function).?;
-                            const func = payload.func;
+                            const func = val.extended.cast(Value.Function).?;
+                            const func_type = ty.extended.cast(Type.Function).?;
 
                             try writer.print("constant({s}, params={{", .{lbuf});
                             self.stream.indent();
                             try self.stream.newline();
                             self.stream.indent();
-                            for (func.params) |param| {
-                                const ident_str = try ir.interner.get(param.name);
-                                try self.formatRef(param.ty, &lbuf);
+                            for (func.params, func_type.param_types) |param, param_type| {
+                                _ = param_type;
+                                const param_pl = ir.insts.items(.data)[param].pl_node.pl;
+                                const param_data = ir.extraData(param_pl, Hir.Inst.Param);
+                                const ident_str = try ir.interner.get(param_data.name);
+                                try self.formatRef(param_data.ty, &lbuf);
                                 try writer.print("{s}: {s},", .{ ident_str, lbuf });
                                 try self.stream.newline();
                             }
@@ -607,26 +610,6 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
         fn formatPrimitiveRef(_: *Self, ref: Hir.Ref, buf: []u8) !void {
             _ = try std.fmt.bufPrint(buf, "@Ref.{s}", .{switch (ref) {
-                .zero_val => "zero",
-                .one_val => "one",
-                .btrue_val => "btrue",
-                .bfalse_val => "bfalse",
-                .void_val => "void_val",
-                .u8_ty => "u8",
-                .u16_ty => "u16",
-                .u32_ty => "u32",
-                .u64_ty => "u64",
-                .i8_ty => "i8",
-                .i16_ty => "i16",
-                .i32_ty => "i32",
-                .i64_ty => "i64",
-                .f32_ty => "f32",
-                .f64_ty => "f64",
-                .bool_ty => "bool",
-                .void_ty => "void",
-                .comptime_uint => "comptime_uint",
-                .comptime_sint => "comptime_sint",
-                .comptime_float => "comptime_float",
                 _ => unreachable,
             }});
         }

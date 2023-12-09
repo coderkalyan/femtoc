@@ -1,5 +1,5 @@
 const std = @import("std");
-const Type = @import("../typing.zig").Type;
+const Type = @import("../hir/type.zig").Type;
 
 pub const c = @cImport({
     @cInclude("llvm-c/Core.h");

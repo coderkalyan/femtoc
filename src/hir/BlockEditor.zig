@@ -4,7 +4,7 @@ const Hir = @import("../Hir.zig");
 const HirGen = @import("../HirGen.zig");
 const Ast = @import("../Ast.zig");
 const Node = Ast.Node;
-const Type = @import("../typing.zig").Type;
+const Type = @import("type.zig").Type;
 const Value = @import("../value.zig").Value;
 
 const Inst = Hir.Inst;
@@ -77,46 +77,11 @@ pub fn addValue(b: *BlockEditor, val: Value) !u32 {
     return len;
 }
 
-// turns a type into a reference to be passed into an instruction
-// for many basic types, there are built in refs
-// special, derived, and aggregate types insert a type
 pub fn typeToRef(b: *BlockEditor, ty: Type) !Hir.Ref {
-    return switch (ty.kind()) {
-        .void => .void_ty,
-        .uint => switch (ty.basic.width) {
-            1 => .bool_ty,
-            8 => .u8_ty,
-            16 => .u16_ty,
-            32 => .u32_ty,
-            64 => .u64_ty,
-            else => Hir.Inst.indexToRef(try b.addType(ty)),
-        },
-        .sint => switch (ty.basic.width) {
-            8 => .i8_ty,
-            16 => .i16_ty,
-            32 => .i32_ty,
-            64 => .i64_ty,
-            else => Hir.Inst.indexToRef(try b.addType(ty)),
-        },
-        .float => switch (ty.basic.width) {
-            32 => .f32_ty,
-            64 => .f64_ty,
-            else => error.NotImplemented,
-        },
-        .comptime_uint => .comptime_uint,
-        .comptime_sint => .comptime_sint,
-        .comptime_float => .comptime_float,
-        else => return Hir.Inst.indexToRef(try b.addType(ty)),
-    };
+    return Hir.Inst.indexToRef(try b.addType(ty));
 }
 
-// pub fn addType(b: *BlockEditor, _ty: Type) !u32 {
 pub fn addType(b: *BlockEditor, _ty: Type) !Hir.Index {
-    // const hg = b.hg;
-    // const len: u32 = @intCast(hg.types.items.len);
-    // try hg.types.append(hg.gpa, _ty);
-
-    // return len;
     return b.addInst(.{
         .tag = .ty,
         .data = .{ .ty = _ty },
@@ -137,6 +102,13 @@ pub fn addFloat(b: *BlockEditor, float: f64) !Hir.Index {
     });
 }
 
+pub fn addNone(b: *BlockEditor) !Hir.Index {
+    return b.addInst(.{
+        .tag = .none,
+        .data = undefined,
+    });
+}
+
 pub fn addConstant(b: *BlockEditor, _ty: Type, val: Value, node: Node.Index) !Hir.Index {
     const ty_ref = try b.typeToRef(_ty);
     const pl = try b.hg.addExtra(Inst.Constant{
@@ -152,33 +124,33 @@ pub fn addConstant(b: *BlockEditor, _ty: Type, val: Value, node: Node.Index) !Hi
 
 pub fn addIntConstant(b: *BlockEditor, ty: Type, int: u64, node: Node.Index) !u32 {
     std.debug.assert(ty.basic.width <= 64);
-    if (int == 0) return b.addConstant(ty, .{ .tag = .zero }, node);
-    if (int == 1) return b.addConstant(ty, .{ .tag = .one }, node);
+    if (int == 0) return b.addConstant(ty, .{ .basic = .{ .kind = .zero } }, node);
+    if (int == 1) return b.addConstant(ty, .{ .basic = .{ .kind = .one } }, node);
     if (ty.basic.kind == .comptime_uint or ty.basic.kind == .comptime_sint) {
         if (int <= std.math.maxInt(u32)) {
-            var payload = try b.hg.gpa.create(Value.Payload.U32);
+            var payload = try b.hg.gpa.create(Value.U32);
             payload.* = .{ .int = @truncate(int) };
-            return b.addConstant(ty, .{ .payload = &payload.base }, node);
+            return b.addConstant(ty, .{ .extended = &payload.base }, node);
         } else {
-            var payload = try b.hg.gpa.create(Value.Payload.U64);
+            var payload = try b.hg.gpa.create(Value.U64);
             payload.* = .{ .int = int };
-            return b.addConstant(ty, .{ .payload = &payload.base }, node);
+            return b.addConstant(ty, .{ .extended = &payload.base }, node);
         }
     } else if (ty.basic.width <= 32) {
-        var payload = try b.hg.gpa.create(Value.Payload.U32);
+        var payload = try b.hg.gpa.create(Value.U32);
         payload.* = .{ .int = @truncate(int) };
-        return b.addConstant(ty, .{ .payload = &payload.base }, node);
+        return b.addConstant(ty, .{ .extended = &payload.base }, node);
     } else {
-        var payload = try b.hg.gpa.create(Value.Payload.U64);
+        var payload = try b.hg.gpa.create(Value.U64);
         payload.* = .{ .int = int };
-        return b.addConstant(ty, .{ .payload = &payload.base }, node);
+        return b.addConstant(ty, .{ .extended = &payload.base }, node);
     }
 }
 
 pub fn addFloatConstant(b: *BlockEditor, ty: Type, f: f64, node: Node.Index) !u32 {
-    var payload = try b.hg.gpa.create(Value.Payload.F64);
+    var payload = try b.hg.gpa.create(Value.F64);
     payload.* = .{ .float = f };
-    return b.addConstant(ty, .{ .payload = &payload.base }, node);
+    return b.addConstant(ty, .{ .extended = &payload.base }, node);
 }
 
 pub fn addBinary(b: *BlockEditor, l: Hir.Ref, r: Hir.Ref, tag: Inst.Tag, node: Node.Index) !Hir.Index {
@@ -278,14 +250,46 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
     const slice = hg.block_slices.items[head];
     for (slice) |inst| {
         switch (hg.insts.items(.tag)[inst]) {
-            .int, .float, .ty => {},
-            .add, .sub, .mul, .div, .mod, .cmp_eq, .cmp_ne, .cmp_gt, .cmp_ge, .cmp_lt, .cmp_le, .icmp_eq, .icmp_ne, .icmp_ugt, .icmp_uge, .icmp_ult, .icmp_ule, .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle, .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => {
+            .int,
+            .float,
+            .ty,
+            .none,
+            => {},
+            .add,
+            .sub,
+            .mul,
+            .div,
+            .mod,
+            .cmp_eq,
+            .cmp_ne,
+            .cmp_gt,
+            .cmp_ge,
+            .cmp_lt,
+            .cmp_le,
+            .icmp_eq,
+            .icmp_ne,
+            .icmp_ugt,
+            .icmp_uge,
+            .icmp_ult,
+            .icmp_ule,
+            .icmp_sgt,
+            .icmp_sge,
+            .icmp_slt,
+            .icmp_sle,
+            .fcmp_gt,
+            .fcmp_ge,
+            .fcmp_lt,
+            .fcmp_le,
+            .lsl,
+            .lsr,
+            .asl,
+            .asr,
+            => {
                 // Binary
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
                 remapRefPl(hg, remaps, pl + 0); // lref
                 remapRefPl(hg, remaps, pl + 1); // rref
             },
-            .lsl, .lsr, .asl, .asr => unreachable,
             .coerce => {
                 // Coerce
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
@@ -303,12 +307,13 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 remapRefPl(hg, remaps, pl + 0); // val
                 remapRefPl(hg, remaps, pl + 1); // ty
             },
-            .push, .global_mut, .link_extern => {
-                // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
-                remapRef(hg, remaps, op);
-            },
-            .neg, .log_not, .bit_not => {
+            .push,
+            .global_mut,
+            .link_extern,
+            .neg,
+            .log_not,
+            .bit_not,
+            => {
                 // unary operand
                 var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
                 remapRef(hg, remaps, op);
@@ -664,9 +669,9 @@ pub fn addFpext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !H
     });
 }
 
-pub fn addAllocaUnlinked(b: *BlockEditor, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addAllocaUnlinked(b: *BlockEditor, ty: Hir.Index, node: Node.Index) !Hir.Index {
     return b.hg.addInstUnlinked(.{
         .tag = .alloca,
-        .data = .{ .un_node = .{ .operand = ty, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = ty, .node = node } },
     });
 }

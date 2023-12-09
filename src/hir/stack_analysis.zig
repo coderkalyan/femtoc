@@ -37,8 +37,8 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
 
                 if (ty.kind() == .function) {
                     const val = hg.values.items[constant.val];
-                    const payload = val.payload.cast(Value.Payload.Function).?;
-                    try processFunction(hg, payload.func.body);
+                    const payload = val.extended.cast(Value.Function).?;
+                    try processFunction(hg, payload.body);
                 }
             }
         }
@@ -81,7 +81,7 @@ fn processBlock(hg: *HirGen, block: Hir.Index, allocas: *std.ArrayListUnmanaged(
         switch (hg.insts.items(.tag)[inst]) {
             .push => {
                 const push_data = hg.insts.items(.data)[inst].un_node;
-                const ty = try b.typeToRef(hg.resolveType(push_data.operand));
+                const ty = try b.addType(hg.resolveType(push_data.operand));
                 const alloca = try b.addAllocaUnlinked(ty, push_data.node);
                 try allocas.append(hg.arena, alloca);
 

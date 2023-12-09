@@ -1,5 +1,5 @@
 const std = @import("std");
-const Type = @import("../typing.zig").Type;
+const Type = @import("type.zig").Type;
 const Hir = @import("../Hir.zig");
 const BlockEditor = @import("BlockEditor.zig");
 
@@ -32,6 +32,7 @@ pub fn coerce(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
 fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     const hg = b.hg;
     const src_ty = hg.resolveType(src);
+    // std.debug.print("{} ({any}) {}\n", .{ src, refToIndex(src), src_ty.basic });
 
     switch (src_ty.kind()) {
         // can coerce to a fixed uint if the comptime value fits in bounds
@@ -52,7 +53,13 @@ fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
             return indexToRef(try b.addZext(src, try b.typeToRef(dest_ty), undefined)); // TODO: node
         },
         // could overflow/underflow, so not allowed
-        .sint => return error.Truncated,
+        .sint => {
+            // try hg.errors.append(hg.gpa, .{
+            //     .tag = .coerce_sint_to_uint,
+            //     .token =
+            // });
+            return error.Truncated;
+        },
         // lossy
         .float => return error.Truncated, // TODO: more specific error
         else => return error.InvalidCoercion,

@@ -2,7 +2,7 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const Hir = @import("Hir.zig");
-const Type = @import("typing.zig").Type;
+const Type = @import("hir/type.zig").Type;
 
 const io = std.io;
 
@@ -33,6 +33,7 @@ pub const SourceError = struct {
         call_nonfunc,
         call_argcount,
         binary_diffsign,
+        coerce_sint_to_uint,
     };
 };
 
@@ -149,6 +150,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .call_nonfunc => "attempted to call non-function type",
                 .call_argcount => "incorrect number of arguments to function call",
                 .binary_diffsign => "operands to binary arithmetic must have same sign",
+                .coerce_sint_to_uint => "cannot coerce signed integer to unsigned integer",
             };
 
             r.stream.indent();
