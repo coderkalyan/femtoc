@@ -240,8 +240,6 @@ const Parser = struct {
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
-            // std.debug.print("HI IM AT {}, idx={}\n", .{p.token_tags[p.index], p.index});
-
             const node = switch (p.token_tags[p.index]) {
                 .eof => break,
                 .a_export => {
@@ -300,7 +298,6 @@ const Parser = struct {
         return switch (p.token_tags[p.index]) {
             .k_fn => p.expectFnDecl(),
             else => {
-                std.debug.print("{}\n", .{p.token_tags[p.index]});
                 const left_node = try p.parsePrimaryExpr();
                 return p.parseBinRExpr(left_node, 0);
             },
@@ -351,7 +348,7 @@ const Parser = struct {
             }),
             .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
-                .data = .{ .unary_expr = try p.expectExpr() },
+                .data = .{ .unary_expr = try p.parsePrimaryExpr() },
             }),
             else => return Error.UnexpectedToken,
         };
@@ -429,23 +426,46 @@ const Parser = struct {
     fn expectType(p: *Parser) !Node.Index {
         // parses a type as either an named identifier (u32, Point),
         // function prototype, or aggregate prototype
-        return switch (p.token_tags[p.index]) {
+        var inner = switch (p.token_tags[p.index]) {
             // .k_struct => p.parseStructProto(),
             // .k_fn => p.expectFnProto(),
-            .ident => {
+            .ident => node: {
                 const ident_token = try p.expectToken(.ident);
-                return p.addNode(.{
+                break :node try p.addNode(.{
                     .main_token = ident_token,
                     .data = .{
                         .named_ty = {},
                     },
                 });
             },
+            .l_paren => node: {
+                // parentheses are used only for grouping in source code,
+                // and don't generate ast nodes since the ast nesting itself
+                // provides the correct grouping
+                _ = try p.expectToken(.l_paren);
+                const inner_node = try p.expectType();
+                _ = try p.expectToken(.r_paren);
+
+                break :node inner_node;
+            },
             else => {
-                // std.debug.print("{}\n", .{p.token_tags[p.index]});
+                std.debug.print("{}\n", .{p.token_tags[p.index]});
                 return Error.UnexpectedToken;
             },
         };
+
+        while (true) {
+            inner = switch (p.token_tags[p.index]) {
+                .asterisk => node: {
+                    const asterisk_token = p.eatToken(.asterisk).?;
+                    break :node try p.addNode(.{
+                        .main_token = asterisk_token,
+                        .data = .{ .pointer_ty = inner },
+                    });
+                },
+                else => return inner,
+            };
+        }
     }
 
     fn expectFnDecl(p: *Parser) !Node.Index {

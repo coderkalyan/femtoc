@@ -13,12 +13,8 @@ pub const Error = error{
 
 pub fn coerce(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     // if the source has the dest type, just return the existing ref
-    const src_ty = b.hg.resolveType(src);
-    // TODO: this doesn't work on complex types, we need proper deep comparison
-    // IF this fails (check this first)
-    const src_bits: u64 = @bitCast(src_ty);
-    const dest_bits: u64 = @bitCast(dest_ty);
-    if (src_bits == dest_bits) return src;
+    const src_ty = try b.hg.resolveType(src);
+    if (src_ty.eql(dest_ty)) return src;
 
     return switch (dest_ty.kind()) {
         .uint => uint(b, src, dest_ty),
@@ -31,7 +27,7 @@ pub fn coerce(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
 // coerce anything to a fixed-size unsigned int
 fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     const hg = b.hg;
-    const src_ty = hg.resolveType(src);
+    const src_ty = try hg.resolveType(src);
     // std.debug.print("{} ({any}) {}\n", .{ src, refToIndex(src), src_ty.basic });
 
     switch (src_ty.kind()) {
@@ -69,7 +65,7 @@ fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
 // coerce anything to a fixed-size signed int
 fn sint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     const hg = b.hg;
-    const src_ty = hg.resolveType(src);
+    const src_ty = try hg.resolveType(src);
 
     switch (src_ty.kind()) {
         // can coerce to a fixed sint if the comptime value fits in bounds
@@ -106,7 +102,7 @@ fn sint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
 // coerce anything to a fixed-size float
 fn float(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     const hg = b.hg;
-    const src_ty = hg.resolveType(src);
+    const src_ty = try hg.resolveType(src);
 
     switch (src_ty.kind()) {
         // can coerce to a fixed float if the comptime value fits in bounds

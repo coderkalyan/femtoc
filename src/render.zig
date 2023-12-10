@@ -540,7 +540,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .constant => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
                     const data = ir.extraData(pl, Hir.Inst.Constant);
-                    const ty = ir.resolveType(data.ty);
+                    const ty = try ir.resolveType(undefined, data.ty);
                     try self.formatRef(data.ty, &lbuf);
                     switch (ty.kind()) {
                         .comptime_uint, .uint => {
@@ -643,6 +643,13 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     var ret_buf: [128]u8 = [_]u8{0} ** 128;
                     try self.formatType(function.return_type, &ret_buf);
                     _ = try std.fmt.bufPrint(buf, "function(return_ty = {s})", .{ret_buf});
+                    return;
+                },
+                .pointer => {
+                    const pointer = ty.extended.cast(Type.Pointer).?;
+                    var pointee_buf: [128]u8 = [_]u8{0} ** 128;
+                    try self.formatType(pointer.pointee, &pointee_buf);
+                    _ = try std.fmt.bufPrint(buf, "pointer({s})", .{pointee_buf});
                     return;
                 },
                 else => unreachable, //return error.NotImplemented,

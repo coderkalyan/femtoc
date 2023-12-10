@@ -65,6 +65,7 @@ pub const Node = struct {
         // types
 
         named_ty: void,
+        pointer_ty: Index,
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
         // proto = FnSignature {} 'fn (params...) ret'

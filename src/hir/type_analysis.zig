@@ -81,6 +81,7 @@ fn processInst(b: *BlockEditor, inst: Hir.Index, inner_blocks: *std.ArrayListUnm
         .loop => try loop(b, inst, inner_blocks),
         .block => try block(b, inst, inner_blocks),
         .call => try call(b, inst),
+        .pointer_ty => try pointerTy(b, inst),
         else => try b.linkInst(inst),
     }
 }
@@ -98,11 +99,11 @@ fn fnDecl(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32))
     for (params, 0..) |param, i| {
         const param_pl = hg.insts.items(.data)[param].pl_node.pl;
         const param_data = hg.extraData(param_pl, Hir.Inst.Param);
-        param_types[i] = hg.resolveType(param_data.ty);
+        param_types[i] = try hg.resolveType(param_data.ty);
     }
 
     // build the type for this function from the parameter and return types
-    const return_type = hg.resolveType(fn_decl.return_type);
+    const return_type = try hg.resolveType(fn_decl.return_type);
     const fn_type_inner = try hg.gpa.create(Type.Function);
     fn_type_inner.* = .{ .param_types = param_types, .return_type = return_type };
     const fn_type: Type = .{ .extended = &fn_type_inner.base };
@@ -140,7 +141,7 @@ fn coerce(b: *BlockEditor, inst: Hir.Index) !void {
     const data = hg.insts.items(.data)[inst];
     const coerce_data = hg.extraData(data.pl_node.pl, Hir.Inst.Coerce);
 
-    const dest_ty = hg.resolveType(coerce_data.ty);
+    const dest_ty = try hg.resolveType(coerce_data.ty);
     const new_ref = try coercion.coerce(b, coerce_data.val, dest_ty);
     try b.addRemap(inst, new_ref);
 }
@@ -152,8 +153,8 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
     const binary = hg.extraData(data.pl_node.pl, Hir.Inst.Binary);
     const op_token = hg.tree.mainToken(data.pl_node.node);
 
-    const lty = hg.resolveType(binary.lref);
-    const rty = hg.resolveType(binary.rref);
+    const lty = try hg.resolveType(binary.lref);
+    const rty = try hg.resolveType(binary.rref);
     const lkind = lty.kind();
     const rkind = rty.kind();
 
@@ -162,6 +163,7 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
     // comptime literals coerce to the fixed type of the other value
     // if both are comptime literals, the arithmetic is evaluated at
     // compile time (constant folding)
+    std.debug.print("{} {}\n", .{ lkind, rkind });
     switch (lkind) {
         .uint => {
             switch (rkind) {
@@ -292,8 +294,8 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
     const data = hg.insts.items(.data)[inst];
     const binary = hg.extraData(data.pl_node.pl, Hir.Inst.Binary);
 
-    const lty = hg.resolveType(binary.lref);
-    const rty = hg.resolveType(binary.rref);
+    const lty = try hg.resolveType(binary.lref);
+    const rty = try hg.resolveType(binary.rref);
     const lkind = lty.kind();
     const rkind = rty.kind();
 
@@ -577,7 +579,7 @@ fn call(b: *BlockEditor, inst: Hir.Index) !void {
     const addr_token = hg.tree.mainToken(data.node);
 
     // TODO: should we try to coerce this? not sure yet
-    const addr_type = hg.resolveType(call_data.addr);
+    const addr_type = try hg.resolveType(call_data.addr);
     if (addr_type.kind() != .function) {
         // you can only call a function
         try hg.errors.append(hg.gpa, .{
@@ -609,4 +611,17 @@ fn call(b: *BlockEditor, inst: Hir.Index) !void {
 
     const new_call = try b.addCall(call_data.addr, dest_args, data.node);
     try b.addRemap(inst, indexToRef(new_call));
+}
+
+fn pointerTy(b: *BlockEditor, inst: Hir.Index) !void {
+    const hg = b.hg;
+    const data = hg.insts.items(.data)[inst].un_node;
+    const pointee = try hg.resolveType(data.operand);
+
+    const inner = try hg.gpa.create(Type.Pointer);
+    inner.* = .{ .pointee = pointee };
+    const pointer: Type = .{ .extended = &inner.base };
+
+    const new_type = try b.addType(pointer);
+    try b.addRemap(inst, indexToRef(new_type));
 }

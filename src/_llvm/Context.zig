@@ -69,7 +69,8 @@ pub fn convertType(context: *Context, ty: Type) !c.LLVMTypeRef {
             const return_type = try context.convertType(function.return_type);
             return c.LLVMFunctionType(return_type, params.ptr, @intCast(params.len), 0);
         },
-        .pointer, .structure => unreachable,
+        .pointer => return c.LLVMPointerTypeInContext(context.context, 0),
+        .structure => unreachable,
     };
 }
 
@@ -141,8 +142,8 @@ pub const Builder = struct {
         return c.LLVMBuildAlloca(builder.builder, llvm_type, "");
     }
 
-    pub fn addLoad(builder: *Builder, addr: c.LLVMValueRef) c.LLVMValueRef {
-        const llvm_type = c.LLVMGetAllocatedType(addr);
+    pub fn addLoad(builder: *Builder, addr: c.LLVMValueRef, ty: Type) !c.LLVMValueRef {
+        const llvm_type = try builder.convertType(ty);
         return c.LLVMBuildLoad2(builder.builder, llvm_type, addr, "");
     }
 

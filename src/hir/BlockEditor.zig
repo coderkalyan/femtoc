@@ -88,6 +88,13 @@ pub fn addType(b: *BlockEditor, _ty: Type) !Hir.Index {
     });
 }
 
+pub fn addPointerTy(b: *BlockEditor, pointee: Hir.Ref, node: Node.Index) !Hir.Index {
+    return b.addInst(.{
+        .tag = .pointer_ty,
+        .data = .{ .un_node = .{ .node = node, .operand = pointee } },
+    });
+}
+
 pub fn addInt(b: *BlockEditor, int: u64) !Hir.Index {
     return b.addInst(.{
         .tag = .int,
@@ -313,6 +320,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             .neg,
             .log_not,
             .bit_not,
+            .pointer_ty,
             => {
                 // unary operand
                 var op = &hg.insts.slice().items(.data)[inst].un_node.operand;

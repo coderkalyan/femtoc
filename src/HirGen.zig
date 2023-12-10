@@ -226,7 +226,6 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
     const ident_token = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_token);
 
-    std.debug.print("ident: {s} {}\n", .{ ident_str, ri });
     // check identifier against builtin types, and if match found,
     // make sure we're using type semantics
     if (builtin_types.get(ident_str)) |builtin_type| {
@@ -282,7 +281,6 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
         // generate a load instruction to get the value at that address
         .local_ptr => {
             const local_ptr = ident_scope.cast(Scope.LocalPtr).?;
-            std.debug.print("local ptr: {s} {}\n", .{ ident_str, local_ptr.ptr });
             switch (ri.semantics) {
                 .val => {
                     const ptr = refToIndex(local_ptr.ptr).?;
@@ -380,7 +378,7 @@ fn binary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return binaryInner(b, node, operator_token, left, right);
 }
 
-fn unary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const unary_expr = hg.tree.data(node).unary_expr;
     const operator_token = hg.tree.mainToken(node);
@@ -391,8 +389,12 @@ fn unary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
             return refToIndex(ptr).?;
         },
         .asterisk => {
-            const ptr = try valExpr(b, scope, unary_expr);
-            return refToIndex(ptr).?;
+            const ptr = refToIndex(try valExpr(b, scope, unary_expr)).?;
+            switch (ri.semantics) {
+                .val => return b.addLoad(ptr, node),
+                .ref => return ptr,
+                .ty => unreachable,
+            }
         },
         .plus => return node,
         .minus,
@@ -469,18 +471,42 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 }
 
 fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Ref {
-    return switch (b.hg.tree.data(node)) {
-        .integer_literal => integerLiteral(b, node),
-        .float_literal => floatLiteral(b, node),
-        .bool_literal => boolLiteral(b, node),
-        .var_expr, .named_ty => identExpr(b, scope, ri, node),
-        .call_expr => indexToRef(try call(b, scope, node)),
-        .binary_expr => indexToRef(try binary(b, scope, node)),
-        .unary_expr => indexToRef(try unary(b, scope, node)),
-        .fn_decl => indexToRef(try fnDecl(b, scope, node)),
-        else => {
-            std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
-            return GenError.NotImplemented;
+    return switch (ri.semantics) {
+        .val => switch (b.hg.tree.data(node)) {
+            .integer_literal => integerLiteral(b, node),
+            .float_literal => floatLiteral(b, node),
+            .bool_literal => boolLiteral(b, node),
+            .var_expr => identExpr(b, scope, ri, node),
+            .call_expr => indexToRef(try call(b, scope, node)),
+            .binary_expr => indexToRef(try binary(b, scope, node)),
+            .unary_expr => indexToRef(try unary(b, scope, ri, node)),
+            .fn_decl => indexToRef(try fnDecl(b, scope, node)),
+            else => {
+                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                return GenError.NotImplemented;
+            },
+        },
+        .ref => switch (b.hg.tree.data(node)) {
+            .integer_literal => integerLiteral(b, node),
+            .float_literal => floatLiteral(b, node),
+            .bool_literal => boolLiteral(b, node),
+            .var_expr => identExpr(b, scope, ri, node),
+            .call_expr => indexToRef(try call(b, scope, node)),
+            .binary_expr => indexToRef(try binary(b, scope, node)),
+            .unary_expr => indexToRef(try unary(b, scope, ri, node)),
+            else => {
+                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                return GenError.NotImplemented;
+            },
+        },
+        .ty => switch (b.hg.tree.data(node)) {
+            .named_ty => identExpr(b, scope, ri, node),
+            .unary_expr => indexToRef(try unary(b, scope, ri, node)),
+            .pointer_ty => indexToRef(try pointerTy(b, scope, node)),
+            else => {
+                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                return GenError.NotImplemented;
+            },
         },
     };
 }
@@ -498,6 +524,14 @@ inline fn refExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
 inline fn typeExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
     const ri: ResultInfo = .{ .semantics = .ty };
     return expr(b, scope, ri, node);
+}
+
+fn pointerTy(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const pointee = hg.tree.data(node).pointer_ty;
+    const inner = try typeExpr(b, scope, pointee);
+
+    return b.addPointerTy(inner, node);
 }
 
 // TODO: why do some of them not return?
@@ -527,7 +561,6 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!?Ref {
 
 fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const data = hg.tree.data(node);
-    std.debug.print("global node: {}\n", .{data});
     return try switch (data) {
         .const_decl => globalConst(hg, scope, node),
         .const_decl_attr => globalConstAttr(hg, scope, node),
@@ -781,7 +814,6 @@ fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const assign = hg.tree.data(node).assign_simple;
 
-    std.debug.print("starting assign ref\n", .{});
     const ptr = refExpr(b, scope, assign.ptr) catch |err| {
         if (err == error.InvalidLvalue) {
             // TODO: not really accurate?
@@ -794,7 +826,6 @@ fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
             return err;
         }
     };
-    std.debug.print("ending assign ref: {}\n", .{ptr});
     const val = try valExpr(b, scope, assign.val);
     return b.addStore(refToIndex(ptr).?, val, node);
 }
@@ -1033,8 +1064,8 @@ fn module(hg: *HirGen, node: Node.Index) !Hir.Index {
     return try addModule(hg, node);
 }
 
-pub inline fn resolveType(hg: *HirGen, ref: Ref) Type {
-    return hg.getTempHir().resolveType(ref);
+pub inline fn resolveType(hg: *HirGen, ref: Ref) !Type {
+    return hg.getTempHir().resolveType(hg.gpa, ref);
 }
 
 fn getTempHir(hg: *HirGen) Hir {

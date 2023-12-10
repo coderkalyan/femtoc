@@ -121,7 +121,25 @@ pub const Type = extern union {
         const self_bits: u64 = @bitCast(self.basic);
         const other_bits: u64 = @bitCast(other.basic);
         if (self_bits == other_bits) return true;
-        unreachable; // TODO: implement deep comparisons
+
+        const self_kind = self.kind();
+        const other_kind = other.kind();
+        switch (self_kind) {
+            .uint,
+            .sint,
+            .float,
+            .comptime_uint,
+            .comptime_sint,
+            .comptime_float,
+            => return false,
+            .pointer => {
+                if (other_kind != .pointer) return false;
+                const self_ptr = self.extended.cast(Type.Pointer).?;
+                const other_ptr = other.extended.cast(Type.Pointer).?;
+                return self_ptr.pointee.eql(other_ptr.pointee);
+            },
+            else => unreachable,
+        }
     }
 
     pub fn size(ty: Type) usize {

@@ -30,7 +30,7 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
             .constant => ref: {
                 const pl = hir.insts.items(.data)[inst].pl_node.pl;
                 const data = hir.extraData(pl, Hir.Inst.Constant);
-                const ty = hir.resolveType(data.ty);
+                const ty = try hir.resolveType(dg.gpa, data.ty);
 
                 break :ref switch (ty.kind()) {
                     .function => try dg.function(inst, codegens),
@@ -95,7 +95,7 @@ fn function(dg: *DeclGen, inst: Hir.Index, codegens: *std.ArrayList(CodeGen)) !c
     const hir = dg.hir;
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Constant);
-    const ty = hir.resolveType(data.ty);
+    const ty = try hir.resolveType(dg.gpa, data.ty);
     const val = hir.values[data.val];
     const func = val.extended.cast(Value.Function).?;
 
@@ -126,7 +126,7 @@ fn literal(dg: *DeclGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = dg.hir;
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Constant);
-    const ty = hir.resolveType(data.ty);
+    const ty = try hir.resolveType(dg.gpa, data.ty);
     const llvm_type = try dg.context.convertType(ty);
     const member_str = try hir.interner.get(dg.name);
     const name = try std.fmt.allocPrintZ(dg.arena, "{s}", .{member_str});

@@ -69,7 +69,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .ret_node => codegen.ret(inst, false),
             .ret_implicit => codegen.ret(inst, true),
             .alloca => try codegen.alloca(inst),
-            .load => codegen.load(inst),
+            .load => try codegen.load(inst),
             .store => codegen.store(inst),
             .icmp_eq, .icmp_ne, .icmp_ugt, .icmp_uge, .icmp_ult, .icmp_ule, .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle => try codegen.icmp(inst),
             .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => try codegen.fcmp(inst),
@@ -126,7 +126,7 @@ fn constant(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Constant);
-    const ty = hir.resolveType(data.ty);
+    const ty = try hir.resolveType(codegen.arena, data.ty);
 
     var builder = codegen.builder;
     switch (ty.kind()) {
@@ -150,7 +150,7 @@ fn binaryOp(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     // C (clang 17) emits urem for all integer modulo
     // in the long term, we need to decide what behavior we want for
     // negative numbers and 0
-    const lty = hir.resolveType(data.lref);
+    const lty = try hir.resolveType(codegen.arena, data.lref);
     return switch (lty.kind()) {
         .uint => switch (hir.insts.items(.tag)[inst]) {
             .add => c.LLVMBuildAdd(builder.builder, lref, rref, ""),
@@ -185,14 +185,17 @@ fn alloca(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.insts.items(.data)[inst];
     var builder = codegen.builder;
 
-    return builder.addAlloca(hir.resolveType(Hir.Inst.indexToRef(data.un_node_new.operand)));
+    return builder.addAlloca(try hir.resolveType(codegen.arena, Hir.Inst.indexToRef(data.un_node_new.operand)));
 }
 
-fn load(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
+fn load(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = codegen.hir.insts.items(.data)[inst].pl_node.pl;
 
-    const addr = codegen.resolveRef(Hir.Inst.indexToRef(pl));
-    return codegen.builder.addLoad(addr);
+    const ref = Hir.Inst.indexToRef(pl);
+    const pointer_type = try codegen.hir.resolveType(codegen.arena, ref);
+    const pointee_type = pointer_type.extended.cast(Type.Pointer).?.pointee;
+    const addr = codegen.resolveRef(ref);
+    return codegen.builder.addLoad(addr, pointee_type);
 }
 
 fn store(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
@@ -311,6 +314,7 @@ fn functionParam(codegen: *CodeGen, inst: Hir.Index, index: u32) !c.LLVMValueRef
     const param_str = try hir.interner.get(data.name);
     const param_ref = c.LLVMGetParam(codegen.builder.function, index);
     c.LLVMSetValueName2(param_ref, param_str.ptr, param_str.len);
+
     return param_ref;
 }
 
@@ -332,7 +336,7 @@ fn zext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Extend);
 
-    const ty = hir.resolveType(data.ty);
+    const ty = try hir.resolveType(codegen.arena, data.ty);
     const ref = codegen.resolveRef(data.val);
     return codegen.builder.addZext(ty, ref);
 }
@@ -342,7 +346,7 @@ fn sext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Extend);
 
-    const ty = hir.resolveType(data.ty);
+    const ty = try hir.resolveType(codegen.arena, data.ty);
     const ref = codegen.resolveRef(data.val);
     return codegen.builder.addSext(ty, ref);
 }
@@ -352,7 +356,7 @@ fn fpext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Extend);
 
-    const ty = hir.resolveType(data.ty);
+    const ty = try hir.resolveType(codegen.arena, data.ty);
     const ref = codegen.resolveRef(data.val);
     return codegen.builder.addFpext(ty, ref);
 }
@@ -404,7 +408,7 @@ fn call(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
         args[i] = codegen.resolveRef(@enumFromInt(arg));
     }
 
-    const ty = hir.resolveType(data.addr);
+    const ty = try hir.resolveType(codegen.arena, data.addr);
     return codegen.builder.addCall(ty, addr, args);
 }
 

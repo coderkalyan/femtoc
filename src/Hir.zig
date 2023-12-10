@@ -41,6 +41,7 @@ pub const Inst = struct {
         // data.ty = type (stored directly)
         // TODO: why do we need this instead of types[]?
         ty,
+        pointer_ty,
         // declare a new typed immediate constant
         // data.pl_node.pl = Inst.Constant
         constant,
@@ -381,7 +382,7 @@ pub inline fn resolveRef(hir: *const Hir, ref: Ref) Ref {
 // either by the type of instruction (comparison => u1),
 // signature (call is the return type of the address),
 // or by recursively resolving the operand type (arithmetic)
-pub fn resolveType(hir: *const Hir, ref: Ref) Type {
+pub fn resolveType(hir: *const Hir, gpa: Allocator, ref: Ref) !Type {
     if (Inst.refToIndex(ref)) |index| {
         const data = hir.insts.items(.data)[index];
         return switch (hir.insts.items(.tag)[index]) {
@@ -390,14 +391,13 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             // constants are typed values, they reference a type
             .constant => ty: {
                 const constant_data = hir.extraData(data.pl_node.pl, Hir.Inst.Constant);
-                break :ty hir.resolveType(constant_data.ty);
+                break :ty hir.resolveType(gpa, constant_data.ty);
             },
             .none => Type.Common.void_type,
             // unary operand instructions - recursively resolve
             .neg,
             .log_not,
             .bit_not,
-            .push,
             .global_mut,
             .link_extern,
             .yield_node,
@@ -405,8 +405,19 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .yield_inline,
             .ret_node,
             .ret_implicit,
-            => hir.resolveType(data.un_node.operand),
-            .alloca => hir.resolveType(Hir.Inst.indexToRef(data.un_node_new.operand)),
+            => hir.resolveType(gpa, data.un_node.operand),
+            .push => {
+                const pointee = try hir.resolveType(gpa, data.un_node.operand);
+                const inner = try gpa.create(Type.Pointer);
+                inner.* = .{ .pointee = pointee };
+                return .{ .extended = &inner.base };
+            },
+            .alloca => {
+                const pointee = try hir.resolveType(gpa, Hir.Inst.indexToRef(data.un_node_new.operand));
+                const inner = try gpa.create(Type.Pointer);
+                inner.* = .{ .pointee = pointee };
+                return .{ .extended = &inner.base };
+            },
             // binary operand instructions - recursively resolve
             .add,
             .sub,
@@ -421,7 +432,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
                 // during generation, we make sure both operands match, so we can
                 // just use the left one
                 const bin_data = hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
-                break :ty hir.resolveType(bin_data.lref);
+                break :ty hir.resolveType(gpa, bin_data.lref);
             },
             // comparison instructions - returns a u1
             .icmp_eq,
@@ -440,16 +451,20 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .fcmp_le,
             => Type.Common.u1_type,
             // resolve the type of the alloca/push being loaded
-            .load => hir.resolveType(Inst.indexToRef(data.pl_node.pl)),
+            .load => ty: {
+                const pointer = try hir.resolveType(gpa, Inst.indexToRef(data.pl_node.pl));
+                const inner = pointer.extended.cast(Type.Pointer).?;
+                break :ty inner.pointee;
+            },
             // parameters reference their type
             .param => ty: {
                 const param_data = hir.extraData(data.pl_node.pl, Hir.Inst.Param);
-                break :ty hir.resolveType(param_data.ty);
+                break :ty hir.resolveType(gpa, param_data.ty);
             },
             // resolve the return type of the address being called
             .call => ty: {
                 const call_data = hir.extraData(data.pl_node.pl, Hir.Inst.Call);
-                const call_ty = hir.resolveType(call_data.addr);
+                const call_ty = try hir.resolveType(gpa, call_data.addr);
                 const fn_type = call_ty.extended.cast(Type.Function).?;
                 break :ty fn_type.return_type;
             },
@@ -459,7 +474,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .fpext,
             => ty: {
                 const ext_data = hir.extraData(data.pl_node.pl, Hir.Inst.Extend);
-                break :ty hir.resolveType(ext_data.ty);
+                break :ty hir.resolveType(gpa, ext_data.ty);
             },
             // resolve the last instruction in the block
             .block,
@@ -467,7 +482,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             => ty: {
                 const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
                 const insts = hir.block_slices[block_data.head];
-                break :ty hir.resolveType(Inst.indexToRef(insts[insts.len - 1]));
+                break :ty hir.resolveType(gpa, Inst.indexToRef(insts[insts.len - 1]));
             },
             .branch_single,
             .branch_double,
@@ -477,7 +492,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .load_global => ty: {
                 const pl = hir.insts.items(.data)[index].pl_node.pl;
                 const inst = hir.untyped_decls.get(pl).?;
-                break :ty hir.resolveType(Inst.indexToRef(inst));
+                break :ty hir.resolveType(gpa, Inst.indexToRef(inst));
             },
             // should not be referenced (don't return anything meaningful)
             .dbg_value,
@@ -497,6 +512,7 @@ pub fn resolveType(hir: *const Hir, ref: Ref) Type {
             .coerce,
             .fn_decl,
             .module,
+            .pointer_ty,
             => unreachable,
         };
     } else {
@@ -520,7 +536,7 @@ pub fn instToInt(hir: *const Hir, index: Index) u64 {
         .one => return 1,
         .u32 => {
             const payload = val.extended.cast(Value.U32).?;
-            const ty = hir.resolveType(data.ty);
+            const ty = hir.resolveType(undefined, data.ty) catch unreachable;
             if (ty.intSign()) {
                 // interpret payload as i32, sign extend it to i64,
                 // then reinterpret as u64 to return
