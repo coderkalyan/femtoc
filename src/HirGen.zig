@@ -37,6 +37,8 @@ pub const GenError = error{
     ConstAssign,
     AfterthoughtDecl,
     InvalidCharacter, // TODO: this doesn't belong here or even need to exist
+    HandledUserError,
+    InvalidLvalue,
 };
 
 const Error = GenError || interner.Error || Allocator.Error;
@@ -110,6 +112,15 @@ const builtin_types = std.ComptimeStringMap(Type, .{
     .{ "bool", Type.Common.u1_type },
     .{ "void", Type.Common.void_type },
 });
+
+const ResultInfo = struct {
+    semantics: Semantics,
+
+    const Semantics = enum {
+        val,
+        ref,
+    };
+};
 
 pub fn addExtra(hg: *HirGen, extra: anytype) !Hir.ExtraIndex {
     const fields = std.meta.fields(@TypeOf(extra));
@@ -209,34 +220,54 @@ fn boolLiteral(b: *BlockEditor, node: Node.Index) !Ref {
     });
 }
 
-fn variable(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
+fn variable(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Ref {
     const hg = b.hg;
     const ident_token = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_token);
     const id = try hg.interner.intern(ident_str);
+
     const var_scope = (try scope.resolveVar(id)) orelse {
         try b.hg.errors.append(b.hg.gpa, .{
             .tag = .invalid_identifer,
             .token = ident_token,
         });
-        return error.InvalidIdentifier;
+        return error.HandledUserError;
     };
 
-    // for constants, the ref points to the instruction that returned its value
-    // so we don't have to do anything else
-    // but for mutable variables, the ref points to the address in memory so we have to
-    // generate a load instruction to get the value at that address
     switch (var_scope.tag) {
+        // for constants, the ref points to the instruction that returned its value
+        // so we need to check that this is an rvalue context
+        // we can't use consts in an lvalue context, aka on the left side of an assignment
         .local_val => {
-            const local_val = var_scope.cast(Scope.LocalVal).?;
-            return local_val.ref;
+            switch (ri.semantics) {
+                .val => {
+                    const local_val = var_scope.cast(Scope.LocalVal).?;
+                    return local_val.ref;
+                },
+                .ref => {
+                    // TODO: this could be a nicer constant assignment error
+                    try b.hg.errors.append(b.hg.gpa, .{
+                        .tag = .invalid_lvalue,
+                        .token = ident_token,
+                    });
+                    return error.InvalidLvalue;
+                },
+            }
         },
+        // but for mutable variables, the ref points to the address in memory so we have to
+        // generate a load instruction to get the value at that address
         .local_ptr => {
             const local_ptr = var_scope.cast(Scope.LocalPtr).?;
-            const addr = refToIndex(local_ptr.ptr).?;
-            return indexToRef(try b.addLoad(addr, node));
+            switch (ri.semantics) {
+                .val => {
+                    const ptr = refToIndex(local_ptr.ptr).?;
+                    return indexToRef(try b.addLoad(ptr, node));
+                },
+                .ref => return local_ptr.ptr,
+            }
         },
         .namespace => {
+            // TODO: semantics for this
             return indexToRef(try b.addLoadGlobal(id, node));
         },
         else => unreachable,
@@ -254,7 +285,7 @@ fn ty(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Ref {
     } else unreachable;
 }
 
-fn binaryRaw(b: *BlockEditor, node: Node.Index, op: Ast.TokenIndex, lref: Ref, rref: Ref) Error!Hir.Index {
+fn binaryInner(b: *BlockEditor, node: Node.Index, op: Ast.TokenIndex, lref: Ref, rref: Ref) Error!Hir.Index {
     const tag: Inst.Tag = switch (b.hg.tree.tokenTag(op)) {
         .plus => .add,
         .plus_equal => .add,
@@ -307,7 +338,10 @@ fn binary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const binary_expr = hg.tree.data(node).binary_expr;
     const operator_token = hg.tree.mainToken(node);
-    return binaryRaw(b, node, operator_token, try expr(b, scope, binary_expr.left), try expr(b, scope, binary_expr.right));
+
+    const left = try valExpr(b, scope, binary_expr.left);
+    const right = try valExpr(b, scope, binary_expr.right);
+    return binaryInner(b, node, operator_token, left, right);
 }
 
 fn unary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
@@ -322,7 +356,7 @@ fn unary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         else => return Error.UnexpectedToken,
     };
 
-    return b.addUnary(try expr(b, scope, unary_expr), tag, node);
+    return b.addUnary(try valExpr(b, scope, unary_expr), tag, node);
 }
 
 fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
@@ -378,12 +412,12 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return b.addFnDecl(hir_params, return_type, body, hash, node);
 }
 
-fn expr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
+fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Ref {
     return switch (b.hg.tree.data(node)) {
         .integer_literal => integerLiteral(b, node),
         .float_literal => floatLiteral(b, node),
         .bool_literal => boolLiteral(b, node),
-        .var_expr => variable(b, scope, node),
+        .var_expr => variable(b, scope, ri, node),
         .call_expr => indexToRef(try call(b, scope, node)),
         .binary_expr => indexToRef(try binary(b, scope, node)),
         .unary_expr => indexToRef(try unary(b, scope, node)),
@@ -393,6 +427,16 @@ fn expr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
             return GenError.NotImplemented;
         },
     };
+}
+
+inline fn valExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
+    const ri: ResultInfo = .{ .semantics = .val };
+    return expr(b, scope, ri, node);
+}
+
+inline fn refExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
+    const ri: ResultInfo = .{ .semantics = .ref };
+    return expr(b, scope, ri, node);
 }
 
 // TODO: why do some of them not return?
@@ -435,7 +479,8 @@ fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index
 }
 
 fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
-    const addr = try variable(b, scope, node);
+    const ri: ResultInfo = .{ .semantics = .val };
+    const addr = try variable(b, scope, ri, node);
     const call_expr = b.hg.tree.data(node).call_expr;
 
     const scratch_top = b.scratch.items.len;
@@ -444,7 +489,7 @@ fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const arg_nodes = b.hg.tree.extra_data[call_expr.args_start..call_expr.args_end];
     try b.scratch.ensureUnusedCapacity(b.hg.arena, arg_nodes.len);
     for (arg_nodes) |arg_node| {
-        const arg = try expr(b, scope, arg_node);
+        const arg = try valExpr(b, scope, arg_node);
         b.scratch.appendAssumeCapacity(@intFromEnum(arg));
     }
 
@@ -527,7 +572,7 @@ fn constDecl(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
-    const ref = try expr(b, s, const_decl.val);
+    const ref = try valExpr(b, s, const_decl.val);
     _ = id;
     // _ = try b.addDebugValue(ref, id, node);
 
@@ -554,7 +599,7 @@ fn constDeclAttr(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     const ident_index = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_index + 1);
     const id = try hg.interner.intern(ident_str);
-    const ref = try expr(b, s, const_decl.val);
+    const ref = try valExpr(b, s, const_decl.val);
     _ = id;
     // _ = try b.addDebugValue(ref, id, node);
 
@@ -573,7 +618,7 @@ fn varDecl(b: *BlockEditor, s: *Scope, node: Node.Index) !Ref {
     // so we have to create alloc instructions in addition to computing the value
     // otherwise, this function operates like constDecl
     const var_decl = b.hg.tree.data(node).var_decl;
-    const val = try expr(b, s, var_decl.val);
+    const val = try valExpr(b, s, var_decl.val);
     if (var_decl.ty == 0) {
         // untyped (inferred) declaration
         return indexToRef(try b.addPush(val, node));
@@ -596,7 +641,7 @@ fn globalConst(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     defer inline_block.deinit();
     const scope = &inline_block.base;
 
-    const rvalue_inner = try expr(&inline_block.editor, scope, const_decl.val);
+    const rvalue_inner = try valExpr(&inline_block.editor, scope, const_decl.val);
     const rvalue = if (const_decl.ty == 0) rvalue_inner else ref: {
         // if this is typed, add a coerce
         const dest_ty = try ty(&inline_block.editor, scope, const_decl.ty);
@@ -623,7 +668,7 @@ fn globalConstAttr(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     const scope = &inline_block.base;
     const b = &inline_block.editor;
 
-    var rvalue = try expr(b, scope, const_decl.val);
+    var rvalue = try valExpr(b, scope, const_decl.val);
     if (metadata.ty != 0) {
         const dest_ty = try ty(b, scope, metadata.ty);
         rvalue = try coerce(b, scope, rvalue, dest_ty, node);
@@ -659,7 +704,7 @@ fn globalVar(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     defer inline_block.deinit();
     const scope = &inline_block.base;
 
-    const rvalue_inner = try expr(&inline_block.editor, scope, var_decl.val);
+    const rvalue_inner = try valExpr(&inline_block.editor, scope, var_decl.val);
     const rvalue = if (var_decl.ty == 0) rvalue_inner else ref: {
         // if this is typed, add a coerce
         const dest_ty = try ty(&inline_block.editor, scope, var_decl.ty);
@@ -671,57 +716,28 @@ fn globalVar(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
 }
 
-fn assignLocalPtr(b: *BlockEditor, scope: *Scope, node: Node.Index, id: u32, val: Ref) !Hir.Index {
-    const var_scope = (try scope.resolveVar(id)).?;
-    const local_ptr = var_scope.cast(Scope.LocalPtr).?;
-    const addr = refToIndex(local_ptr.ptr).?;
-
-    return b.addStore(addr, val, node);
-}
-
-fn assignNamespace(b: *BlockEditor, scope: *Scope, node: Node.Index, id: Node.Index, val: Ref) !Hir.Index {
-    _ = scope;
-    const addr = try b.addLoadGlobal(id, node);
-    return b.addStore(addr, val, node);
-}
-
 fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const assign = hg.tree.data(node).assign_simple;
 
-    const ident_index = hg.tree.mainToken(node);
-    const ident_str = hg.tree.tokenString(ident_index);
-    const id = try hg.interner.intern(ident_str);
-    const var_scope = (try scope.resolveVar(id)) orelse {
-        try hg.errors.append(b.hg.gpa, .{
-            .tag = .invalid_identifer,
-            .token = ident_index,
-        });
-        return error.InvalidIdentifier;
-    };
-
-    switch (var_scope.tag) {
-        .local_val => {
+    const ptr = refExpr(b, scope, assign.ptr) catch |err| {
+        if (err == error.InvalidLvalue) {
+            // TODO: not really accurate?
             try hg.errors.append(hg.gpa, .{
                 .tag = .const_assign,
-                .token = ident_index,
+                .token = hg.tree.mainToken(node),
             });
             return error.ConstAssign;
-        },
-        .local_ptr => {
-            const valref = try expr(b, scope, assign.val);
-            return assignLocalPtr(b, scope, node, id, valref);
-        },
-        .namespace => {
-            const valref = try expr(b, scope, assign.val);
-            return assignNamespace(b, scope, node, id, valref);
-        },
-        else => unreachable,
-    }
+        } else {
+            return err;
+        }
+    };
+    const val = try valExpr(b, scope, assign.val);
+    return b.addStore(refToIndex(ptr).?, val, node);
 }
 
 fn branchCondition(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
-    const ref = try expr(b, scope, node);
+    const ref = try valExpr(b, scope, node);
     const condition_type = indexToRef(try b.addType(Type.Common.u1_type));
     return coerce(b, scope, ref, condition_type, node);
 }
@@ -729,39 +745,25 @@ fn branchCondition(b: *BlockEditor, scope: *Scope, node: Node.Index) !Ref {
 fn assignBinary(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const assign = hg.tree.data(node).assign_binary;
+    const op = hg.tree.mainToken(node);
 
-    const ident_index = hg.tree.mainToken(node);
-    const ident_str = hg.tree.tokenString(ident_index);
-    const id = try hg.interner.intern(ident_str);
-    const var_scope = (try scope.resolveVar(id)) orelse {
-        try hg.errors.append(b.hg.gpa, .{
-            .tag = .invalid_identifer,
-            .token = ident_index,
-        });
-        return error.InvalidIdentifier;
-    };
-    switch (var_scope.tag) {
-        .local_val => {
+    const ptr = refExpr(b, scope, assign.ptr) catch |err| {
+        if (err == error.InvalidLvalue) {
+            // TODO: not really accurate?
             try hg.errors.append(hg.gpa, .{
                 .tag = .const_assign,
-                .token = ident_index,
+                .token = hg.tree.mainToken(node),
             });
             return error.ConstAssign;
-        },
-        .local_ptr => {
-            const val = try variable(b, scope, node);
-            const op = hg.tree.mainToken(node) + 1;
-            const binIndex = try binaryRaw(b, node, op, val, try expr(b, scope, assign.val));
-            return assignLocalPtr(b, scope, node, id, indexToRef(binIndex));
-        },
-        .namespace => {
-            const val = try variable(b, scope, node);
-            const op = hg.tree.mainToken(node) + 1;
-            const binIndex = try binaryRaw(b, node, op, val, try expr(b, scope, assign.val));
-            return assignNamespace(b, scope, node, id, indexToRef(binIndex));
-        },
-        else => unreachable,
-    }
+        } else {
+            return err;
+        }
+    };
+    const base = try valExpr(b, scope, assign.ptr);
+    const val = try valExpr(b, scope, assign.val);
+    const bin = try binaryInner(b, node, op, base, val);
+
+    return b.addStore(refToIndex(ptr).?, indexToRef(bin), node);
 }
 
 fn ifSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -821,7 +823,7 @@ fn ifChain(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 fn returnStmt(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const return_val = b.hg.tree.data(node).return_val;
     const operand = if (return_val.val == 0) indexToRef(try b.addNone()) else op: {
-        const ref = try expr(b, scope, return_val.val);
+        const ref = try valExpr(b, scope, return_val.val);
         const bl = scope.resolveBlock().?;
         break :op try coerce(b, scope, ref, bl.return_ty, node);
     };
@@ -856,7 +858,7 @@ fn loopConditional(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index 
         defer block_scope.deinit();
         const s = &block_scope.base;
 
-        const condition_inner = try expr(&block_scope.editor, s, loop_conditional.condition);
+        const condition_inner = try valExpr(&block_scope.editor, s, loop_conditional.condition);
         const condition_type = indexToRef(try b.addType(Type.Common.u1_type));
         const condition = try coerce(&block_scope.editor, s, condition_inner, condition_type, node);
         _ = try block_scope.editor.addYieldImplicit(condition, node);
@@ -887,7 +889,7 @@ fn loopRange(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
         defer block_scope.deinit();
         const bs = &block_scope.base;
 
-        const condition_inner = try expr(&block_scope.editor, bs, signature.condition);
+        const condition_inner = try valExpr(&block_scope.editor, bs, signature.condition);
         const condition_type = indexToRef(try b.addType(Type.Common.u1_type));
         const condition = try coerce(&block_scope.editor, bs, condition_inner, condition_type, node);
         _ = try block_scope.editor.addYieldImplicit(condition, undefined);

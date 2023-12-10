@@ -702,24 +702,39 @@ const Parser = struct {
     }
 
     fn parseAssignment(p: *Parser) !Node.Index {
-        const ident_token = try p.expectToken(.ident);
+        const ptr = try p.expectExpr();
 
-        if (p.token_tags[p.index] == .equal) {
-            _ = try p.expectToken(.equal);
-            const value = try p.expectExpr();
-
-            return p.addNode(.{
-                .main_token = ident_token,
-                .data = .{ .assign_simple = .{ .val = value } },
-            });
-        } else {
-            _ = p.eatToken(p.token_tags[p.index]);
-            const value = try p.expectExpr();
-
-            return p.addNode(.{
-                .main_token = ident_token,
-                .data = .{ .assign_binary = .{ .val = value } },
-            });
+        switch (p.token_tags[p.index]) {
+            .equal => {
+                const equal_token = try p.expectToken(.equal);
+                const val = try p.expectExpr();
+                return p.addNode(.{
+                    .main_token = equal_token,
+                    .data = .{ .assign_simple = .{ .ptr = ptr, .val = val } },
+                });
+            },
+            .plus_equal,
+            .minus_equal,
+            .asterisk_equal,
+            .slash_equal,
+            .percent_equal,
+            .l_angle_l_angle_equal,
+            .r_angle_r_angle_equal,
+            => {
+                const operator_token = p.eatToken(p.token_tags[p.index]).?;
+                const val = try p.expectExpr();
+                return p.addNode(.{
+                    .main_token = operator_token,
+                    .data = .{ .assign_binary = .{ .ptr = ptr, .val = val } },
+                });
+            },
+            else => {
+                try p.errors.append(.{
+                    .tag = .unexpected_token,
+                    .token = p.index,
+                });
+                return error.HandledUserError;
+            },
         }
     }
 

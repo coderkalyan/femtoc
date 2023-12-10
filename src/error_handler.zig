@@ -30,6 +30,7 @@ pub const SourceError = struct {
 
         const_assign,
         invalid_identifer,
+        invalid_lvalue,
         call_nonfunc,
         call_argcount,
         binary_diffsign,
@@ -151,6 +152,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .call_argcount => "incorrect number of arguments to function call",
                 .binary_diffsign => "operands to binary arithmetic must have same sign",
                 .coerce_sint_to_uint => "cannot coerce signed integer to unsigned integer",
+                .invalid_lvalue => "cannot use expression as lvalue",
             };
 
             r.stream.indent();

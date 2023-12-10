@@ -165,12 +165,14 @@ pub const Node = struct {
         // main_token = variable name
         // val = value node
         assign_simple: struct {
+            ptr: Index,
             val: Index,
         },
 
         // variable assignment with operator 'foo += 1'
         // main_token = variable name
         assign_binary: struct {
+            ptr: Index,
             val: Index,
         },
 

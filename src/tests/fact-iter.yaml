@@ -1,0 +1,9 @@
+- type: const_decl
+  val:
+    type: fn_decl
+    signature:
+      params:
+      return_ty:
+        type: named_ty
+        main_token: "i32"
+    body:
