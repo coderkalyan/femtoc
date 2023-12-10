@@ -174,7 +174,7 @@ pub const Scope = struct {
         }
     };
 
-    pub fn resolveVar(inner: *Scope, ident: u32) !?*Scope {
+    pub fn resolveIdent(inner: *Scope, ident: u32) !?*Scope {
         var found: ?*Scope = null;
         var shadows_scope: bool = false;
         var s: *Scope = inner;
@@ -225,42 +225,6 @@ pub const Scope = struct {
 
                     s = local_ptr.parent;
                 },
-                .local_type => s = s.cast(LocalType).?.parent,
-            }
-        }
-
-        return found;
-    }
-
-    pub fn resolveType(inner: *Scope, ident: u32) !?*Scope {
-        var found: ?*Scope = null;
-        var shadows_scope: bool = false;
-        var s: *Scope = inner;
-
-        while (true) {
-            switch (s.tag) {
-                .module => break,
-                .namespace => {
-                    const namespace = s.cast(Namespace).?;
-                    if (namespace.types.get(ident)) |_| {
-                        if (found) |_| {
-                            return error.IdentifierShadowed;
-                        } else {
-                            found = s;
-                        }
-                    }
-
-                    s = namespace.parent;
-                },
-                .block => {
-                    const block = s.cast(Block).?;
-                    shadows_scope = true;
-
-                    s = block.parent;
-                },
-                .body => s = s.cast(Body).?.parent,
-                .local_val => s = s.cast(LocalVal).?.parent,
-                .local_ptr => s = s.cast(LocalPtr).?.parent,
                 .local_type => {
                     const local_type = s.cast(LocalPtr).?;
                     if (local_type.ident == ident) {

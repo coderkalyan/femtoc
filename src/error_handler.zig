@@ -31,6 +31,7 @@ pub const SourceError = struct {
         const_assign,
         invalid_identifer,
         invalid_lvalue,
+        invalid_type,
         call_nonfunc,
         call_argcount,
         binary_diffsign,
@@ -153,6 +154,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .binary_diffsign => "operands to binary arithmetic must have same sign",
                 .coerce_sint_to_uint => "cannot coerce signed integer to unsigned integer",
                 .invalid_lvalue => "cannot use expression as lvalue",
+                .invalid_type => "cannot use expression as type",
             };
 
             r.stream.indent();
