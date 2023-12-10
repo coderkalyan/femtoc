@@ -200,8 +200,6 @@ const Parser = struct {
 
     fn consumeUntilSemi(p: *Parser) Allocator.Error!void {
         while (true) {
-            // std.debug.print("EETING {}\n", .{p.token_tags[p.index]});
-
             switch (p.token_tags[p.index]) {
                 .semi => {
                     p.index += 1;
@@ -302,6 +300,7 @@ const Parser = struct {
         return switch (p.token_tags[p.index]) {
             .k_fn => p.expectFnDecl(),
             else => {
+                std.debug.print("{}\n", .{p.token_tags[p.index]});
                 const left_node = try p.parsePrimaryExpr();
                 return p.parseBinRExpr(left_node, 0);
             },
@@ -323,7 +322,7 @@ const Parser = struct {
                 break :node inner_node;
             },
             .ident => switch (p.token_tags[p.index + 1]) {
-                .l_paren => p.expectCall(),
+                .l_paren => p.expectCall(try p.expectVarExpr()),
                 else => p.expectVarExpr(),
             },
             .int_lit => expr: {
@@ -350,7 +349,7 @@ const Parser = struct {
                 .main_token = try p.expectToken(.k_false),
                 .data = .{ .bool_literal = {} },
             }),
-            .plus, .minus, .bang, .tilde => p.addNode(.{
+            .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
                 .data = .{ .unary_expr = try p.expectExpr() },
             }),
@@ -655,30 +654,39 @@ const Parser = struct {
     }
 
     fn parseStatement(p: *Parser) Error!Node.Index {
-        // std.debug.print("WE AT {} {}\n", .{p.token_tags[p.index], p.index + 1});
         const node = switch (p.token_tags[p.index]) {
             .k_let => p.parseDecl(),
             .k_return => p.expectReturnStmt(),
             .k_if => p.parseConditional(),
             .k_for => p.parseLoop(),
-            .ident => switch (p.token_tags[p.index + 1]) {
-                .l_paren => p.expectCall(),
-                .equal, .plus_equal, .minus_equal, .asterisk_equal, .slash_equal, .percent_equal, .ampersand_equal, .pipe_equal, .caret_equal, .l_angle_l_angle_equal, .r_angle_r_angle_equal => p.parseAssignment(),
-                else => {
-                    try p.errors.append(.{ .tag = .unexpected_identifier, .token = p.index });
-
-                    // try eating until we get a semicolon
-                    try consumeUntilSemi(p);
-
-                    return Error.HandledUserError;
-                },
-            },
             .k_break => p.expectBreak(),
-            else => {
-                // this should *pretty* much never happen, because the lexer will emit a identifier for an invalid toke (usually)
-                try p.errors.append(.{ .tag = .unexpected_token, .token = p.index });
-                try consumeUntilSemi(p);
-                return Error.UnexpectedToken;
+            else => node: {
+                const expr = try p.expectExpr();
+                break :node switch (p.token_tags[p.index]) {
+                    // function calls can exist on their own (implicit discard of return value)
+                    .l_paren => try p.expectCall(expr),
+                    // everything else should be an assignment using expr as an lvalue
+                    .equal,
+                    .plus_equal,
+                    .minus_equal,
+                    .asterisk_equal,
+                    .slash_equal,
+                    .percent_equal,
+                    .ampersand_equal,
+                    .pipe_equal,
+                    .caret_equal,
+                    .l_angle_l_angle_equal,
+                    .r_angle_r_angle_equal,
+                    => p.parseAssignment(expr),
+                    else => {
+                        try p.errors.append(.{ .tag = .unexpected_identifier, .token = p.index });
+
+                        // try eating until we get a semicolon
+                        try consumeUntilSemi(p);
+
+                        return Error.HandledUserError;
+                    },
+                };
             },
         };
 
@@ -686,14 +694,14 @@ const Parser = struct {
         return node;
     }
 
-    fn expectCall(p: *Parser) !Node.Index {
-        const ident_token = try p.expectToken(.ident);
+    fn expectCall(p: *Parser, ptr: Node.Index) !Node.Index {
         const args_range = try p.expectArgList();
 
         return p.addNode(.{
-            .main_token = ident_token,
+            .main_token = undefined,
             .data = .{
                 .call_expr = .{
+                    .ptr = ptr,
                     .args_start = args_range.start,
                     .args_end = args_range.end,
                 },
@@ -701,9 +709,7 @@ const Parser = struct {
         });
     }
 
-    fn parseAssignment(p: *Parser) !Node.Index {
-        const ptr = try p.expectExpr();
-
+    fn parseAssignment(p: *Parser, ptr: Node.Index) !Node.Index {
         switch (p.token_tags[p.index]) {
             .equal => {
                 const equal_token = try p.expectToken(.equal);
@@ -800,7 +806,6 @@ const Parser = struct {
                         .attrs_end = attrs_end,
                     });
                     // p.attributes.clearRetainingCapacity();
-                    std.debug.print("adding attr: {} {}\n", .{ attrs_start, attrs_end });
                     return p.addNode(.{
                         .main_token = let_token,
                         .data = .{ .const_decl_attr = .{ .metadata = data, .val = val } },

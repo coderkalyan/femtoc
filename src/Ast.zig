@@ -108,6 +108,7 @@ pub const Node = struct {
         // args_start = start of argument array
         // args_end = end of argument array
         call_expr: struct {
+            ptr: Index,
             args_start: ExtraIndex,
             args_end: ExtraIndex,
         },

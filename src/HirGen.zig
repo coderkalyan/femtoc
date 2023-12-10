@@ -226,6 +226,7 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
     const ident_token = hg.tree.mainToken(node);
     const ident_str = hg.tree.tokenString(ident_token);
 
+    std.debug.print("ident: {s} {}\n", .{ ident_str, ri });
     // check identifier against builtin types, and if match found,
     // make sure we're using type semantics
     if (builtin_types.get(ident_str)) |builtin_type| {
@@ -281,6 +282,7 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
         // generate a load instruction to get the value at that address
         .local_ptr => {
             const local_ptr = ident_scope.cast(Scope.LocalPtr).?;
+            std.debug.print("local ptr: {s} {}\n", .{ ident_str, local_ptr.ptr });
             switch (ri.semantics) {
                 .val => {
                     const ptr = refToIndex(local_ptr.ptr).?;
@@ -382,15 +384,35 @@ fn unary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const unary_expr = hg.tree.data(node).unary_expr;
     const operator_token = hg.tree.mainToken(node);
-    const tag: Inst.Tag = switch (b.hg.tree.tokenTag(operator_token)) {
-        .plus => return node, // no-op
-        .minus => .neg,
-        .bang => .log_not,
-        .tilde => .bit_not,
-        else => return Error.UnexpectedToken,
-    };
 
-    return b.addUnary(try valExpr(b, scope, unary_expr), tag, node);
+    switch (hg.tree.tokenTag(operator_token)) {
+        .ampersand => {
+            const ptr = try refExpr(b, scope, unary_expr);
+            return refToIndex(ptr).?;
+        },
+        .asterisk => {
+            const ptr = try valExpr(b, scope, unary_expr);
+            return refToIndex(ptr).?;
+        },
+        .plus => return node,
+        .minus,
+        .bang,
+        .tilde,
+        => |tok| {
+            const tag: Inst.Tag = switch (tok) {
+                .minus => .neg,
+                .bang => .log_not,
+                .tilde => .bit_not,
+                else => unreachable,
+            };
+            const operand = try valExpr(b, scope, unary_expr);
+            return b.addUnary(operand, tag, node);
+        },
+        else => {
+            std.debug.print("{}\n", .{hg.tree.tokenTag(operator_token)});
+            return Error.UnexpectedToken;
+        },
+    }
 }
 
 fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
@@ -518,9 +540,9 @@ fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index
 }
 
 fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
-    const ri: ResultInfo = .{ .semantics = .val };
-    const addr = try identExpr(b, scope, ri, node);
     const call_expr = b.hg.tree.data(node).call_expr;
+    const ri: ResultInfo = .{ .semantics = .ref };
+    const ptr = try identExpr(b, scope, ri, call_expr.ptr);
 
     const scratch_top = b.scratch.items.len;
     defer b.scratch.shrinkRetainingCapacity(scratch_top);
@@ -533,7 +555,7 @@ fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     }
 
     const args = b.scratch.items[scratch_top..];
-    return b.addCall(addr, args, node);
+    return b.addCall(ptr, args, node);
 }
 
 fn block(b: *BlockEditor, scope: *Scope, node: Node.Index, comptime add_unlinked: bool) Error!Hir.Index {
@@ -759,6 +781,7 @@ fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const assign = hg.tree.data(node).assign_simple;
 
+    std.debug.print("starting assign ref\n", .{});
     const ptr = refExpr(b, scope, assign.ptr) catch |err| {
         if (err == error.InvalidLvalue) {
             // TODO: not really accurate?
@@ -771,6 +794,7 @@ fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
             return err;
         }
     };
+    std.debug.print("ending assign ref: {}\n", .{ptr});
     const val = try valExpr(b, scope, assign.val);
     return b.addStore(refToIndex(ptr).?, val, node);
 }
