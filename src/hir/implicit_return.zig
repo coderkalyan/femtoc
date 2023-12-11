@@ -8,7 +8,6 @@ const std = @import("std");
 const Hir = @import("../Hir.zig");
 const HirGen = @import("../HirGen.zig");
 const BlockEditor = @import("BlockEditor.zig");
-const Ref = Hir.Ref;
 
 pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
     const module_pl = hg.insts.items(.data)[module_index].pl_node.pl;
@@ -41,7 +40,7 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
                         try editor.linkInst(_inst);
                     }
 
-                    const return_val = Hir.Inst.indexToRef(try editor.addNone());
+                    const return_val = try editor.addNone();
                     _ = try editor.addRetImplicit(return_val, undefined);
                     try BlockEditor.updateBlock(hg, &editor, fn_decl.body);
                 }

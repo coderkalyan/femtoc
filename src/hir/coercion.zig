@@ -3,15 +3,12 @@ const Type = @import("type.zig").Type;
 const Hir = @import("../Hir.zig");
 const BlockEditor = @import("BlockEditor.zig");
 
-const indexToRef = Hir.Inst.indexToRef;
-const refToIndex = Hir.Inst.refToIndex;
-
 pub const Error = error{
     InvalidCoercion,
     Truncated,
 };
 
-pub fn coerce(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+pub fn coerce(b: *BlockEditor, src: Hir.Index, dest_ty: Type) !Hir.Index {
     // if the source has the dest type, just return the existing ref
     const src_ty = try b.hg.resolveType(src);
     if (src_ty.eql(dest_ty)) return src;
@@ -25,7 +22,7 @@ pub fn coerce(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
 }
 
 // coerce anything to a fixed-size unsigned int
-fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+fn uint(b: *BlockEditor, src: Hir.Index, dest_ty: Type) !Hir.Index {
     const hg = b.hg;
     const src_ty = try hg.resolveType(src);
     // std.debug.print("{} ({any}) {}\n", .{ src, refToIndex(src), src_ty.basic });
@@ -33,11 +30,11 @@ fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
     switch (src_ty.kind()) {
         // can coerce to a fixed uint if the comptime value fits in bounds
         .comptime_uint => {
-            const val: u64 = hg.refToInt(src);
+            const val: u64 = hg.instToInt(src);
             if (val > dest_ty.maxInt()) {
                 return error.Truncated;
             }
-            return indexToRef(try b.addIntConstant(dest_ty, val, undefined)); // TODO: node
+            return b.addIntConstant(dest_ty, val, undefined); // TODO: node
         },
         // comptime sints are always < 0, so can never fit in a uint
         .comptime_sint => return error.Truncated,
@@ -46,7 +43,7 @@ fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
             if (dest_ty.basic.width < src_ty.basic.width) {
                 return error.Truncated;
             }
-            return indexToRef(try b.addZext(src, try b.typeToRef(dest_ty), undefined)); // TODO: node
+            return b.addZext(src, try b.addType(dest_ty), undefined); // TODO: node
         },
         // could overflow/underflow, so not allowed
         .sint => {
@@ -63,26 +60,26 @@ fn uint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
 }
 
 // coerce anything to a fixed-size signed int
-fn sint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+fn sint(b: *BlockEditor, src: Hir.Index, dest_ty: Type) !Hir.Index {
     const hg = b.hg;
     const src_ty = try hg.resolveType(src);
 
     switch (src_ty.kind()) {
         // can coerce to a fixed sint if the comptime value fits in bounds
         .comptime_uint => {
-            const val: u64 = hg.refToInt(src);
+            const val: u64 = hg.instToInt(src);
             if (val > dest_ty.maxInt()) {
                 return error.Truncated;
             }
-            return indexToRef(try b.addIntConstant(dest_ty, val, undefined)); // TODO: node
+            return b.addIntConstant(dest_ty, val, undefined); // TODO: node
         },
         // can coerce to a fixed sint if the comptime value fits in bounds
         .comptime_sint => {
-            const val: i64 = @bitCast(hg.refToInt(src));
+            const val: i64 = @bitCast(hg.instToInt(src));
             if (val < dest_ty.minInt() or val > dest_ty.maxInt()) {
                 return error.Truncated;
             }
-            return indexToRef(try b.addIntConstant(dest_ty, @bitCast(val), undefined)); // TODO: node
+            return b.addIntConstant(dest_ty, @bitCast(val), undefined); // TODO: node
         },
         // could overflow/underflow, so not allowed
         .uint => return error.Truncated,
@@ -91,7 +88,7 @@ fn sint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
             if (dest_ty.basic.width < src_ty.basic.width) {
                 return error.Truncated;
             }
-            return indexToRef(try b.addSext(src, try b.typeToRef(dest_ty), undefined)); // TODO: node
+            return b.addSext(src, try b.addType(dest_ty), undefined); // TODO: node
         },
         // lossy
         .float => return error.Truncated, // TODO: more specific error
@@ -100,7 +97,7 @@ fn sint(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
 }
 
 // coerce anything to a fixed-size float
-fn float(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
+fn float(b: *BlockEditor, src: Hir.Index, dest_ty: Type) !Hir.Index {
     const hg = b.hg;
     const src_ty = try hg.resolveType(src);
 
@@ -108,8 +105,8 @@ fn float(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
         // can coerce to a fixed float if the comptime value fits in bounds
         // TODO: we don't check that right now
         .comptime_float => {
-            const val: f64 = hg.refToFloat(src);
-            return indexToRef(try b.addFloatConstant(dest_ty, val, undefined)); // TODO: node
+            const val: f64 = hg.instToFloat(src);
+            return b.addFloatConstant(dest_ty, val, undefined); // TODO: node
         },
         // lossy and ambiguous, so not allowed
         .comptime_uint, .comptime_sint, .uint, .sint => return error.Truncated,
@@ -118,7 +115,7 @@ fn float(b: *BlockEditor, src: Hir.Ref, dest_ty: Type) !Hir.Ref {
             if (dest_ty.basic.width < src_ty.basic.width) {
                 return error.Truncated;
             }
-            return indexToRef(try b.addFpext(src, try b.typeToRef(dest_ty), undefined)); // TODO: node
+            return b.addFpext(src, try b.addType(dest_ty), undefined); // TODO: node
         },
         else => return error.InvalidCoercion,
     }

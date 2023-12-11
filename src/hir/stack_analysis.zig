@@ -12,9 +12,6 @@ const HirGen = @import("../HirGen.zig");
 const Value = @import("../value.zig").Value;
 const BlockEditor = @import("BlockEditor.zig");
 
-const indexToRef = Hir.Inst.indexToRef;
-const refToIndex = Hir.Inst.refToIndex;
-
 pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
     const module_pl = hg.insts.items(.data)[module_index].pl_node.pl;
     const module_data = hg.extraData(module_pl, Hir.Inst.Module);
@@ -80,13 +77,13 @@ fn processBlock(hg: *HirGen, block: Hir.Index, allocas: *std.ArrayListUnmanaged(
     for (insts) |inst| {
         switch (hg.insts.items(.tag)[inst]) {
             .push => {
-                const push_data = hg.insts.items(.data)[inst].un_node;
+                const push_data = hg.insts.items(.data)[inst].un_node_new;
                 const ty = try b.addType(try hg.resolveType(push_data.operand));
                 const alloca = try b.addAllocaUnlinked(ty, push_data.node);
                 try allocas.append(hg.arena, alloca);
 
                 _ = try b.addStore(alloca, push_data.operand, push_data.node);
-                try b.addRemap(inst, indexToRef(alloca));
+                try b.addRemap(inst, alloca);
             },
             .branch_single => {
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;

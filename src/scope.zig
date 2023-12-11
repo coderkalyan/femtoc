@@ -69,10 +69,10 @@ pub const Scope = struct {
         hg: *HirGen,
         editor: BlockEditor,
 
-        return_ty: Hir.Ref,
+        return_ty: Hir.Index,
 
         pub fn init(b: *BlockEditor, s: *Scope) !Block {
-            var return_ty: Hir.Ref = undefined;
+            var return_ty: Hir.Index = undefined;
             if (s.resolveBlock()) |outer_block| {
                 return_ty = outer_block.return_ty;
             }
@@ -129,9 +129,9 @@ pub const Scope = struct {
 
         parent: *Scope,
         ident: u32,
-        ref: Hir.Ref,
+        ref: Hir.Index,
 
-        pub fn init(s: *Scope, ident: u32, ref: Hir.Ref) LocalVal {
+        pub fn init(s: *Scope, ident: u32, ref: Hir.Index) LocalVal {
             return .{
                 .parent = s,
                 .ident = ident,
@@ -146,9 +146,9 @@ pub const Scope = struct {
 
         parent: *Scope,
         ident: u32,
-        ptr: Hir.Ref,
+        ptr: Hir.Index,
 
-        pub fn init(s: *Scope, ident: u32, ptr: Hir.Ref) LocalPtr {
+        pub fn init(s: *Scope, ident: u32, ptr: Hir.Index) LocalPtr {
             return .{
                 .parent = s,
                 .ident = ident,
@@ -163,9 +163,9 @@ pub const Scope = struct {
 
         parent: *Scope,
         ident: u32,
-        ref: Hir.Ref,
+        ref: Hir.Index,
 
-        pub fn init(s: *Scope, ident: u32, ref: Hir.Ref) @This() {
+        pub fn init(s: *Scope, ident: u32, ref: Hir.Index) @This() {
             return .{
                 .parent = s,
                 .ident = ident,

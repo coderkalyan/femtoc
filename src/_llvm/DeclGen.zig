@@ -40,19 +40,19 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
                 };
             },
             .global_mut => ref: {
-                const op = hir.insts.items(.data)[inst].un_node.operand;
-                const g = dg.resolveRef(op);
+                const op = hir.insts.items(.data)[inst].un_node_new.operand;
+                const g = dg.resolveInst(op);
                 c.LLVMSetGlobalConstant(g, 0);
                 break :ref g;
             },
             .yield_inline => {
-                const operand = hir.insts.items(.data)[inst].un_node.operand;
-                return dg.resolveRef(operand);
+                const operand = hir.insts.items(.data)[inst].un_node_new.operand;
+                return dg.resolveInst(operand);
             },
             .ty => continue,
             .link_extern => ref: {
-                const operand = hir.insts.items(.data)[inst].un_node.operand;
-                const g = dg.resolveRef(operand);
+                const operand = hir.insts.items(.data)[inst].un_node_new.operand;
+                const g = dg.resolveInst(operand);
                 c.LLVMSetLinkage(g, c.LLVMExternalLinkage);
                 break :ref g;
             },
@@ -67,27 +67,23 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
     unreachable;
 }
 
-fn resolveRef(dg: *DeclGen, ref: Hir.Ref) c.LLVMValueRef {
-    if (Hir.Inst.refToIndex(ref)) |index| {
-        const hir = dg.hir;
-        if (hir.insts.items(.tag)[index] == .load_global) {
-            const pl = hir.insts.items(.data)[index].pl_node.pl;
-            _ = pl;
-            unreachable;
-            // const ident = hir.interner.get(pl) catch unreachable;
-            // TODO: we can probably remove global map and just use llvm to look it up
-            // via the name
-            // return dg.global_map.get(pl).?;
-            // if (decl.val.kind() == .function) {
-            //     return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
-            // } else {
-            //     return llvm.c.LLVMGetNamedGlobal(backend.module.module, decl.name);
-            // }
-        } else {
-            return dg.map.get(index).?;
-        }
-    } else {
+fn resolveInst(dg: *DeclGen, index: Hir.Index) c.LLVMValueRef {
+    const hir = dg.hir;
+    if (hir.insts.items(.tag)[index] == .load_global) {
+        const pl = hir.insts.items(.data)[index].pl_node.pl;
+        _ = pl;
         unreachable;
+        // const ident = hir.interner.get(pl) catch unreachable;
+        // TODO: we can probably remove global map and just use llvm to look it up
+        // via the name
+        // return dg.global_map.get(pl).?;
+        // if (decl.val.kind() == .function) {
+        //     return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
+        // } else {
+        //     return llvm.c.LLVMGetNamedGlobal(backend.module.module, decl.name);
+        // }
+    } else {
+        return dg.map.get(index).?;
     }
 }
 
@@ -135,15 +131,15 @@ fn literal(dg: *DeclGen, inst: Hir.Index) !c.LLVMValueRef {
     const val = switch (ty.kind()) {
         .comptime_uint, .comptime_sint, .comptime_float => unreachable,
         .uint => val: {
-            const val = hir.refToInt(Hir.Inst.indexToRef(inst));
+            const val = hir.instToInt(inst);
             break :val c.LLVMConstInt(llvm_type, @intCast(val), 0);
         },
         .sint => val: {
-            const val = hir.refToInt(Hir.Inst.indexToRef(inst));
+            const val = hir.instToInt(inst);
             break :val c.LLVMConstInt(llvm_type, @intCast(val), 1);
         },
         .float => val: {
-            const val = hir.refToFloat(Hir.Inst.indexToRef(inst));
+            const val = hir.instToFloat(inst);
             break :val c.LLVMConstReal(llvm_type, val);
         },
         else => unreachable, // unimplemented

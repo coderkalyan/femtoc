@@ -30,25 +30,21 @@ pub fn generate(codegen: *CodeGen) !void {
     _ = try codegen.block(codegen.func.body);
 }
 
-fn resolveRef(codegen: *CodeGen, ref: Hir.Ref) c.LLVMValueRef {
-    if (Hir.Inst.refToIndex(ref)) |index| {
-        const hir = codegen.hir;
-        if (hir.insts.items(.tag)[index] == .load_global) {
-            const pl = hir.insts.items(.data)[index].pl_node.pl;
-            // const ident = hir.interner.get(pl) catch unreachable;
-            // TODO: we can probably remove global map and just use llvm to look it up
-            // via the name
-            return codegen.global_map.get(pl).?;
-            // if (decl.val.kind() == .function) {
-            //     return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
-            // } else {
-            //     return llvm.c.LLVMGetNamedGlobal(backend.module.module, decl.name);
-            // }
-        } else {
-            return codegen.map.get(index).?;
-        }
+fn resolveInst(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
+    const hir = codegen.hir;
+    if (hir.insts.items(.tag)[inst] == .load_global) {
+        const pl = hir.insts.items(.data)[inst].pl_node.pl;
+        // const ident = hir.interner.get(pl) catch unreachable;
+        // TODO: we can probably remove global map and just use llvm to look it up
+        // via the name
+        return codegen.global_map.get(pl).?;
+        // if (decl.val.kind() == .function) {
+        //     return llvm.c.LLVMGetNamedFunction(backend.module.module, decl.name);
+        // } else {
+        //     return llvm.c.LLVMGetNamedGlobal(backend.module.module, decl.name);
+        // }
     } else {
-        unreachable;
+        return codegen.map.get(inst).?;
     }
 }
 
@@ -132,9 +128,9 @@ fn constant(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     switch (ty.kind()) {
         .comptime_uint, .comptime_sint, .comptime_float => return null,
 
-        .uint => return builder.addUint(ty, hir.refToInt(Hir.Inst.indexToRef(inst))),
-        .sint => return builder.addSint(ty, hir.refToInt(Hir.Inst.indexToRef(inst))),
-        .float => return builder.addFloat(ty, hir.refToFloat(Hir.Inst.indexToRef(inst))),
+        .uint => return builder.addUint(ty, hir.instToInt(inst)),
+        .sint => return builder.addSint(ty, hir.instToInt(inst)),
+        .float => return builder.addFloat(ty, hir.instToFloat(inst)),
         else => unreachable,
     }
 }
@@ -143,8 +139,8 @@ fn binaryOp(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Binary);
-    const lref = codegen.resolveRef(data.lref);
-    const rref = codegen.resolveRef(data.rref);
+    const lref = codegen.resolveInst(data.lref);
+    const rref = codegen.resolveInst(data.rref);
     var builder = codegen.builder;
 
     // C (clang 17) emits urem for all integer modulo
@@ -185,25 +181,24 @@ fn alloca(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.insts.items(.data)[inst];
     var builder = codegen.builder;
 
-    return builder.addAlloca(try hir.resolveType(codegen.arena, Hir.Inst.indexToRef(data.un_node_new.operand)));
+    return builder.addAlloca(try hir.resolveType(codegen.arena, data.un_node_new.operand));
 }
 
 fn load(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const pl = codegen.hir.insts.items(.data)[inst].pl_node.pl;
+    const op = codegen.hir.insts.items(.data)[inst].un_node_new.operand;
 
-    const ref = Hir.Inst.indexToRef(pl);
-    const pointer_type = try codegen.hir.resolveType(codegen.arena, ref);
+    const pointer_type = try codegen.hir.resolveType(codegen.arena, op);
     const pointee_type = pointer_type.extended.cast(Type.Pointer).?.pointee;
-    const addr = codegen.resolveRef(ref);
-    return codegen.builder.addLoad(addr, pointee_type);
+    const ptr = codegen.resolveInst(op);
+    return codegen.builder.addLoad(ptr, pointee_type);
 }
 
 fn store(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
     const pl = codegen.hir.insts.items(.data)[inst].pl_node.pl;
     const data = codegen.hir.extraData(pl, Hir.Inst.Store);
 
-    const addr = codegen.resolveRef(Hir.Inst.indexToRef(data.addr));
-    const val = codegen.resolveRef(data.val);
+    const addr = codegen.resolveInst(data.ptr);
+    const val = codegen.resolveInst(data.val);
     return codegen.builder.addStore(addr, val);
 }
 
@@ -213,8 +208,8 @@ fn icmp(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Binary);
 
-    const lref = codegen.resolveRef(data.lref);
-    const rref = codegen.resolveRef(data.rref);
+    const lref = codegen.resolveInst(data.lref);
+    const rref = codegen.resolveInst(data.rref);
     const kind: Context.Builder.Cmp = switch (tag) {
         .icmp_eq => .cmp_ieq,
         .icmp_ne => .cmp_ine,
@@ -238,8 +233,8 @@ fn fcmp(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Binary);
 
-    const lref = codegen.resolveRef(data.lref);
-    const rref = codegen.resolveRef(data.rref);
+    const lref = codegen.resolveInst(data.lref);
+    const rref = codegen.resolveInst(data.rref);
     const kind: Context.Builder.Cmp = switch (tag) {
         .fcmp_le => .cmp_fle,
         .fcmp_ge => .cmp_fge,
@@ -257,7 +252,7 @@ fn branchSingle(codegen: *CodeGen, inst: Hir.Index) Error!void {
     const data = hir.extraData(pl, Hir.Inst.BranchSingle);
     var builder = codegen.builder;
 
-    const condition = codegen.resolveRef(data.condition);
+    const condition = codegen.resolveInst(data.condition);
     const exec_true = builder.appendBlock("if.true");
     const prev = builder.getInsertBlock();
     builder.positionAtEnd(exec_true);
@@ -280,7 +275,7 @@ fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!void {
     const data = hir.extraData(pl, Hir.Inst.BranchDouble);
     var builder = codegen.builder;
 
-    const condition = codegen.resolveRef(data.condition);
+    const condition = codegen.resolveInst(data.condition);
 
     // TODO: branch expressions
     const prev = builder.getInsertBlock();
@@ -318,18 +313,18 @@ fn functionParam(codegen: *CodeGen, inst: Hir.Index, index: u32) !c.LLVMValueRef
     return param_ref;
 }
 
-fn dbgValue(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.insts.items(.data)[inst];
-
-    const id = data.op_pl.pl;
-    const ident_str = try hir.interner.get(id);
-    const ref = codegen.resolveRef(data.op_pl.op);
-    // TODO: fix, change dbgValue to an actual export decl
-    _ = ident_str;
-    // c.LLVMSetValueName2(ref, ident_str.ptr, ident_str.len);
-    return ref;
-}
+// fn dbgValue(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
+//     const hir = codegen.hir;
+//     const data = hir.insts.items(.data)[inst];
+//
+//     const id = data.op_pl.pl;
+//     const ident_str = try hir.interner.get(id);
+//     const ref = codegen.resolveRef(data.op_pl.op);
+//     // TODO: fix, change dbgValue to an actual export decl
+//     _ = ident_str;
+//     // c.LLVMSetValueName2(ref, ident_str.ptr, ident_str.len);
+//     return ref;
+// }
 
 fn zext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
@@ -337,7 +332,7 @@ fn zext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.extraData(pl, Hir.Inst.Extend);
 
     const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = codegen.resolveRef(data.val);
+    const ref = codegen.resolveInst(data.val);
     return codegen.builder.addZext(ty, ref);
 }
 
@@ -347,7 +342,7 @@ fn sext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.extraData(pl, Hir.Inst.Extend);
 
     const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = codegen.resolveRef(data.val);
+    const ref = codegen.resolveInst(data.val);
     return codegen.builder.addSext(ty, ref);
 }
 
@@ -357,7 +352,7 @@ fn fpext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.extraData(pl, Hir.Inst.Extend);
 
     const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = codegen.resolveRef(data.val);
+    const ref = codegen.resolveInst(data.val);
     return codegen.builder.addFpext(ty, ref);
 }
 
@@ -365,9 +360,9 @@ fn yield(codegen: *CodeGen, inst: Hir.Index, comptime implicit: bool) c.LLVMValu
     const data = codegen.hir.insts.items(.data)[inst];
 
     if (implicit) {
-        return codegen.resolveRef(data.un_tok.operand);
+        return codegen.resolveInst(data.un_tok.operand);
     } else {
-        return codegen.resolveRef(data.un_node.operand);
+        return codegen.resolveInst(data.un_node_new.operand);
     }
 }
 
@@ -400,15 +395,15 @@ fn call(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Call);
 
-    const addr = codegen.resolveRef(data.addr);
+    const addr = codegen.resolveInst(data.ptr);
     const args = try codegen.arena.alloc(c.LLVMValueRef, data.args_len);
     defer codegen.arena.free(args);
     const hir_args = hir.extra_data[pl + 2 .. pl + 2 + data.args_len];
     for (hir_args, 0..) |arg, i| {
-        args[i] = codegen.resolveRef(@enumFromInt(arg));
+        args[i] = codegen.resolveInst(arg);
     }
 
-    const ty = try hir.resolveType(codegen.arena, data.addr);
+    const ty = try hir.resolveType(codegen.arena, data.ptr);
     return codegen.builder.addCall(ty, addr, args);
 }
 
@@ -417,20 +412,20 @@ fn ret(codegen: *CodeGen, inst: Hir.Index, comptime implicit: bool) c.LLVMValueR
 
     if (implicit) {
         const data = hir.insts.items(.data)[inst].un_tok;
-        const is_none = hir.insts.items(.tag)[Hir.Inst.refToIndex(data.operand).?] == .none;
-        const ref = if (is_none) null else codegen.resolveRef(data.operand);
+        const is_none = hir.insts.items(.tag)[data.operand] == .none;
+        const ref = if (is_none) null else codegen.resolveInst(data.operand);
         return codegen.builder.addReturn(ref);
     } else {
-        const data = hir.insts.items(.data)[inst].un_node;
-        const is_none = hir.insts.items(.tag)[Hir.Inst.refToIndex(data.operand).?] == .none;
-        const ref = if (is_none) null else codegen.resolveRef(data.operand);
+        const data = hir.insts.items(.data)[inst].un_node_new;
+        const is_none = hir.insts.items(.tag)[data.operand] == .none;
+        const ref = if (is_none) null else codegen.resolveInst(data.operand);
         return codegen.builder.addReturn(ref);
     }
 }
 
 fn logNot(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
-    const data = codegen.hir.insts.items(.data)[inst].un_node;
-    const ref = codegen.resolveRef(data.operand);
+    const data = codegen.hir.insts.items(.data)[inst].un_node_new;
+    const ref = codegen.resolveInst(data.operand);
     const u1_type = c.LLVMInt1TypeInContext(codegen.builder.context.context);
     return codegen.builder.addCmp(.cmp_ieq, ref, c.LLVMConstInt(u1_type, 0, 0));
 }

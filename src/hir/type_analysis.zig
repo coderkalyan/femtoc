@@ -15,10 +15,6 @@ const BlockEditor = @import("BlockEditor.zig");
 const Type = @import("type.zig").Type;
 const Value = @import("../value.zig").Value;
 const coercion = @import("coercion.zig");
-const Ref = Hir.Ref;
-
-const indexToRef = Hir.Inst.indexToRef;
-const refToIndex = Hir.Inst.refToIndex;
 
 pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
     const module_pl = hg.insts.items(.data)[module_index].pl_node.pl;
@@ -115,14 +111,14 @@ fn fnDecl(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32))
     try inner.append(hg.arena, function.body);
 
     const constant = try b.addConstant(fn_type, fn_value, fn_data.node);
-    try b.addRemap(inst, indexToRef(constant));
+    try b.addRemap(inst, constant);
 }
 
 fn integer(b: *BlockEditor, inst: Hir.Index) !Hir.Index {
     const data = b.hg.insts.items(.data)[inst];
     // TODO: maybe try to store the node
     const constant = try b.addIntConstant(Type.Common.comptime_uint, data.int, undefined);
-    try b.addRemap(inst, indexToRef(constant));
+    try b.addRemap(inst, constant);
 
     return constant;
 }
@@ -131,7 +127,7 @@ fn float(b: *BlockEditor, inst: Hir.Index) !Hir.Index {
     const data = b.hg.insts.items(.data)[inst];
     // TODO: maybe try to store the node
     const constant = try b.addFloatConstant(Type.Common.comptime_float, data.float, undefined);
-    try b.addRemap(inst, indexToRef(constant));
+    try b.addRemap(inst, constant);
 
     return constant;
 }
@@ -142,8 +138,8 @@ fn coerce(b: *BlockEditor, inst: Hir.Index) !void {
     const coerce_data = hg.extraData(data.pl_node.pl, Hir.Inst.Coerce);
 
     const dest_ty = try hg.resolveType(coerce_data.ty);
-    const new_ref = try coercion.coerce(b, coerce_data.val, dest_ty);
-    try b.addRemap(inst, new_ref);
+    const new_inst = try coercion.coerce(b, coerce_data.val, dest_ty);
+    try b.addRemap(inst, new_inst);
 }
 
 fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
@@ -163,7 +159,6 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
     // comptime literals coerce to the fixed type of the other value
     // if both are comptime literals, the arithmetic is evaluated at
     // compile time (constant folding)
-    std.debug.print("{} {}\n", .{ lkind, rkind });
     switch (lkind) {
         .uint => {
             switch (rkind) {
@@ -173,7 +168,7 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                     const lref = try coercion.coerce(b, binary.lref, dest_ty);
                     const rref = try coercion.coerce(b, binary.rref, dest_ty);
                     const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_arith));
+                    try b.addRemap(inst, new_arith);
                 },
                 .sint => {
                     try hg.errors.append(hg.gpa, .{
@@ -186,7 +181,7 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                     const lref = binary.lref;
                     const rref = try coercion.coerce(b, binary.rref, lty);
                     const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_arith));
+                    try b.addRemap(inst, new_arith);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -206,14 +201,14 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                     const lref = try coercion.coerce(b, binary.lref, dest_ty);
                     const rref = try coercion.coerce(b, binary.rref, dest_ty);
                     const new_arith = try b.addBinary(lref, rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_arith));
+                    try b.addRemap(inst, new_arith);
                 },
                 .comptime_uint, .comptime_sint => {
                     const lref = binary.lref;
                     const rref = try coercion.coerce(b, binary.rref, lty);
 
                     const new_arith = try b.addBinary(lref, rref, hg.insts.items(.tag)[inst], data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_arith));
+                    try b.addRemap(inst, new_arith);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -225,7 +220,7 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                     const rref = binary.rref;
 
                     const new_arith = try b.addBinary(lref, rref, hg.insts.items(.tag)[inst], data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_arith));
+                    try b.addRemap(inst, new_arith);
                 },
                 .comptime_uint, .comptime_sint => {
                     unreachable; // TODO: constant folding
@@ -327,7 +322,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 .sint => return error.Truncated, // TODO: should emit error
                 .comptime_uint, .comptime_sint => {
@@ -344,7 +339,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -377,7 +372,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 .comptime_uint, .comptime_sint => {
                     const cmp_lref = binary.lref;
@@ -393,7 +388,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -418,11 +413,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 .comptime_uint => {
-                    const lval: u64 = hg.refToInt(binary.lref);
-                    const rval: u64 = hg.refToInt(binary.rref);
+                    const lval: u64 = hg.instToInt(binary.lref);
+                    const rval: u64 = hg.instToInt(binary.rref);
 
                     const result: bool = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq => lval == rval,
@@ -438,7 +433,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     const dest_ty = Type.Common.u1_type;
                     const result_inst = try b.addIntConstant(dest_ty, result_int, data.pl_node.node);
 
-                    try b.addRemap(inst, indexToRef(result_inst));
+                    try b.addRemap(inst, result_inst);
                 },
                 .sint => return error.Truncated, // TODO: should emit error
                 else => unreachable, // TODO: should emit error
@@ -470,7 +465,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 .comptime_float => {
                     const cmp_lref = binary.lref;
@@ -485,7 +480,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -509,11 +504,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(cmp_lref, cmp_rref, tag, data.pl_node.node);
-                    try b.addRemap(inst, indexToRef(new_cmp));
+                    try b.addRemap(inst, new_cmp);
                 },
                 .comptime_float => {
-                    const lval: f64 = hg.refToFloat(binary.lref);
-                    const rval: f64 = hg.refToFloat(binary.rref);
+                    const lval: f64 = hg.instToFloat(binary.lref);
+                    const rval: f64 = hg.instToFloat(binary.rref);
 
                     const result: bool = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq => lval == rval,
@@ -529,7 +524,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     const dest_ty = Type.Common.u1_type;
                     const result_inst = try b.addIntConstant(dest_ty, result_int, data.pl_node.node);
 
-                    try b.addRemap(inst, indexToRef(result_inst));
+                    try b.addRemap(inst, result_inst);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -579,7 +574,7 @@ fn call(b: *BlockEditor, inst: Hir.Index) !void {
     const addr_token = hg.tree.mainToken(data.node);
 
     // TODO: should we try to coerce this? not sure yet
-    const addr_type = try hg.resolveType(call_data.addr);
+    const addr_type = try hg.resolveType(call_data.ptr);
     if (addr_type.kind() != .function) {
         // you can only call a function
         try hg.errors.append(hg.gpa, .{
@@ -605,17 +600,17 @@ fn call(b: *BlockEditor, inst: Hir.Index) !void {
     for (src_args, func_type.param_types, 0..) |src_arg, param_type, i| {
         // identify the type of the ith parameter of the function type
         // and coerce the src_arg to that type
-        const dest_arg = try coercion.coerce(b, @enumFromInt(src_arg), param_type);
-        dest_args[i] = @intFromEnum(dest_arg);
+        const dest_arg = try coercion.coerce(b, src_arg, param_type);
+        dest_args[i] = dest_arg;
     }
 
-    const new_call = try b.addCall(call_data.addr, dest_args, data.node);
-    try b.addRemap(inst, indexToRef(new_call));
+    const new_call = try b.addCall(call_data.ptr, dest_args, data.node);
+    try b.addRemap(inst, new_call);
 }
 
 fn pointerTy(b: *BlockEditor, inst: Hir.Index) !void {
     const hg = b.hg;
-    const data = hg.insts.items(.data)[inst].un_node;
+    const data = hg.insts.items(.data)[inst].un_node_new;
     const pointee = try hg.resolveType(data.operand);
 
     const inner = try hg.gpa.create(Type.Pointer);
@@ -623,5 +618,5 @@ fn pointerTy(b: *BlockEditor, inst: Hir.Index) !void {
     const pointer: Type = .{ .extended = &inner.base };
 
     const new_type = try b.addType(pointer);
-    try b.addRemap(inst, indexToRef(new_type));
+    try b.addRemap(inst, new_type);
 }

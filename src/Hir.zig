@@ -21,7 +21,7 @@ types: []Type,
 interner: Interner,
 untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 errors: []error_handler.SourceError,
-instmap: []Ref,
+instmap: []Index,
 
 pub const Inst = struct {
     tag: Tag,
@@ -120,16 +120,15 @@ pub const Inst = struct {
         // pushes a value onto the stack and returns the memory address
         // generated when a mutable variable is encountered in ast
         // this is later split into an alloca and a store
-        // data.un_node.operand = ref to push
+        // data.un_node_new.operand = value to push
         push,
-
         // allocates a stack slot and returns the memory address
         // nothing is written to the slot, there must be a store
         // before any loads to this slot to avoid reading undefined memory
-        // data.un_node.operand = ref to type of slot
+        // data.un_node_new.operand = ref to type of slot
         alloca,
         // loads data from a memory address and returns a ref to the value
-        // data.un_node.operand = memory address (stack slot from push or alloca)
+        // data.un_node_new.operand = memory address (stack slot from push or alloca)
         load,
         // stores data to a memory address (stack slot from push or alloca)
         // data.pl_node.pl = Inst.Store
@@ -137,11 +136,11 @@ pub const Inst = struct {
 
         // marks a value in a global variable block_inline as mutable
         // and returns the "modified" instruction
-        // data.un_node.operand = variable just marked mutable
+        // data.un_node_new.operand = variable just marked mutable
         global_mut,
         // marks a value in a global variable block_inline as externally linked
         // and returns the "modified" instruction
-        // data.un_node.operand = variable just marked externally linked
+        // data.un_node_new.operand = variable just marked externally linked
         link_extern,
 
         // TODO
@@ -174,8 +173,8 @@ pub const Inst = struct {
 
         // returns control flow to the callee, generated explicitly from src code (return statement)
         // includes an operand as the return value
-        // data.un_node.node = return node
-        // data.un_node.operand = data to return
+        // data.un_node_new.node = return node
+        // data.un_node_new.operand = data to return
         ret_node,
         // same as ret_node, but not explicitly stated in src code (implicit return)
         // includes an operand as the return value
@@ -188,8 +187,8 @@ pub const Inst = struct {
         // data.un_tok.operand = ref to data to emit
         yield_implicit,
         // same as yield_implicit, but generated explicitly from src code (yield statement)
-        // data.un_node.node = yield node
-        // data.un_node.operand = ref to data to emit
+        // data.un_node_new.node = yield node
+        // data.un_node_new.operand = ref to data to emit
         yield_node,
         // same as yield_implicit, but for inline blocks
         // data.un_tok.tok = token that caused the implicit yield to be generated
@@ -197,9 +196,9 @@ pub const Inst = struct {
         yield_inline,
 
         // TODO
-        dbg_value,
-        dbg_declare,
-        dbg_assign,
+        // dbg_value,
+        // dbg_declare,
+        // dbg_assign,
 
         // top level instruction storing everything in a module (file) generated
         // data.pl_node.pl = Inst.Module
@@ -216,16 +215,6 @@ pub const Inst = struct {
         // TODO: these might need node references
         // type
         ty: Type,
-        ty_pl: struct {
-            ty: Ref,
-            // payload index in another array (like extra or values)
-            pl: u32,
-        },
-        // binary operation
-        bin: struct {
-            l: Ref,
-            r: Ref,
-        },
         node: NodeIndex,
         token: TokenIndex,
         un_node_new: struct {
@@ -233,18 +222,18 @@ pub const Inst = struct {
             operand: Index,
         },
         // used for unary operations (single operand) linking to the source node
-        un_node: struct {
-            // reference to the node creating this instruction
-            node: NodeIndex,
-            // unary operand reference
-            operand: Ref,
-        },
+        // un_node: struct {
+        //     // reference to the node creating this instruction
+        //     node: NodeIndex,
+        //     // unary operand reference
+        //     operand: Ref,
+        // },
         // used for unary operations (single operand) linking to the source token
         un_tok: struct {
             // reference to the token creating this instruction
             tok: TokenIndex,
             // unary operand reference
-            operand: Ref,
+            operand: Index,
         },
         pl_node: struct {
             // reference to the node creating this instruction
@@ -260,31 +249,20 @@ pub const Inst = struct {
         },
     };
 
-    pub fn indexToRef(index: Hir.Index) Hir.Ref {
-        const ref_len: u32 = @intCast(@typeInfo(Hir.Ref).Enum.fields.len);
-        return @enumFromInt(ref_len + index);
-    }
-
-    pub fn refToIndex(ref: Hir.Ref) ?Hir.Index {
-        const ref_len: u32 = @intCast(@typeInfo(Hir.Ref).Enum.fields.len);
-        const index = @intFromEnum(ref);
-        return if (index >= ref_len) index - ref_len else null;
-    }
-
     pub const Call = struct {
-        addr: Ref,
+        ptr: Index,
         args_len: u32,
     };
 
     pub const Binary = struct {
-        lref: Ref,
-        rref: Ref,
+        lref: Index,
+        rref: Index,
     };
 
     pub const FnDecl = struct {
         params_start: ExtraIndex,
         params_end: ExtraIndex,
-        return_type: Ref,
+        return_type: Index,
         body: Index,
         hash_lower: u32,
         hash_upper: u32,
@@ -292,41 +270,36 @@ pub const Inst = struct {
 
     pub const Param = struct {
         name: u32,
-        ty: Ref,
-    };
-
-    pub const ConstDecl = struct {
-        name: u32,
-        ty: Ref,
+        ty: Index,
     };
 
     pub const Store = struct {
-        addr: Index,
-        val: Ref,
+        ptr: Index,
+        val: Index,
     };
 
     pub const Coerce = struct {
-        val: Ref,
-        ty: Ref,
+        val: Index,
+        ty: Index,
     };
 
     pub const Extend = struct {
-        val: Ref,
-        ty: Ref,
+        val: Index,
+        ty: Index,
     };
 
     pub const Constant = struct {
         val: u32,
-        ty: Ref,
+        ty: Index,
     };
 
     pub const BranchSingle = struct {
-        condition: Ref,
+        condition: Index,
         exec_true: Index,
     };
 
     pub const BranchDouble = struct {
-        condition: Ref,
+        condition: Index,
         exec_true: Index,
         exec_false: Index,
     };
@@ -345,18 +318,15 @@ pub const Inst = struct {
         len: u32,
     };
 
-    pub const DebugValue = struct {
-        name: u32,
-        value: Ref,
-    };
+    // pub const DebugValue = struct {
+    //     name: u32,
+    //     value: Ref,
+    // };
 };
 
 pub const Index = u32;
 pub const NodeIndex = u32;
 pub const ExtraIndex = u32;
-pub const Ref = enum(u32) {
-    _,
-};
 
 pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
     const fields = std.meta.fields(T);
@@ -364,15 +334,10 @@ pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
     inline for (fields, 0..) |field, i| {
         @field(result, field.name) = switch (field.type) {
             u32 => hir.extra_data[index + i],
-            Ref => @enumFromInt(hir.extra_data[index + i]),
             else => unreachable,
         };
     }
     return result;
-}
-
-pub inline fn resolveRef(hir: *const Hir, ref: Ref) Ref {
-    return if (Hir.Inst.refToIndex(ref)) |index| hir.instmap[index] else ref;
 }
 
 // recursively resolves the type of a hir
@@ -382,149 +347,134 @@ pub inline fn resolveRef(hir: *const Hir, ref: Ref) Ref {
 // either by the type of instruction (comparison => u1),
 // signature (call is the return type of the address),
 // or by recursively resolving the operand type (arithmetic)
-pub fn resolveType(hir: *const Hir, gpa: Allocator, ref: Ref) !Type {
-    if (Inst.refToIndex(ref)) |index| {
-        const data = hir.insts.items(.data)[index];
-        return switch (hir.insts.items(.tag)[index]) {
-            // type instructions just store a type
-            .ty => data.ty,
-            // constants are typed values, they reference a type
-            .constant => ty: {
-                const constant_data = hir.extraData(data.pl_node.pl, Hir.Inst.Constant);
-                break :ty hir.resolveType(gpa, constant_data.ty);
-            },
-            .none => Type.Common.void_type,
-            // unary operand instructions - recursively resolve
-            .neg,
-            .log_not,
-            .bit_not,
-            .global_mut,
-            .link_extern,
-            .yield_node,
-            .yield_implicit,
-            .yield_inline,
-            .ret_node,
-            .ret_implicit,
-            => hir.resolveType(gpa, data.un_node.operand),
-            .push => {
-                const pointee = try hir.resolveType(gpa, data.un_node.operand);
-                const inner = try gpa.create(Type.Pointer);
-                inner.* = .{ .pointee = pointee };
-                return .{ .extended = &inner.base };
-            },
-            .alloca => {
-                const pointee = try hir.resolveType(gpa, Hir.Inst.indexToRef(data.un_node_new.operand));
-                const inner = try gpa.create(Type.Pointer);
-                inner.* = .{ .pointee = pointee };
-                return .{ .extended = &inner.base };
-            },
-            // binary operand instructions - recursively resolve
-            .add,
-            .sub,
-            .mul,
-            .div,
-            .mod,
-            .lsl,
-            .asl,
-            .lsr,
-            .asr,
-            => ty: {
-                // during generation, we make sure both operands match, so we can
-                // just use the left one
-                const bin_data = hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
-                break :ty hir.resolveType(gpa, bin_data.lref);
-            },
-            // comparison instructions - returns a u1
-            .icmp_eq,
-            .icmp_ne,
-            .icmp_ugt,
-            .icmp_uge,
-            .icmp_ult,
-            .icmp_ule,
-            .icmp_sgt,
-            .icmp_sge,
-            .icmp_slt,
-            .icmp_sle,
-            .fcmp_gt,
-            .fcmp_ge,
-            .fcmp_lt,
-            .fcmp_le,
-            => Type.Common.u1_type,
-            // resolve the type of the alloca/push being loaded
-            .load => ty: {
-                const pointer = try hir.resolveType(gpa, Inst.indexToRef(data.pl_node.pl));
-                const inner = pointer.extended.cast(Type.Pointer).?;
-                break :ty inner.pointee;
-            },
-            // parameters reference their type
-            .param => ty: {
-                const param_data = hir.extraData(data.pl_node.pl, Hir.Inst.Param);
-                break :ty hir.resolveType(gpa, param_data.ty);
-            },
-            // resolve the return type of the address being called
-            .call => ty: {
-                const call_data = hir.extraData(data.pl_node.pl, Hir.Inst.Call);
-                const call_ty = try hir.resolveType(gpa, call_data.addr);
-                const fn_type = call_ty.extended.cast(Type.Function).?;
-                break :ty fn_type.return_type;
-            },
-            // resolve the type being extended to
-            .zext,
-            .sext,
-            .fpext,
-            => ty: {
-                const ext_data = hir.extraData(data.pl_node.pl, Hir.Inst.Extend);
-                break :ty hir.resolveType(gpa, ext_data.ty);
-            },
-            // resolve the last instruction in the block
-            .block,
-            .block_inline,
-            => ty: {
-                const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
-                const insts = hir.block_slices[block_data.head];
-                break :ty hir.resolveType(gpa, Inst.indexToRef(insts[insts.len - 1]));
-            },
-            .branch_single,
-            .branch_double,
-            .loop,
-            .loop_break,
-            => unreachable, // TODO: follow into the block
-            .load_global => ty: {
-                const pl = hir.insts.items(.data)[index].pl_node.pl;
-                const inst = hir.untyped_decls.get(pl).?;
-                break :ty hir.resolveType(gpa, Inst.indexToRef(inst));
-            },
-            // should not be referenced (don't return anything meaningful)
-            .dbg_value,
-            .dbg_declare,
-            .dbg_assign,
-            .store,
-            => unreachable,
-            // untyped instructions should be replaced before they're referred to
-            .int,
-            .float,
-            .cmp_eq,
-            .cmp_ne,
-            .cmp_gt,
-            .cmp_ge,
-            .cmp_lt,
-            .cmp_le,
-            .coerce,
-            .fn_decl,
-            .module,
-            .pointer_ty,
-            => unreachable,
-        };
-    } else {
-        return switch (ref) {
-            _ => unreachable,
-        };
-    }
-}
-
-pub fn refToInt(hir: *const Hir, ref: Ref) u64 {
-    const index = Hir.Inst.refToIndex(ref).?;
-    return hir.instToInt(index);
+pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) !Type {
+    const data = hir.insts.items(.data)[index];
+    return switch (hir.insts.items(.tag)[index]) {
+        // type instructions just store a type
+        .ty => data.ty,
+        // constants are typed values, they reference a type
+        .constant => ty: {
+            const constant_data = hir.extraData(data.pl_node.pl, Hir.Inst.Constant);
+            break :ty hir.resolveType(gpa, constant_data.ty);
+        },
+        .none => Type.Common.void_type,
+        // unary operand instructions - recursively resolve
+        .neg,
+        .log_not,
+        .bit_not,
+        .global_mut,
+        .link_extern,
+        .ret_node,
+        .yield_node,
+        .yield_inline,
+        => hir.resolveType(gpa, data.un_node_new.operand),
+        .yield_implicit,
+        .ret_implicit,
+        => hir.resolveType(gpa, data.un_tok.operand),
+        .push,
+        .alloca,
+        => {
+            const pointee = try hir.resolveType(gpa, data.un_node_new.operand);
+            const inner = try gpa.create(Type.Pointer);
+            inner.* = .{ .pointee = pointee };
+            return .{ .extended = &inner.base };
+        },
+        // binary operand instructions - recursively resolve
+        .add,
+        .sub,
+        .mul,
+        .div,
+        .mod,
+        .lsl,
+        .asl,
+        .lsr,
+        .asr,
+        => ty: {
+            // during generation, we make sure both operands match, so we can
+            // just use the left one
+            const bin_data = hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
+            break :ty hir.resolveType(gpa, bin_data.lref);
+        },
+        // comparison instructions - returns a u1
+        .icmp_eq,
+        .icmp_ne,
+        .icmp_ugt,
+        .icmp_uge,
+        .icmp_ult,
+        .icmp_ule,
+        .icmp_sgt,
+        .icmp_sge,
+        .icmp_slt,
+        .icmp_sle,
+        .fcmp_gt,
+        .fcmp_ge,
+        .fcmp_lt,
+        .fcmp_le,
+        => Type.Common.u1_type,
+        // resolve the type of the alloca/push being loaded
+        .load => ty: {
+            const pointer = try hir.resolveType(gpa, data.un_node_new.operand);
+            const inner = pointer.extended.cast(Type.Pointer).?;
+            break :ty inner.pointee;
+        },
+        // parameters reference their type
+        .param => ty: {
+            const param_data = hir.extraData(data.pl_node.pl, Hir.Inst.Param);
+            break :ty hir.resolveType(gpa, param_data.ty);
+        },
+        // resolve the return type of the address being called
+        .call => ty: {
+            const call_data = hir.extraData(data.pl_node.pl, Hir.Inst.Call);
+            const call_ty = try hir.resolveType(gpa, call_data.ptr);
+            const fn_type = call_ty.extended.cast(Type.Function).?;
+            break :ty fn_type.return_type;
+        },
+        // resolve the type being extended to
+        .zext,
+        .sext,
+        .fpext,
+        => ty: {
+            const ext_data = hir.extraData(data.pl_node.pl, Hir.Inst.Extend);
+            break :ty hir.resolveType(gpa, ext_data.ty);
+        },
+        // resolve the last instruction in the block
+        .block,
+        .block_inline,
+        => ty: {
+            const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
+            const insts = hir.block_slices[block_data.head];
+            break :ty hir.resolveType(gpa, insts[insts.len - 1]);
+        },
+        .branch_single,
+        .branch_double,
+        .loop,
+        .loop_break,
+        => unreachable, // TODO: follow into the block
+        .load_global => ty: {
+            const pl = hir.insts.items(.data)[index].pl_node.pl;
+            const inst = hir.untyped_decls.get(pl).?;
+            break :ty hir.resolveType(gpa, inst);
+        },
+        // should not be referenced (don't return anything meaningful)
+        // .dbg_value,
+        // .dbg_declare,
+        // .dbg_assign,
+        .store => unreachable,
+        // untyped instructions should be replaced before they're referred to
+        .int,
+        .float,
+        .cmp_eq,
+        .cmp_ne,
+        .cmp_gt,
+        .cmp_ge,
+        .cmp_lt,
+        .cmp_le,
+        .coerce,
+        .fn_decl,
+        .module,
+        .pointer_ty,
+        => unreachable,
+    };
 }
 
 pub fn instToInt(hir: *const Hir, index: Index) u64 {
@@ -554,9 +504,8 @@ pub fn instToInt(hir: *const Hir, index: Index) u64 {
     }
 }
 
-pub fn refToFloat(hir: *const Hir, ref: Ref) f64 {
-    const index = Hir.Inst.refToIndex(ref).?;
-    const pl = hir.insts.items(.data)[index].pl_node.pl;
+pub fn instToFloat(hir: *const Hir, inst: Hir.Index) f64 {
+    const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Constant);
     const val = hir.values[data.val];
     const float = val.extended.cast(Value.F64).?;

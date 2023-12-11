@@ -14,7 +14,7 @@ hg: *HirGen,
 // insts: InstList,
 insts: std.ArrayListUnmanaged(Hir.Index),
 // TODO: this leaks once the editor is discarded, we need a deinit for BlockEditor
-remaps: std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref),
+remaps: std.AutoHashMapUnmanaged(Hir.Index, Hir.Index),
 scratch: std.ArrayListUnmanaged(u32),
 
 pub fn init(hg: *HirGen) !BlockEditor {
@@ -52,21 +52,9 @@ pub inline fn numInsts(b: *BlockEditor) u32 {
     return @intCast(b.insts.items.len);
 }
 
-pub inline fn addRemap(b: *BlockEditor, src: Hir.Index, dest: Hir.Ref) !void {
+pub inline fn addRemap(b: *BlockEditor, src: Hir.Index, dest: Hir.Index) !void {
     // TODO: should we use arena?
     try b.remaps.put(b.hg.gpa, src, dest);
-}
-
-pub fn resolveRef(b: *BlockEditor, src: Hir.Ref) Hir.Ref {
-    if (Hir.Inst.refToIndex(src)) |index| {
-        if (b.remaps.get(index)) |remap| {
-            return remap;
-        } else {
-            return Hir.Inst.indexToRef(index);
-        }
-    } else {
-        return src;
-    }
 }
 
 pub fn addValue(b: *BlockEditor, val: Value) !u32 {
@@ -77,10 +65,6 @@ pub fn addValue(b: *BlockEditor, val: Value) !u32 {
     return len;
 }
 
-pub fn typeToRef(b: *BlockEditor, ty: Type) !Hir.Ref {
-    return Hir.Inst.indexToRef(try b.addType(ty));
-}
-
 pub fn addType(b: *BlockEditor, _ty: Type) !Hir.Index {
     return b.addInst(.{
         .tag = .ty,
@@ -88,10 +72,10 @@ pub fn addType(b: *BlockEditor, _ty: Type) !Hir.Index {
     });
 }
 
-pub fn addPointerTy(b: *BlockEditor, pointee: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addPointerTy(b: *BlockEditor, pointee: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .pointer_ty,
-        .data = .{ .un_node = .{ .node = node, .operand = pointee } },
+        .data = .{ .un_node_new = .{ .node = node, .operand = pointee } },
     });
 }
 
@@ -117,10 +101,9 @@ pub fn addNone(b: *BlockEditor) !Hir.Index {
 }
 
 pub fn addConstant(b: *BlockEditor, _ty: Type, val: Value, node: Node.Index) !Hir.Index {
-    const ty_ref = try b.typeToRef(_ty);
     const pl = try b.hg.addExtra(Inst.Constant{
         .val = try b.addValue(val),
-        .ty = ty_ref,
+        .ty = try b.addType(_ty),
     });
 
     return b.addInst(.{
@@ -160,7 +143,7 @@ pub fn addFloatConstant(b: *BlockEditor, ty: Type, f: f64, node: Node.Index) !u3
     return b.addConstant(ty, .{ .extended = &payload.base }, node);
 }
 
-pub fn addBinary(b: *BlockEditor, l: Hir.Ref, r: Hir.Ref, tag: Inst.Tag, node: Node.Index) !Hir.Index {
+pub fn addBinary(b: *BlockEditor, l: Hir.Index, r: Hir.Index, tag: Inst.Tag, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Inst.Binary{
         .lref = l,
         .rref = r,
@@ -172,10 +155,10 @@ pub fn addBinary(b: *BlockEditor, l: Hir.Ref, r: Hir.Ref, tag: Inst.Tag, node: N
     });
 }
 
-pub fn addUnary(b: *BlockEditor, op: Hir.Ref, tag: Inst.Tag, node: Node.Index) !Hir.Index {
+pub fn addUnary(b: *BlockEditor, op: Hir.Index, tag: Inst.Tag, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = tag,
-        .data = .{ .un_node = .{ .operand = op, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = op, .node = node } },
     });
 }
 
@@ -253,7 +236,7 @@ pub fn updateBlock(hg: *HirGen, data_block: *BlockEditor, inst: Hir.Index) !void
     commitRemap(hg, &data_block.remaps, data.head);
 }
 
-pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref), head: u32) void {
+pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Index), head: u32) void {
     const slice = hg.block_slices.items[head];
     for (slice) |inst| {
         switch (hg.insts.items(.tag)[inst]) {
@@ -294,50 +277,44 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             => {
                 // Binary
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapRefPl(hg, remaps, pl + 0); // lref
-                remapRefPl(hg, remaps, pl + 1); // rref
+                remapIndexPl(hg, remaps, pl + 0); // lref
+                remapIndexPl(hg, remaps, pl + 1); // rref
             },
             .coerce => {
                 // Coerce
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapRefPl(hg, remaps, pl + 0); // val
-                remapRefPl(hg, remaps, pl + 1); // ty
+                remapIndexPl(hg, remaps, pl + 0); // val
+                remapIndexPl(hg, remaps, pl + 1); // ty
             },
             .constant => {
                 // Constant
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapRefPl(hg, remaps, pl + 1); // ty
+                remapIndexPl(hg, remaps, pl + 1); // ty
             },
             .zext, .sext, .fpext => {
                 // Extend
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapRefPl(hg, remaps, pl + 0); // val
-                remapRefPl(hg, remaps, pl + 1); // ty
+                remapIndexPl(hg, remaps, pl + 0); // val
+                remapIndexPl(hg, remaps, pl + 1); // ty
             },
+            .pointer_ty,
             .push,
-            .global_mut,
-            .link_extern,
+            .load,
             .neg,
             .log_not,
             .bit_not,
-            .pointer_ty,
+            .global_mut,
+            .link_extern,
             => {
                 // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
-                remapRef(hg, remaps, op);
-            },
-            .load => {
-                // Payload
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                if (remaps.get(pl)) |new| {
-                    hg.insts.items(.data)[inst].pl_node.pl = Hir.Inst.refToIndex(new).?;
-                }
+                var op = &hg.insts.slice().items(.data)[inst].un_node_new.operand;
+                remapIndex(hg, remaps, op);
             },
             .store => {
                 // Store
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 0); // addr
-                remapRefPl(hg, remaps, pl + 1); // val
+                remapIndexPl(hg, remaps, pl + 0); // ptr
+                remapIndexPl(hg, remaps, pl + 1); // val
             },
             .fn_decl => {
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
@@ -349,18 +326,17 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             },
             .param => {
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapRefPl(hg, remaps, pl + 1); // ty
+                remapIndexPl(hg, remaps, pl + 1); // ty
             },
             .call => {
                 // Call
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
                 const data = hg.extraData(pl, Hir.Inst.Call);
-                remapRefPl(hg, remaps, pl + 0); // addr
+                remapIndexPl(hg, remaps, pl + 0); // addr
 
                 var extra_index: u32 = 0;
                 while (extra_index < data.args_len) : (extra_index += 1) {
-                    // std.debug.print("remapping {} {}\n", .{ extra_index, hg.extra.items[extra_index] });
-                    remapRefPl(hg, remaps, pl + 2 + extra_index);
+                    remapIndexPl(hg, remaps, pl + 2 + extra_index);
                 }
             },
             .block, .block_inline => {
@@ -373,7 +349,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
                 const data = hg.extraData(pl, Hir.Inst.BranchSingle);
 
-                remapRefPl(hg, remaps, pl + 0); // condition
+                remapIndexPl(hg, remaps, pl + 0); // condition
 
                 const block_pl = hg.insts.items(.data)[data.exec_true].pl_node.pl;
                 const block_data = hg.extraData(block_pl, Hir.Inst.Block);
@@ -383,7 +359,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
                 const pl = hg.insts.items(.data)[inst].pl_node.pl;
                 const data = hg.extraData(pl, Hir.Inst.BranchDouble);
 
-                remapRefPl(hg, remaps, pl + 0); // condition
+                remapIndexPl(hg, remaps, pl + 0); // condition
 
                 const block1_pl = hg.insts.items(.data)[data.exec_true].pl_node.pl;
                 const block1_data = hg.extraData(block1_pl, Hir.Inst.Block);
@@ -409,43 +385,31 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             .ret_implicit, .yield_implicit => {
                 // unary operand
                 var op = &hg.insts.slice().items(.data)[inst].un_tok.operand;
-                remapRef(hg, remaps, op);
+                remapIndex(hg, remaps, op);
             },
             .ret_node, .yield_node, .yield_inline => {
                 // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
-                remapRef(hg, remaps, op);
+                var op = &hg.insts.slice().items(.data)[inst].un_node_new.operand;
+                remapIndex(hg, remaps, op);
             },
             .alloca, .load_global => {},
-            .dbg_value, .dbg_declare, .dbg_assign => {},
+            // .dbg_value, .dbg_declare, .dbg_assign => {},
             .module => unreachable,
         }
     }
 }
 
-// TODO: probably better to repalce hashmap with slice
-fn remapRefPl(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref), pl: u32) void {
-    const ref = &hg.extra.items[pl];
-    if (Hir.Inst.refToIndex(@enumFromInt(hg.extra.items[pl]))) |inst| {
-        if (remaps.get(inst)) |new| {
-            ref.* = @intFromEnum(new);
-        }
-    }
-}
-
-fn remapRef(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref), ref: *Hir.Ref) void {
+fn remapIndex(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Index), inst: *Hir.Index) void {
     _ = hg;
-    if (Hir.Inst.refToIndex(ref.*)) |inst| {
-        if (remaps.get(inst)) |new| {
-            ref.* = new;
-        }
+    if (remaps.get(inst.*)) |new| {
+        inst.* = new;
     }
 }
 
-fn remapIndexPl(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Ref), pl: u32) void {
+fn remapIndexPl(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Index), pl: u32) void {
     const index = &hg.extra.items[pl];
     if (remaps.get(index.*)) |new| {
-        index.* = Hir.Inst.refToIndex(new).?;
+        index.* = new;
     }
 }
 
@@ -456,9 +420,9 @@ pub fn commit(b: *BlockEditor) Inst.Block {
     };
 }
 
-pub fn addCall(b: *BlockEditor, addr: Hir.Ref, args: []u32, node: Node.Index) !Hir.Index {
+pub fn addCall(b: *BlockEditor, ptr: Hir.Index, args: []u32, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Inst.Call{
-        .addr = addr,
+        .ptr = ptr,
         .args_len = @intCast(args.len),
     });
     try b.hg.extra.appendSlice(b.hg.gpa, args);
@@ -469,7 +433,7 @@ pub fn addCall(b: *BlockEditor, addr: Hir.Ref, args: []u32, node: Node.Index) !H
     });
 }
 
-pub fn addFnDecl(b: *BlockEditor, params: []u32, return_type: Hir.Ref, body: Hir.Index, hash: u64, node: Node.Index) !Hir.Index {
+pub fn addFnDecl(b: *BlockEditor, params: []u32, return_type: Hir.Index, body: Hir.Index, hash: u64, node: Node.Index) !Hir.Index {
     const params_start: u32 = @intCast(b.hg.extra.items.len);
     try b.hg.extra.appendSlice(b.hg.gpa, params);
     const params_end: u32 = @intCast(b.hg.extra.items.len);
@@ -489,11 +453,11 @@ pub fn addFnDecl(b: *BlockEditor, params: []u32, return_type: Hir.Ref, body: Hir
     });
 }
 
-pub fn addParam(b: *BlockEditor, name: u32, ty_ref: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addParam(b: *BlockEditor, name: u32, ty: Hir.Index, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const pl = try hg.addExtra(Inst.Param{
         .name = name,
-        .ty = ty_ref,
+        .ty = ty,
     });
 
     return b.hg.addInstUnlinked(.{
@@ -502,44 +466,37 @@ pub fn addParam(b: *BlockEditor, name: u32, ty_ref: Hir.Ref, node: Node.Index) !
     });
 }
 
-pub fn addDebugValue(b: *BlockEditor, val: Hir.Ref, name: u32, node: Node.Index) !Hir.Index {
-    // TODO: enum and member naming
-    const pl = try b.hg.addExtra(Inst.DebugValue{
-        .name = name,
-        .value = val,
-    });
+// pub fn addDebugValue(b: *BlockEditor, val: Hir.Ref, name: u32, node: Node.Index) !Hir.Index {
+//     // TODO: enum and member naming
+//     const pl = try b.hg.addExtra(Inst.DebugValue{
+//         .name = name,
+//         .value = val,
+//     });
+//
+//     return b.addInst(.{
+//         .tag = .dbg_value,
+//         .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+//     });
+// }
 
-    return b.addInst(.{
-        .tag = .dbg_value,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addPush(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addPush(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .push,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
     });
 }
 
-pub fn addGlobal(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .global,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
-    });
-}
-
-pub fn addGlobalMut(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addGlobalMut(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .global_mut,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
     });
 }
 
-pub fn addLoad(b: *BlockEditor, addr: Hir.Index, node: Node.Index) !Hir.Index {
+pub fn addLoad(b: *BlockEditor, ptr: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .load,
-        .data = .{ .pl_node = .{ .pl = addr, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = ptr, .node = node } },
     });
 }
 
@@ -550,9 +507,9 @@ pub fn addLoadGlobal(b: *BlockEditor, decl: Hir.Index, node: Node.Index) !Hir.In
     });
 }
 
-pub fn addStore(b: *BlockEditor, addr: Hir.Index, val: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addStore(b: *BlockEditor, ptr: Hir.Index, val: Hir.Index, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Inst.Store{
-        .addr = addr,
+        .ptr = ptr,
         .val = val,
     });
 
@@ -562,7 +519,7 @@ pub fn addStore(b: *BlockEditor, addr: Hir.Index, val: Hir.Ref, node: Node.Index
     });
 }
 
-pub fn addBranchSingle(b: *BlockEditor, cond: Hir.Ref, exec: Hir.Index, node: Node.Index) !Hir.Index {
+pub fn addBranchSingle(b: *BlockEditor, cond: Hir.Index, exec: Hir.Index, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Inst.BranchSingle{
         .condition = cond,
         .exec_true = exec,
@@ -574,11 +531,11 @@ pub fn addBranchSingle(b: *BlockEditor, cond: Hir.Ref, exec: Hir.Index, node: No
     });
 }
 
-pub fn addBranchDouble(b: *BlockEditor, cond: Hir.Ref, x: Hir.Index, y: Hir.Index, node: Node.Index) !Hir.Index {
+pub fn addBranchDouble(b: *BlockEditor, cond: Hir.Index, t: Hir.Index, f: Hir.Index, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Inst.BranchDouble{
         .condition = cond,
-        .exec_true = x,
-        .exec_false = y,
+        .exec_true = t,
+        .exec_false = f,
     });
 
     return b.addInst(.{
@@ -587,31 +544,31 @@ pub fn addBranchDouble(b: *BlockEditor, cond: Hir.Ref, x: Hir.Index, y: Hir.Inde
     });
 }
 
-pub fn addRetNode(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addRetNode(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .ret_node,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
     });
 }
 
-pub fn addRetImplicit(b: *BlockEditor, val: Hir.Ref, tok: Ast.TokenIndex) !Hir.Index {
+pub fn addRetImplicit(b: *BlockEditor, val: Hir.Index, tok: Ast.TokenIndex) !Hir.Index {
     return b.addInst(.{
         .tag = .ret_implicit,
         .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
     });
 }
 
-pub fn addYieldImplicit(b: *BlockEditor, val: Hir.Ref, tok: Ast.TokenIndex) !Hir.Index {
+pub fn addYieldImplicit(b: *BlockEditor, val: Hir.Index, tok: Ast.TokenIndex) !Hir.Index {
     return b.addInst(.{
         .tag = .yield_implicit,
         .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
     });
 }
 
-pub fn addYieldInline(b: *BlockEditor, val: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addYieldInline(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .yield_inline,
-        .data = .{ .un_node = .{ .operand = val, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
     });
 }
 
@@ -634,14 +591,14 @@ pub fn addBreak(b: *BlockEditor, node: Node.Index) !Hir.Index {
     });
 }
 
-pub fn addLinkExtern(b: *BlockEditor, ref: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addLinkExtern(b: *BlockEditor, ref: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .link_extern,
-        .data = .{ .un_node = .{ .operand = ref, .node = node } },
+        .data = .{ .un_node_new = .{ .operand = ref, .node = node } },
     });
 }
 
-pub fn addZext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addZext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Hir.Inst.Extend{
         .val = val,
         .ty = ty,
@@ -653,7 +610,7 @@ pub fn addZext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hi
     });
 }
 
-pub fn addSext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addSext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Hir.Inst.Extend{
         .val = val,
         .ty = ty,
@@ -665,7 +622,7 @@ pub fn addSext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hi
     });
 }
 
-pub fn addFpext(b: *BlockEditor, val: Hir.Ref, ty: Hir.Ref, node: Node.Index) !Hir.Index {
+pub fn addFpext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Hir.Inst.Extend{
         .val = val,
         .ty = ty,

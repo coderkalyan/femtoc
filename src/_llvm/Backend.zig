@@ -62,5 +62,5 @@ fn generate(iface: *BackendInterface, hir: *const Hir) !void {
         defer codegen.builder.deinit();
         try codegen.generate();
     }
-    context.dump();
+    // context.dump();
 }
