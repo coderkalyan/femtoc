@@ -35,7 +35,7 @@ pub const Inst = struct {
         // data.float = immediate value
         float,
         // load a void literal (immediate)
-        // no data
+        // data.placeholder = no data
         none,
         // declare a new type to be used
         // data.ty = type (stored directly)
@@ -120,15 +120,15 @@ pub const Inst = struct {
         // pushes a value onto the stack and returns the memory address
         // generated when a mutable variable is encountered in ast
         // this is later split into an alloca and a store
-        // data.un_node_new.operand = value to push
+        // data.un_node.operand = value to push
         push,
         // allocates a stack slot and returns the memory address
         // nothing is written to the slot, there must be a store
         // before any loads to this slot to avoid reading undefined memory
-        // data.un_node_new.operand = ref to type of slot
+        // data.un_node.operand = ref to type of slot
         alloca,
         // loads data from a memory address and returns a ref to the value
-        // data.un_node_new.operand = memory address (stack slot from push or alloca)
+        // data.un_node.operand = memory address (stack slot from push or alloca)
         load,
         // stores data to a memory address (stack slot from push or alloca)
         // data.pl_node.pl = Inst.Store
@@ -136,11 +136,11 @@ pub const Inst = struct {
 
         // marks a value in a global variable block_inline as mutable
         // and returns the "modified" instruction
-        // data.un_node_new.operand = variable just marked mutable
+        // data.un_node.operand = variable just marked mutable
         global_mut,
         // marks a value in a global variable block_inline as externally linked
         // and returns the "modified" instruction
-        // data.un_node_new.operand = variable just marked externally linked
+        // data.un_node.operand = variable just marked externally linked
         link_extern,
 
         // TODO
@@ -173,8 +173,8 @@ pub const Inst = struct {
 
         // returns control flow to the callee, generated explicitly from src code (return statement)
         // includes an operand as the return value
-        // data.un_node_new.node = return node
-        // data.un_node_new.operand = data to return
+        // data.un_node.node = return node
+        // data.un_node.operand = data to return
         ret_node,
         // same as ret_node, but not explicitly stated in src code (implicit return)
         // includes an operand as the return value
@@ -187,8 +187,8 @@ pub const Inst = struct {
         // data.un_tok.operand = ref to data to emit
         yield_implicit,
         // same as yield_implicit, but generated explicitly from src code (yield statement)
-        // data.un_node_new.node = yield node
-        // data.un_node_new.operand = ref to data to emit
+        // data.un_node.node = yield node
+        // data.un_node.operand = ref to data to emit
         yield_node,
         // same as yield_implicit, but for inline blocks
         // data.un_tok.tok = token that caused the implicit yield to be generated
@@ -208,26 +208,23 @@ pub const Inst = struct {
     pub const Data = union {
         // int immediate
         int: u64,
-
         // float immediate
         float: f64,
-
-        // TODO: these might need node references
+        // no data stored for this instruction
+        placeholder: void,
         // type
         ty: Type,
+        // just a node reference, no other data
         node: NodeIndex,
+        // just a token reference, no other data
         token: TokenIndex,
-        un_node_new: struct {
+        // used for unary operations (single operand) linking to the source node
+        un_node: struct {
+            // reference to the node creating this instruction
             node: NodeIndex,
+            // unary operand reference
             operand: Index,
         },
-        // used for unary operations (single operand) linking to the source node
-        // un_node: struct {
-        //     // reference to the node creating this instruction
-        //     node: NodeIndex,
-        //     // unary operand reference
-        //     operand: Ref,
-        // },
         // used for unary operations (single operand) linking to the source token
         un_tok: struct {
             // reference to the token creating this instruction
@@ -328,6 +325,133 @@ pub const Index = u32;
 pub const NodeIndex = u32;
 pub const ExtraIndex = u32;
 
+pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
+    return switch (tag) {
+        .int => .int,
+        .float => .float,
+        .none, .loop_break => .placeholder,
+        .ty => .ty,
+        .constant,
+        .add,
+        .sub,
+        .mul,
+        .div,
+        .mod,
+        .cmp_eq,
+        .cmp_ne,
+        .cmp_gt,
+        .cmp_ge,
+        .cmp_lt,
+        .cmp_le,
+        .icmp_eq,
+        .icmp_ne,
+        .icmp_ugt,
+        .icmp_uge,
+        .icmp_ult,
+        .icmp_ule,
+        .icmp_sgt,
+        .icmp_sge,
+        .icmp_slt,
+        .icmp_sle,
+        .fcmp_gt,
+        .fcmp_ge,
+        .fcmp_lt,
+        .fcmp_le,
+        .lsl,
+        .lsr,
+        .asl,
+        .asr,
+        .coerce,
+        .zext,
+        .sext,
+        .fpext,
+        .store,
+        .fn_decl,
+        .param,
+        .call,
+        .block,
+        .block_inline,
+        .branch_single,
+        .branch_double,
+        .loop,
+        .module,
+        => .pl_node,
+        .neg,
+        .log_not,
+        .bit_not,
+        .push,
+        .alloca,
+        .load,
+        .global_mut,
+        .link_extern,
+        .ret_node,
+        .yield_node,
+        .yield_inline,
+        .load_global,
+        .pointer_ty,
+        => .un_node,
+        .ret_implicit,
+        .yield_implicit,
+        => .un_tok,
+    };
+}
+
+pub fn payloadType(comptime tag: Inst.Tag) type {
+    return switch (tag) {
+        .constant => Inst.Constant,
+        .add,
+        .sub,
+        .mul,
+        .div,
+        .mod,
+        .cmp_eq,
+        .cmp_ne,
+        .cmp_gt,
+        .cmp_ge,
+        .cmp_lt,
+        .cmp_le,
+        .icmp_eq,
+        .icmp_ne,
+        .icmp_ugt,
+        .icmp_uge,
+        .icmp_ult,
+        .icmp_ule,
+        .icmp_sgt,
+        .icmp_sge,
+        .icmp_slt,
+        .icmp_sle,
+        .fcmp_gt,
+        .fcmp_ge,
+        .fcmp_lt,
+        .fcmp_le,
+        .lsl,
+        .lsr,
+        .asl,
+        .asr,
+        => Inst.Binary,
+        .coerce => Inst.Coerce,
+        .zext,
+        .sext,
+        .fpext,
+        => Inst.Extend,
+        .store => Inst.Store,
+        .fn_decl => Inst.FnDecl,
+        .param => Inst.Param,
+        .call => Inst.Call,
+        .block,
+        .block_inline,
+        => Inst.Block,
+        .branch_single => Inst.BranchSingle,
+        .branch_double => Inst.BranchDouble,
+        .loop => Inst.Loop,
+        .module => Inst.Module,
+        else => {
+            @compileLog(tag);
+            unreachable;
+        },
+    };
+}
+
 pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
     const fields = std.meta.fields(T);
     var result: T = undefined;
@@ -338,6 +462,121 @@ pub fn extraData(hir: *const Hir, index: usize, comptime T: type) T {
         };
     }
     return result;
+}
+
+pub fn InstData(comptime tag: Inst.Tag) type {
+    const active_field = comptime activeDataField(tag);
+    switch (active_field) {
+        .placeholder => return void,
+        .int,
+        .float,
+        .ty,
+        .node,
+        .token,
+        => {
+            // construct an anonymous struct with just a single
+            // field, with the same name as this tag
+            const field_type = std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
+            const anon_fields = &.{.{
+                .name = @tagName(active_field),
+                .type = field_type,
+                .default_value = null,
+                .is_comptime = false,
+                .alignment = @alignOf(field_type),
+            }};
+            return @Type(std.builtin.Type{ .Struct = .{
+                .layout = .Auto,
+                .fields = anon_fields,
+                .decls = &.{},
+                .is_tuple = false,
+            } });
+        },
+        .un_node,
+        .un_tok,
+        => {
+            // no extra data associated with this, so just return the
+            // data type of the active field
+            // no need to generate a type since it already exists
+            return std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
+        },
+        .pl_node => {
+            // construct a type which has all fields from the associated
+            // payload struct, plus the node reference from the pl_node
+            const payload_type = payloadType(tag);
+            const payload_fields = std.meta.fields(payload_type);
+            var anon_fields = [1]std.builtin.Type.StructField{undefined} ** (payload_fields.len + 2);
+            anon_fields[0] = .{
+                .name = "node",
+                .type = NodeIndex,
+                .default_value = null,
+                .is_comptime = false,
+                .alignment = @alignOf(NodeIndex),
+            };
+            anon_fields[1] = .{
+                .name = "pl",
+                .type = u32,
+                .default_value = &@as(u32, 0),
+                .is_comptime = false,
+                .alignment = @alignOf(u32),
+            };
+            for (payload_fields, 2..) |field, i| {
+                anon_fields[i] = field;
+            }
+            return @Type(std.builtin.Type{ .Struct = .{
+                .layout = .Auto,
+                .fields = &anon_fields,
+                .decls = &.{},
+                .is_tuple = false,
+            } });
+        },
+        .pl_tok => unreachable,
+    }
+}
+
+pub fn get(hir: *const Hir, index: Index, comptime tag: Inst.Tag) InstData(tag) {
+    const data = hir.insts.items(.data)[index];
+    const active_field = comptime activeDataField(tag);
+    switch (active_field) {
+        .placeholder => return {},
+        .int,
+        .float,
+        .ty,
+        .node,
+        .token,
+        => {
+            // construct an anonymous struct with just a single
+            // field, with the same name as this tag
+            var result: InstData(tag) = undefined;
+            const field_name = @tagName(active_field);
+            @field(result, field_name) = @field(data, field_name);
+            return result;
+        },
+        .un_node,
+        .un_tok,
+        => {
+            var result: InstData(tag) = undefined;
+            const data_type = std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
+            const source_data = @field(data, @tagName(active_field));
+            const fields = std.meta.fields(data_type);
+            inline for (fields) |field| {
+                @field(result, field.name) = @field(source_data, field.name);
+            }
+            return result;
+        },
+        .pl_node => {
+            var result: InstData(tag) = undefined;
+            result.pl = data.pl_node.pl;
+            result.node = data.pl_node.node;
+            const payload_type = payloadType(tag);
+            const payload = hir.extraData(data.pl_node.pl, payload_type);
+            const fields = std.meta.fields(payload_type);
+            inline for (fields) |field| {
+                @field(result, field.name) = @field(payload, field.name);
+            }
+            return result;
+        },
+        .pl_tok => unreachable,
+    }
 }
 
 // recursively resolves the type of a hir
@@ -367,14 +606,14 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) !Type {
         .ret_node,
         .yield_node,
         .yield_inline,
-        => hir.resolveType(gpa, data.un_node_new.operand),
+        => hir.resolveType(gpa, data.un_node.operand),
         .yield_implicit,
         .ret_implicit,
         => hir.resolveType(gpa, data.un_tok.operand),
         .push,
         .alloca,
         => {
-            const pointee = try hir.resolveType(gpa, data.un_node_new.operand);
+            const pointee = try hir.resolveType(gpa, data.un_node.operand);
             const inner = try gpa.create(Type.Pointer);
             inner.* = .{ .pointee = pointee };
             return .{ .extended = &inner.base };
@@ -413,7 +652,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) !Type {
         => Type.Common.u1_type,
         // resolve the type of the alloca/push being loaded
         .load => ty: {
-            const pointer = try hir.resolveType(gpa, data.un_node_new.operand);
+            const pointer = try hir.resolveType(gpa, data.un_node.operand);
             const inner = pointer.extended.cast(Type.Pointer).?;
             break :ty inner.pointee;
         },
@@ -451,7 +690,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) !Type {
         .loop_break,
         => unreachable, // TODO: follow into the block
         .load_global => ty: {
-            const pl = hir.insts.items(.data)[index].pl_node.pl;
+            const pl = hir.insts.items(.data)[index].un_node.operand;
             const inst = hir.untyped_decls.get(pl).?;
             break :ty hir.resolveType(gpa, inst);
         },

@@ -269,110 +269,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             var lbuf: [256]u8 = [_]u8{0} ** 256;
             var rbuf: [256]u8 = [_]u8{0} ** 256;
             switch (ir.insts.items(.tag)[index]) {
-                .int => try writer.print("int({})", .{ir.insts.items(.data)[index].int}),
-                .float => try writer.print("float({})", .{ir.insts.items(.data)[index].float}),
-                .add, .sub, .mul, .div, .mod, .cmp_eq, .cmp_ne, .cmp_le, .cmp_ge, .cmp_lt, .cmp_gt, .icmp_eq, .icmp_ne, .icmp_ugt, .icmp_uge, .icmp_ult, .icmp_ule, .icmp_sgt, .icmp_sge, .icmp_slt, .icmp_sle, .fcmp_gt, .fcmp_ge, .fcmp_lt, .fcmp_le => {
-                    try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
-                        .add => "add",
-                        .sub => "sub",
-                        .mul => "mul",
-                        .div => "div",
-                        .mod => "mod",
-                        .cmp_eq => "cmp_eq",
-                        .cmp_ne => "cmp_ne",
-                        .cmp_gt => "cmp_gt",
-                        .cmp_ge => "cmp_ge",
-                        .cmp_lt => "cmp_lt",
-                        .cmp_le => "cmp_le",
-                        .icmp_eq => "icmp_eq",
-                        .icmp_ne => "icmp_ne",
-                        .icmp_ugt => "icmp_ugt",
-                        .icmp_uge => "icmp_uge",
-                        .icmp_ult => "icmp_ult",
-                        .icmp_ule => "icmp_ule",
-                        .icmp_sgt => "icmp_sgt",
-                        .icmp_sge => "icmp_sge",
-                        .icmp_slt => "icmp_slt",
-                        .icmp_sle => "icmp_le",
-                        .fcmp_gt => "fcmp_gt",
-                        .fcmp_ge => "fcmp_ge",
-                        .fcmp_lt => "fcmp_lt",
-                        .fcmp_le => "fcmp_le",
-                        else => unreachable,
-                    });
-
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const bin = ir.extraData(pl, Hir.Inst.Binary);
-                    try self.formatIndex(bin.lref, &lbuf);
-                    try self.formatIndex(bin.rref, &rbuf);
-                    try writer.print("({s}, {s})", .{ lbuf, rbuf });
-                },
-                .neg, .log_not, .bit_not => {
-                    try writer.writeAll(switch (ir.insts.items(.tag)[index]) {
-                        .neg => "neg",
-                        .log_not => "log_not",
-                        .bit_not => "bit_not",
-                        else => unreachable,
-                    });
-
-                    const op = ir.insts.items(.data)[index].un_node_new.operand;
-                    try self.formatIndex(op, &lbuf);
-                    try writer.print("({s})", .{lbuf});
-                },
-                .coerce => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const coerce = ir.extraData(pl, Hir.Inst.Coerce);
-                    try self.formatIndex(coerce.ty, &lbuf);
-                    try self.formatIndex(coerce.val, &rbuf);
-                    try writer.print("coerce({s}, {s})", .{ lbuf, rbuf });
-                },
-                .zext => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const zext = ir.extraData(pl, Hir.Inst.Extend);
-                    try self.formatIndex(zext.ty, &lbuf);
-                    try self.formatIndex(zext.val, &rbuf);
-                    try writer.print("zext({s}, {s})", .{ lbuf, rbuf });
-                },
-                .sext => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const sext = ir.extraData(pl, Hir.Inst.Extend);
-                    try self.formatIndex(sext.ty, &lbuf);
-                    try self.formatIndex(sext.val, &rbuf);
-                    try writer.print("sext({s}, {s})", .{ lbuf, rbuf });
-                },
-                .fpext => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const fpext = ir.extraData(pl, Hir.Inst.Extend);
-                    try self.formatIndex(fpext.ty, &lbuf);
-                    try self.formatIndex(fpext.val, &rbuf);
-                    try writer.print("fpext({s}, {s})", .{ lbuf, rbuf });
-                },
-                .push => {
-                    try self.formatIndex(ir.insts.items(.data)[index].un_node_new.operand, &lbuf);
-                    try writer.print("push({s})", .{lbuf});
-                },
-                .alloca => {
-                    try self.formatIndex(ir.insts.items(.data)[index].un_node_new.operand, &lbuf);
-                    try writer.print("alloca({s})", .{lbuf});
-                },
-                .global_mut => {
-                    try self.formatIndex(ir.insts.items(.data)[index].un_node_new.operand, &lbuf);
-                    try writer.print("global_mut({s})", .{lbuf});
-                },
-                .store => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const store = ir.extraData(pl, Hir.Inst.Store);
-                    try self.formatIndex(store.ptr, &lbuf);
-                    try self.formatIndex(store.val, &rbuf);
-                    try writer.print("[%{}] store({s}, {s})", .{ index, lbuf, rbuf });
-                },
-                .load => {
-                    const op = ir.insts.items(.data)[index].un_node_new.operand;
-                    try self.formatIndex(op, &lbuf);
-                    try writer.print("load({s})", .{lbuf});
-                },
                 .load_global => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
+                    const pl = ir.insts.items(.data)[index].un_node.operand;
                     const inst = ir.untyped_decls.get(pl).?;
                     const ident = try ir.interner.get(pl);
                     try self.formatIndex(inst, &lbuf);
@@ -402,18 +300,17 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("}})", .{});
                 },
                 .param => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const param = ir.extraData(pl, Hir.Inst.Param);
-
+                    const param = ir.get(index, .param);
                     const param_str = try ir.interner.get(param.name);
                     try self.formatIndex(param.ty, &lbuf);
                     try writer.print("param(\"{s}\", {s})", .{ param_str, lbuf });
                 },
-                .block => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const block = ir.extraData(pl, Hir.Inst.Block);
+                inline .block, .block_inline => |tag| {
+                    const block = ir.get(index, .block);
 
-                    try writer.print("[%{}]:", .{index});
+                    try writer.print("[%{}]", .{index});
+                    if (tag == .block_inline) try writer.print(" [inline]", .{});
+                    try writer.print(":", .{});
                     self.stream.indent();
                     try self.stream.newline();
 
@@ -429,22 +326,6 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
                     self.stream.dedent();
                     return;
-                },
-                .block_inline => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const block = ir.extraData(pl, Hir.Inst.Block);
-
-                    try writer.print("[%{}] [inline]:", .{index});
-                    self.stream.indent();
-                    try self.stream.newline();
-
-                    const insts = ir.block_slices[block.head];
-                    for (insts) |inst| {
-                        try self.renderInst(inst);
-                    }
-
-                    self.stream.dedent();
-                    try writer.print("}})", .{});
                 },
                 .branch_single => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
@@ -476,31 +357,6 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     // self.stream.dedent();
                     try writer.print("}})", .{});
                     return;
-                },
-                .ret_implicit => {
-                    const operand = ir.insts.items(.data)[index].un_tok.operand;
-                    try self.formatIndex(operand, &lbuf);
-                    try writer.print("ret_implicit({s})", .{lbuf});
-                },
-                .ret_node => {
-                    const operand = ir.insts.items(.data)[index].un_node_new.operand;
-                    try self.formatIndex(operand, &lbuf);
-                    try writer.print("ret_node({s})", .{lbuf});
-                },
-                .yield_implicit => {
-                    const operand = ir.insts.items(.data)[index].un_tok.operand;
-                    try self.formatIndex(operand, &lbuf);
-                    try writer.print("yield_implicit({s})", .{lbuf});
-                },
-                .yield_node => {
-                    const operand = ir.insts.items(.data)[index].un_node_new.operand;
-                    try self.formatIndex(operand, &lbuf);
-                    try writer.print("yield_node({s})", .{lbuf});
-                },
-                .yield_inline => {
-                    const operand = ir.insts.items(.data)[index].un_node_new.operand;
-                    try self.formatIndex(operand, &lbuf);
-                    try writer.print("yield_inline({s})", .{lbuf});
                 },
                 .loop => {
                     const pl = ir.insts.items(.data)[index].pl_node.pl;
@@ -583,14 +439,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         else => {},
                     }
                 },
-                .ty => {
-                    const ty = ir.insts.items(.data)[index].ty;
-                    try self.formatType(ty, &lbuf);
-                    try writer.print("type({s})", .{lbuf});
-                },
-                else => {
-                    try writer.print("{}", .{ir.insts.items(.tag)[index]});
-                },
+                else => try self.formatInst(index),
             }
 
             try self.stream.newline();
@@ -636,6 +485,52 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 else => unreachable, //return error.NotImplemented,
             }});
+        }
+
+        fn formatInst(self: *Self, inst: Hir.Index) !void {
+            const hir = self.hir;
+            const writer = self.stream.writer();
+
+            switch (hir.insts.items(.tag)[inst]) {
+                inline else => |tag| {
+                    try writer.print("{s}(", .{@tagName(tag)});
+
+                    const data = hir.get(inst, tag);
+                    const active_field = comptime Hir.activeDataField(tag);
+                    switch (active_field) {
+                        .int => try writer.print("{}", .{data.int}),
+                        .float => try writer.print("{}", .{data.float}),
+                        .ty => {
+                            var buf: [256]u8 = [_]u8{0} ** 256;
+                            try self.formatType(data.ty, &buf);
+                            try writer.print("{s}", .{buf});
+                        },
+                        .placeholder => {},
+                        .un_node,
+                        .un_tok,
+                        .pl_node,
+                        .pl_tok,
+                        => {
+                            const fields = std.meta.fields(@TypeOf(data));
+                            inline for (fields, 0..) |field, i| {
+                                if (!std.mem.eql(u8, field.name, "node") and !std.mem.eql(u8, field.name, "tok") and !std.mem.eql(u8, field.name, "pl")) {
+                                    const content = @field(data, field.name);
+                                    var lbuf: [256]u8 = [_]u8{0} ** 256;
+                                    try self.formatIndex(content, &lbuf);
+                                    try writer.print("{s}", .{lbuf});
+
+                                    if (i < fields.len - 1) {
+                                        try writer.print(", ", .{});
+                                    }
+                                }
+                            }
+                        },
+                        .node, .token => unreachable,
+                    }
+
+                    try writer.print(")", .{});
+                },
+            }
         }
     };
 }

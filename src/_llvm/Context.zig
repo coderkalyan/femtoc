@@ -1,4 +1,5 @@
 const std = @import("std");
+const Hir = @import("../Hir.zig");
 const Type = @import("../hir/type.zig").Type;
 
 pub const c = @cImport({
@@ -175,28 +176,35 @@ pub const Builder = struct {
         cmp_fgt,
     };
 
-    pub fn addCmp(builder: *Builder, kind: Cmp, lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
-        return switch (kind) {
-            .cmp_ieq => c.LLVMBuildICmp(builder.builder, c.LLVMIntEQ, lref, rref, ""),
-            .cmp_ine => c.LLVMBuildICmp(builder.builder, c.LLVMIntNE, lref, rref, ""),
+    pub fn addCmp(builder: *Builder, comptime tag: Hir.Inst.Tag, lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
+        return switch (tag) {
+            .icmp_eq => c.LLVMBuildICmp(builder.builder, c.LLVMIntEQ, lref, rref, ""),
+            .icmp_ne => c.LLVMBuildICmp(builder.builder, c.LLVMIntNE, lref, rref, ""),
 
-            .cmp_ule => c.LLVMBuildICmp(builder.builder, c.LLVMIntULE, lref, rref, ""),
-            .cmp_uge => c.LLVMBuildICmp(builder.builder, c.LLVMIntUGE, lref, rref, ""),
-            .cmp_ult => c.LLVMBuildICmp(builder.builder, c.LLVMIntULT, lref, rref, ""),
-            .cmp_ugt => c.LLVMBuildICmp(builder.builder, c.LLVMIntUGT, lref, rref, ""),
+            .icmp_ule => c.LLVMBuildICmp(builder.builder, c.LLVMIntULE, lref, rref, ""),
+            .icmp_uge => c.LLVMBuildICmp(builder.builder, c.LLVMIntUGE, lref, rref, ""),
+            .icmp_ult => c.LLVMBuildICmp(builder.builder, c.LLVMIntULT, lref, rref, ""),
+            .icmp_ugt => c.LLVMBuildICmp(builder.builder, c.LLVMIntUGT, lref, rref, ""),
 
-            .cmp_sle => c.LLVMBuildICmp(builder.builder, c.LLVMIntSLE, lref, rref, ""),
-            .cmp_sge => c.LLVMBuildICmp(builder.builder, c.LLVMIntSGE, lref, rref, ""),
-            .cmp_slt => c.LLVMBuildICmp(builder.builder, c.LLVMIntSLT, lref, rref, ""),
-            .cmp_sgt => c.LLVMBuildICmp(builder.builder, c.LLVMIntSGT, lref, rref, ""),
+            .icmp_sle => c.LLVMBuildICmp(builder.builder, c.LLVMIntSLE, lref, rref, ""),
+            .icmp_sge => c.LLVMBuildICmp(builder.builder, c.LLVMIntSGE, lref, rref, ""),
+            .icmp_slt => c.LLVMBuildICmp(builder.builder, c.LLVMIntSLT, lref, rref, ""),
+            .icmp_sgt => c.LLVMBuildICmp(builder.builder, c.LLVMIntSGT, lref, rref, ""),
 
-            .cmp_feq => c.LLVMBuildICmp(builder.builder, c.LLVMRealOEQ, lref, rref, ""),
-            .cmp_fne => c.LLVMBuildICmp(builder.builder, c.LLVMRealONE, lref, rref, ""),
+            .fcmp_le => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOLE, lref, rref, ""),
+            .fcmp_ge => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOGE, lref, rref, ""),
+            .fcmp_lt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOLT, lref, rref, ""),
+            .fcmp_gt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOGT, lref, rref, ""),
 
-            .cmp_fle => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOLE, lref, rref, ""),
-            .cmp_fge => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOGE, lref, rref, ""),
-            .cmp_flt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOLT, lref, rref, ""),
-            .cmp_fgt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOGT, lref, rref, ""),
+            .cmp_eq,
+            .cmp_ne,
+            .cmp_gt,
+            .cmp_ge,
+            .cmp_lt,
+            .cmp_le,
+            => @compileError("can't lower untyped comparison"),
+
+            else => unreachable,
         };
     }
 

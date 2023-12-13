@@ -40,8 +40,8 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
                         try editor.linkInst(_inst);
                     }
 
-                    const return_val = try editor.addNone();
-                    _ = try editor.addRetImplicit(return_val, undefined);
+                    const return_val = try editor.add(.none, .{});
+                    _ = try editor.add(.ret_implicit, .{ .operand = return_val, .tok = undefined });
                     try BlockEditor.updateBlock(hg, &editor, fn_decl.body);
                 }
             }

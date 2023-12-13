@@ -40,18 +40,18 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
                 };
             },
             .global_mut => ref: {
-                const op = hir.insts.items(.data)[inst].un_node_new.operand;
+                const op = hir.insts.items(.data)[inst].un_node.operand;
                 const g = dg.resolveInst(op);
                 c.LLVMSetGlobalConstant(g, 0);
                 break :ref g;
             },
             .yield_inline => {
-                const operand = hir.insts.items(.data)[inst].un_node_new.operand;
+                const operand = hir.insts.items(.data)[inst].un_node.operand;
                 return dg.resolveInst(operand);
             },
             .ty => continue,
             .link_extern => ref: {
-                const operand = hir.insts.items(.data)[inst].un_node_new.operand;
+                const operand = hir.insts.items(.data)[inst].un_node.operand;
                 const g = dg.resolveInst(operand);
                 c.LLVMSetLinkage(g, c.LLVMExternalLinkage);
                 break :ref g;

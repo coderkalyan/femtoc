@@ -11,109 +11,90 @@ const Hir = @import("../Hir.zig");
 const HirGen = @import("../HirGen.zig");
 const Value = @import("../value.zig").Value;
 const BlockEditor = @import("BlockEditor.zig");
+const Allocator = std.mem.Allocator;
+
+const StackAnalysis = struct {
+    hg: *HirGen,
+    arena: Allocator,
+    allocas: std.ArrayListUnmanaged(Hir.Index),
+
+    pub fn deinit(self: *StackAnalysis) void {
+        self.allocas.deinit(self.arena);
+    }
+
+    fn analyze(self: *StackAnalysis, block: Hir.Index) !void {
+        const hg = self.hg;
+        const block_data = hg.get(block, .block);
+        const slice = hg.block_slices.items[block_data.head];
+        var b = try BlockEditor.clone(hg, slice);
+        for (slice, 0..) |inst, i| {
+            if (hg.insts.items(.tag)[inst] == .push) {
+                const data = hg.get(inst, .push);
+                // unlike pushes, alloca instructions are strongly typed
+                const ty = try b.addType(try hg.resolveType(data.operand));
+                const alloca = try b.addAllocaUnlinked(ty, data.node);
+                // don't link this alloca in place, instead we want to
+                // collect them at the top of the function
+                try self.allocas.append(self.arena, alloca);
+                // and make sure anything using the push handle
+                // is moved over to the alloca
+                try b.replaceAllUsesWith(inst, alloca);
+                // replace the push in place with a store
+                const store = try b.addUnlinked(.store, .{
+                    .ptr = alloca,
+                    .val = data.operand,
+                    .node = data.node,
+                });
+
+                b.replaceInst(i, store);
+            }
+
+            try hg.explore(inst, analyze, .{self});
+        }
+
+        try BlockEditor.updateBlock(hg, &b, block);
+    }
+};
 
 pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
-    const module_pl = hg.insts.items(.data)[module_index].pl_node.pl;
-    const module_data = hg.extraData(module_pl, Hir.Inst.Module);
+    const module = hg.get(module_index, .module);
 
     var extra_index: u32 = 0;
-    while (extra_index < module_data.len * 2) : (extra_index += 2) {
-        const base = module_pl + 1;
+    while (extra_index < module.len * 2) : (extra_index += 2) {
+        const base = module.pl + 1;
         const inst = hg.extra.items[base + extra_index + 1];
-
         // load the inline block
-        const block_inline_pl = hg.insts.items(.data)[inst].pl_node.pl;
-        const block_inline = hg.extraData(block_inline_pl, Hir.Inst.Block);
-
-        const slice = hg.block_slices.items[block_inline.head];
-        for (slice) |block_inst| {
+        const block_inline = hg.get(inst, .block_inline);
+        const block_insts = hg.block_slices.items[block_inline.head];
+        for (block_insts) |block_inst| {
             if (hg.insts.items(.tag)[block_inst] == .constant) {
-                const const_data = hg.insts.items(.data)[block_inst];
-                const constant = hg.extraData(const_data.pl_node.pl, Hir.Inst.Constant);
+                const constant = hg.get(block_inst, .constant);
                 const ty = try hg.resolveType(constant.ty);
-
                 if (ty.kind() == .function) {
                     const val = hg.values.items[constant.val];
                     const payload = val.extended.cast(Value.Function).?;
-                    try processFunction(hg, payload.body);
+                    var analysis: StackAnalysis = .{
+                        .hg = hg,
+                        .arena = hg.arena,
+                        .allocas = std.ArrayListUnmanaged(Hir.Index){},
+                    };
+                    try analysis.analyze(payload.body);
+
+                    const data = hg.get(payload.body, .block);
+                    const slice = hg.block_slices.items[data.head];
+                    var b = try BlockEditor.clone(hg, slice);
+
+                    // insert the allocas after the params
+                    var i: u32 = 0;
+                    while (hg.insts.items(.tag)[b.insts.items[i]] == .param) : (i += 1) {}
+                    for (analysis.allocas.items) |alloca| {
+                        try b.insertInst(i, alloca);
+                        i += 1;
+                    }
+
+                    try BlockEditor.updateBlock(hg, &b, payload.body);
                 }
             }
         }
     }
-}
-
-fn processFunction(hg: *HirGen, body: Hir.Index) !void {
-    var allocas = std.ArrayListUnmanaged(Hir.Index){};
-    defer allocas.deinit(hg.arena);
-
-    try processBlock(hg, body, &allocas); // search through and replace pushes
-    // now recreate the block with all allocas at beginning
-    var b = try BlockEditor.init(hg);
-    const data = hg.insts.items(.data)[body];
-    const block_data = hg.extraData(data.pl_node.pl, Hir.Inst.Block);
-    const insts = hg.block_slices.items[block_data.head];
-    // params need to be first
-    for (insts) |inst| {
-        if (hg.insts.items(.tag)[inst] != .param) break;
-        try b.linkInst(inst);
-    }
-    for (allocas.items) |alloca| {
-        try b.linkInst(alloca);
-    }
-    for (insts) |inst| {
-        if (hg.insts.items(.tag)[inst] == .param) continue;
-        try b.linkInst(inst);
-    }
-
-    try BlockEditor.updateBlock(hg, &b, body);
-}
-
-fn processBlock(hg: *HirGen, block: Hir.Index, allocas: *std.ArrayListUnmanaged(Hir.Index)) !void {
-    const data = hg.insts.items(.data)[block];
-    const block_data = hg.extraData(data.pl_node.pl, Hir.Inst.Block);
-    var b = try BlockEditor.init(hg);
-    const insts = hg.block_slices.items[block_data.head];
-
-    for (insts) |inst| {
-        switch (hg.insts.items(.tag)[inst]) {
-            .push => {
-                const push_data = hg.insts.items(.data)[inst].un_node_new;
-                const ty = try b.addType(try hg.resolveType(push_data.operand));
-                const alloca = try b.addAllocaUnlinked(ty, push_data.node);
-                try allocas.append(hg.arena, alloca);
-
-                _ = try b.addStore(alloca, push_data.operand, push_data.node);
-                try b.addRemap(inst, alloca);
-            },
-            .branch_single => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const branch_single = hg.extraData(pl, Hir.Inst.BranchSingle);
-
-                try processBlock(hg, branch_single.exec_true, allocas);
-                try b.linkInst(inst);
-            },
-            .branch_double => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const branch_double = hg.extraData(pl, Hir.Inst.BranchDouble);
-
-                try processBlock(hg, branch_double.exec_true, allocas);
-                try processBlock(hg, branch_double.exec_false, allocas);
-                try b.linkInst(inst);
-            },
-            .loop => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const loop = hg.extraData(pl, Hir.Inst.Loop);
-
-                try processBlock(hg, loop.body, allocas);
-                try b.linkInst(inst);
-            },
-            .block => {
-                try processBlock(hg, inst, allocas);
-                try b.linkInst(inst);
-            },
-            else => try b.linkInst(inst),
-        }
-    }
-
-    try BlockEditor.updateBlock(hg, &b, block);
 }

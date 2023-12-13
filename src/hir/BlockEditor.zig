@@ -26,19 +26,31 @@ pub fn init(hg: *HirGen) !BlockEditor {
     };
 }
 
-// pub fn edit(hg: *HirGen, block: *const Hir.Inst.Block) !BlockEditor {
-// return .{ .hg = hg, .insts = .{
-//     .gpa = hg.gpa,
-//     .tape = &hg.block_tape,
-//     .head = block.head,
-//     .len = block.len,
-//     .cursor = .{ .node = block.head, .pos = 0 },
-//     .swap_next = null,
-// }, .scratch = .{} };
-// }
+pub fn clone(hg: *HirGen, insts: []Hir.Index) !BlockEditor {
+    var arraylist = std.ArrayListUnmanaged(Hir.Index){};
+    try arraylist.ensureUnusedCapacity(hg.gpa, insts.len);
+    arraylist.appendSliceAssumeCapacity(insts);
+
+    return .{
+        .hg = hg,
+        .insts = arraylist,
+        .remaps = .{},
+        .scratch = .{},
+    };
+}
 
 pub inline fn linkInst(b: *BlockEditor, inst: Hir.Index) !void {
     try b.insts.append(b.hg.gpa, inst);
+}
+
+// replaces an existing instruction (at a specified array index) with a new one
+// be very careful using this, if you're not sure just use addInst or linkInst
+pub inline fn replaceInst(b: *BlockEditor, index: usize, inst: Hir.Index) void {
+    b.insts.items[index] = inst;
+}
+
+pub inline fn insertInst(b: *BlockEditor, index: usize, inst: Hir.Index) !void {
+    try b.insts.insert(b.hg.gpa, index, inst);
 }
 
 pub fn addInst(b: *BlockEditor, inst: Inst) !Hir.Index {
@@ -55,6 +67,65 @@ pub inline fn numInsts(b: *BlockEditor) u32 {
 pub inline fn addRemap(b: *BlockEditor, src: Hir.Index, dest: Hir.Index) !void {
     // TODO: should we use arena?
     try b.remaps.put(b.hg.gpa, src, dest);
+}
+
+pub fn addInner(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Inst {
+    const active_field = comptime Hir.activeDataField(tag);
+    const inst: Hir.Inst = switch (active_field) {
+        .placeholder => .{ .tag = tag, .data = .{ .placeholder = {} } },
+        .int,
+        .float,
+        .ty,
+        .node,
+        .token,
+        => inst: {
+            const field_name = @tagName(active_field);
+            const result = @unionInit(Hir.Inst.Data, field_name, @field(data, field_name));
+            break :inst .{ .tag = tag, .data = result };
+        },
+        .un_node,
+        .un_tok,
+        => inst: {
+            const T = std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
+            var inner: T = undefined;
+            const fields = std.meta.fields(@TypeOf(data));
+            inline for (fields) |field| {
+                @field(inner, field.name) = @field(data, field.name);
+            }
+            const field_name = @tagName(active_field);
+            const result = @unionInit(Hir.Inst.Data, field_name, inner);
+            break :inst .{ .tag = tag, .data = result };
+        },
+        .pl_node => inst: {
+            const T = Hir.payloadType(tag);
+            var payload: T = undefined;
+            const fields = std.meta.fields(T);
+            inline for (fields) |field| {
+                @field(payload, field.name) = @field(data, field.name);
+            }
+            const pl = try b.hg.addExtra(payload);
+            break :inst .{ .tag = tag, .data = .{ .pl_node = .{ .pl = pl, .node = data.node } } };
+        },
+        .pl_tok => unreachable,
+    };
+
+    return inst;
+}
+
+pub fn add(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Index {
+    const inst = try b.addInner(tag, data);
+    return b.addInst(inst);
+}
+
+pub fn addUnlinked(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Index {
+    const inst = try b.addInner(tag, data);
+    return b.hg.addInstUnlinked(inst);
+}
+
+pub fn put(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag), index: Hir.Index) !void {
+    const inst = try b.addInner(tag, data);
+    b.hg.insts.items(.tag)[index] = inst.tag;
+    b.hg.insts.items(.data)[index] = inst.data;
 }
 
 pub fn addValue(b: *BlockEditor, val: Value) !u32 {
@@ -75,28 +146,7 @@ pub fn addType(b: *BlockEditor, _ty: Type) !Hir.Index {
 pub fn addPointerTy(b: *BlockEditor, pointee: Hir.Index, node: Node.Index) !Hir.Index {
     return b.addInst(.{
         .tag = .pointer_ty,
-        .data = .{ .un_node_new = .{ .node = node, .operand = pointee } },
-    });
-}
-
-pub fn addInt(b: *BlockEditor, int: u64) !Hir.Index {
-    return b.addInst(.{
-        .tag = .int,
-        .data = .{ .int = int },
-    });
-}
-
-pub fn addFloat(b: *BlockEditor, float: f64) !Hir.Index {
-    return b.addInst(.{
-        .tag = .float,
-        .data = .{ .float = float },
-    });
-}
-
-pub fn addNone(b: *BlockEditor) !Hir.Index {
-    return b.addInst(.{
-        .tag = .none,
-        .data = undefined,
+        .data = .{ .un_node = .{ .node = node, .operand = pointee } },
     });
 }
 
@@ -141,25 +191,6 @@ pub fn addFloatConstant(b: *BlockEditor, ty: Type, f: f64, node: Node.Index) !u3
     var payload = try b.hg.gpa.create(Value.F64);
     payload.* = .{ .float = f };
     return b.addConstant(ty, .{ .extended = &payload.base }, node);
-}
-
-pub fn addBinary(b: *BlockEditor, l: Hir.Index, r: Hir.Index, tag: Inst.Tag, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Binary{
-        .lref = l,
-        .rref = r,
-    });
-
-    return b.addInst(.{
-        .tag = tag,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addUnary(b: *BlockEditor, op: Hir.Index, tag: Inst.Tag, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = tag,
-        .data = .{ .un_node_new = .{ .operand = op, .node = node } },
-    });
 }
 
 pub fn addBlock(b: *BlockEditor, data_block: *BlockEditor, node: Node.Index) !Hir.Index {
@@ -236,6 +267,75 @@ pub fn updateBlock(hg: *HirGen, data_block: *BlockEditor, inst: Hir.Index) !void
     commitRemap(hg, &data_block.remaps, data.head);
 }
 
+fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime tag: Hir.Inst.Tag, inst: Hir.Index) error{OutOfMemory}!void {
+    const hg = b.hg;
+    const active_field = comptime Hir.activeDataField(tag);
+    switch (active_field) {
+        // nothing to do here, these instructions don't store inst references
+        .placeholder, .int, .float, .ty, .node, .token => {},
+        inline .un_node, .un_tok => {
+            // there's a single operand reference, replace it if it matches
+            var data = hg.get(inst, tag);
+            if (data.operand == old) {
+                data.operand = new;
+            }
+
+            // and "replace" the instruction
+            try b.put(tag, data, inst);
+        },
+        .pl_node, .pl_tok => {
+            var data = hg.get(inst, tag);
+            const payload_type = Hir.payloadType(tag);
+            const fields = switch (payload_type) {
+                Inst.Call => .{"ptr"},
+                Inst.Binary => .{ "lref", "rref" },
+                Inst.FnDecl => .{ "return_type", "body" },
+                Inst.Param => .{"ty"},
+                Inst.Store => .{ "ptr", "val" },
+                Inst.Coerce, Inst.Extend => .{ "val", "ty" },
+                Inst.Constant => .{"ty"},
+                Inst.BranchSingle => .{ "condition", "exec_true" },
+                Inst.BranchDouble => .{ "condition", "exec_true", "exec_false" },
+                Inst.Loop => .{ "condition", "body" },
+                Inst.Block => .{},
+                Inst.Module => .{},
+                else => unreachable,
+            };
+
+            inline for (fields) |field| {
+                if (@field(data, field) == old) {
+                    @field(data, field) = new;
+                }
+            }
+
+            // and "replace" the instruction
+            try b.put(tag, data, inst);
+        },
+    }
+
+    try hg.explore(inst, replaceBlockUsesWith, .{ b, old, new });
+}
+
+fn replaceBlockUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, block: Hir.Index) !void {
+    const hg = b.hg;
+    const block_data = hg.get(block, .block);
+    const insts = hg.block_slices.items[block_data.head];
+    for (insts) |inst| {
+        switch (hg.insts.items(.tag)[inst]) {
+            inline else => |tag| try b.replaceInstUsesWith(old, new, tag, inst),
+        }
+    }
+}
+
+pub fn replaceAllUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index) !void {
+    const hg = b.hg;
+    for (b.insts.items) |inst| {
+        switch (hg.insts.items(.tag)[inst]) {
+            inline else => |tag| try b.replaceInstUsesWith(old, new, tag, inst),
+        }
+    }
+}
+
 pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Index), head: u32) void {
     const slice = hg.block_slices.items[head];
     for (slice) |inst| {
@@ -307,7 +407,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             .link_extern,
             => {
                 // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_node_new.operand;
+                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
                 remapIndex(hg, remaps, op);
             },
             .store => {
@@ -389,7 +489,7 @@ pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir
             },
             .ret_node, .yield_node, .yield_inline => {
                 // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_node_new.operand;
+                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
                 remapIndex(hg, remaps, op);
             },
             .alloca, .load_global => {},
@@ -453,6 +553,38 @@ pub fn addFnDecl(b: *BlockEditor, params: []u32, return_type: Hir.Index, body: H
     });
 }
 
+pub fn addBinary(b: *BlockEditor, tag: Hir.Inst.Tag, lref: Hir.Index, rref: Hir.Index, node: Node.Index) !Hir.Index {
+    return switch (tag) {
+        inline .add,
+        .sub,
+        .mul,
+        .div,
+        .mod,
+        .cmp_eq,
+        .cmp_ne,
+        .cmp_gt,
+        .cmp_ge,
+        .cmp_lt,
+        .cmp_le,
+        .icmp_eq,
+        .icmp_ne,
+        .icmp_ugt,
+        .icmp_uge,
+        .icmp_ult,
+        .icmp_ule,
+        .icmp_sgt,
+        .icmp_sge,
+        .icmp_slt,
+        .icmp_sle,
+        .fcmp_gt,
+        .fcmp_ge,
+        .fcmp_lt,
+        .fcmp_le,
+        => |t| try b.add(t, .{ .lref = lref, .rref = rref, .node = node }),
+        else => unreachable,
+    };
+}
+
 pub fn addParam(b: *BlockEditor, name: u32, ty: Hir.Index, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const pl = try hg.addExtra(Inst.Param{
@@ -466,112 +598,6 @@ pub fn addParam(b: *BlockEditor, name: u32, ty: Hir.Index, node: Node.Index) !Hi
     });
 }
 
-// pub fn addDebugValue(b: *BlockEditor, val: Hir.Ref, name: u32, node: Node.Index) !Hir.Index {
-//     // TODO: enum and member naming
-//     const pl = try b.hg.addExtra(Inst.DebugValue{
-//         .name = name,
-//         .value = val,
-//     });
-//
-//     return b.addInst(.{
-//         .tag = .dbg_value,
-//         .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-//     });
-// }
-
-pub fn addPush(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .push,
-        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
-    });
-}
-
-pub fn addGlobalMut(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .global_mut,
-        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
-    });
-}
-
-pub fn addLoad(b: *BlockEditor, ptr: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .load,
-        .data = .{ .un_node_new = .{ .operand = ptr, .node = node } },
-    });
-}
-
-pub fn addLoadGlobal(b: *BlockEditor, decl: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .load_global,
-        .data = .{ .pl_node = .{ .pl = decl, .node = node } },
-    });
-}
-
-pub fn addStore(b: *BlockEditor, ptr: Hir.Index, val: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Store{
-        .ptr = ptr,
-        .val = val,
-    });
-
-    return b.addInst(.{
-        .tag = .store,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addBranchSingle(b: *BlockEditor, cond: Hir.Index, exec: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.BranchSingle{
-        .condition = cond,
-        .exec_true = exec,
-    });
-
-    return b.addInst(.{
-        .tag = .branch_single,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addBranchDouble(b: *BlockEditor, cond: Hir.Index, t: Hir.Index, f: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.BranchDouble{
-        .condition = cond,
-        .exec_true = t,
-        .exec_false = f,
-    });
-
-    return b.addInst(.{
-        .tag = .branch_double,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addRetNode(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .ret_node,
-        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
-    });
-}
-
-pub fn addRetImplicit(b: *BlockEditor, val: Hir.Index, tok: Ast.TokenIndex) !Hir.Index {
-    return b.addInst(.{
-        .tag = .ret_implicit,
-        .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
-    });
-}
-
-pub fn addYieldImplicit(b: *BlockEditor, val: Hir.Index, tok: Ast.TokenIndex) !Hir.Index {
-    return b.addInst(.{
-        .tag = .yield_implicit,
-        .data = .{ .un_tok = .{ .operand = val, .tok = tok } },
-    });
-}
-
-pub fn addYieldInline(b: *BlockEditor, val: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .yield_inline,
-        .data = .{ .un_node_new = .{ .operand = val, .node = node } },
-    });
-}
-
 pub fn addLoop(b: *BlockEditor, cond: Hir.Index, body: Hir.Index, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Inst.Loop{
         .condition = cond,
@@ -581,20 +607,6 @@ pub fn addLoop(b: *BlockEditor, cond: Hir.Index, body: Hir.Index, node: Node.Ind
     return b.addInst(.{
         .tag = .loop,
         .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addBreak(b: *BlockEditor, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .loop_break,
-        .data = .{ .node = node },
-    });
-}
-
-pub fn addLinkExtern(b: *BlockEditor, ref: Hir.Index, node: Node.Index) !Hir.Index {
-    return b.addInst(.{
-        .tag = .link_extern,
-        .data = .{ .un_node_new = .{ .operand = ref, .node = node } },
     });
 }
 
@@ -637,6 +649,6 @@ pub fn addFpext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index
 pub fn addAllocaUnlinked(b: *BlockEditor, ty: Hir.Index, node: Node.Index) !Hir.Index {
     return b.hg.addInstUnlinked(.{
         .tag = .alloca,
-        .data = .{ .un_node_new = .{ .operand = ty, .node = node } },
+        .data = .{ .un_node = .{ .operand = ty, .node = node } },
     });
 }
