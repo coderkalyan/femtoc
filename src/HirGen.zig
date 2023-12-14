@@ -916,7 +916,7 @@ fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     return b.add(.store, .{ .ptr = ptr, .val = val, .node = node });
 }
 
-fn branchCondition(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
+fn conditionExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const ref = try valExpr(b, scope, node);
     const condition_type = try b.addType(Type.Common.u1_type);
     return try coerce(b, scope, ref, condition_type, node);
@@ -952,7 +952,7 @@ fn ifSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     defer block_scope.deinit();
     const s = &block_scope.base;
 
-    const condition = try branchCondition(b, scope, if_simple.condition);
+    const condition = try conditionExpr(b, scope, if_simple.condition);
     const exec = try block(&block_scope.editor, s, if_simple.exec_true, true);
     return b.add(.branch_single, .{ .condition = condition, .exec_true = exec, .node = node });
 }
@@ -960,7 +960,7 @@ fn ifSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 fn ifElse(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_else = b.hg.tree.data(node).if_else;
 
-    const condition = try branchCondition(b, scope, if_else.condition);
+    const condition = try conditionExpr(b, scope, if_else.condition);
     const exec = b.hg.tree.extraData(if_else.exec, Node.IfElse);
     const exec_true = block: {
         var block_scope = try Block.init(b, scope);
@@ -983,7 +983,7 @@ fn ifElse(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 fn ifChain(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const if_chain = b.hg.tree.data(node).if_chain;
 
-    const condition = try branchCondition(b, scope, if_chain.condition);
+    const condition = try conditionExpr(b, scope, if_chain.condition);
     const chain = b.hg.tree.extraData(if_chain.chain, Node.IfChain);
     const exec_true = block: {
         var block_scope = try Block.init(b, scope);
@@ -1048,9 +1048,7 @@ fn loopConditional(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index 
         defer block_scope.deinit();
         const s = &block_scope.base;
 
-        const condition_inner = try valExpr(&block_scope.editor, s, loop_conditional.condition);
-        const condition_type = try b.addType(Type.Common.u1_type);
-        const condition = try coerce(&block_scope.editor, s, condition_inner, condition_type, node);
+        const condition = try conditionExpr(&block_scope.editor, s, loop_conditional.condition);
         _ = try block_scope.editor.add(.yield_implicit, .{ .operand = condition, .tok = undefined });
         break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
