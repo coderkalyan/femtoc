@@ -43,6 +43,7 @@ pub const Inst = struct {
         // TODO: why do we need this instead of types[]?
         ty,
         pointer_ty,
+        param_type_of,
         // declare a new typed immediate constant
         // data.pl_node.pl = Inst.Constant
         constant,
@@ -249,7 +250,8 @@ pub const Inst = struct {
 
     pub const Call = struct {
         ptr: Index,
-        args_len: u32,
+        args_start: ExtraIndex,
+        args_end: ExtraIndex,
     };
 
     pub const Binary = struct {
@@ -277,13 +279,13 @@ pub const Inst = struct {
     };
 
     pub const Coerce = struct {
-        val: Index,
         ty: Index,
+        val: Index,
     };
 
     pub const Extend = struct {
-        val: Index,
         ty: Index,
+        val: Index,
     };
 
     pub const Constant = struct {
@@ -314,6 +316,11 @@ pub const Inst = struct {
 
     pub const Module = struct {
         len: u32,
+    };
+
+    pub const ParamType = struct {
+        ptr: Index,
+        param_index: u32,
     };
 
     // pub const DebugValue = struct {
@@ -376,6 +383,7 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .branch_double,
         .loop,
         .module,
+        .param_type_of,
         => .pl_node,
         .neg,
         .log_not,
@@ -446,6 +454,7 @@ pub fn payloadType(comptime tag: Inst.Tag) type {
         .branch_double => Inst.BranchDouble,
         .loop => Inst.Loop,
         .module => Inst.Module,
+        .param_type_of => Inst.ParamType,
         else => {
             @compileLog(tag);
             unreachable;
@@ -713,6 +722,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .fn_decl,
         .module,
         .pointer_ty,
+        .param_type_of,
         => |tag| {
             std.debug.print("%{}: {}\n", .{ index, tag });
             const out = std.io.getStdOut();

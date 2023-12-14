@@ -355,7 +355,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("false ", .{});
                     try self.renderInst(branch_double.exec_false);
                     // self.stream.dedent();
-                    try writer.print("}})", .{});
+                    try writer.print("}}", .{});
+                    try self.stream.newline();
                     return;
                 },
                 .loop => {
@@ -381,9 +382,9 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.formatIndex(call.ptr, &lbuf);
                     try writer.print("call({s}", .{lbuf});
 
-                    var extra_index: u32 = 0;
-                    while (extra_index < call.args_len) : (extra_index += 1) {
-                        const arg = ir.extra_data[pl + 2 + extra_index];
+                    var extra_index: u32 = call.args_start;
+                    while (extra_index < call.args_end) : (extra_index += 1) {
+                        const arg = ir.extra_data[extra_index];
                         try self.formatIndex(arg, &rbuf);
                         try writer.print(", {s}", .{rbuf});
                     }

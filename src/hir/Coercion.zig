@@ -10,13 +10,13 @@ pub const Error = error{
 };
 
 const Coercion = @This();
-// pub const Coercion = struct {
 src_block: *BlockEditor,
 b: *BlockEditor,
 gpa: Allocator,
 coerce_inst: ?Hir.Index,
 src: Hir.Index,
 src_type: Type,
+dest_type_ref: Hir.Index,
 dest_type: Type,
 
 pub fn coerce(self: *Coercion) !Hir.Index {
@@ -41,7 +41,7 @@ fn uint(self: *Coercion) !Hir.Index {
                 return error.Truncated;
             }
             const constant = try b.add(.constant, .{
-                .ty = try b.addType(self.dest_type),
+                .ty = self.dest_type_ref,
                 .val = try b.addIntValue(self.dest_type, val),
                 .node = undefined, // TODO: node annotation
             });
@@ -53,10 +53,11 @@ fn uint(self: *Coercion) !Hir.Index {
         // can coerce only if the destination uint is larger (same size would be caught earlier)
         .uint => {
             if (self.dest_type.basic.width < self.src_type.basic.width) {
+                std.debug.print("src: %{} = {}, dest: {} (coerce inst = %{?})\n", .{ self.src, self.src_type.basic.width, self.dest_type.basic.width, self.coerce_inst });
                 return error.Truncated;
             }
             const zext = try b.add(.zext, .{
-                .ty = try b.addType(self.dest_type),
+                .ty = self.dest_type_ref,
                 .val = self.src,
                 .node = undefined, // TODO: node annotation
             });
@@ -65,10 +66,6 @@ fn uint(self: *Coercion) !Hir.Index {
         },
         // could overflow/underflow, so not allowed
         .sint => {
-            // try hg.errors.append(hg.gpa, .{
-            //     .tag = .coerce_sint_to_uint,
-            //     .token =
-            // });
             return error.Truncated;
         },
         // lossy
@@ -90,7 +87,7 @@ fn sint(self: *Coercion) !Hir.Index {
                 return error.Truncated;
             }
             const constant = try b.add(.constant, .{
-                .ty = try b.addType(self.dest_type),
+                .ty = self.dest_type_ref,
                 .val = try b.addIntValue(self.dest_type, val),
                 .node = undefined, // TODO: node annotation
             });
@@ -104,7 +101,7 @@ fn sint(self: *Coercion) !Hir.Index {
                 return error.Truncated;
             }
             const constant = try b.add(.constant, .{
-                .ty = try b.addType(self.dest_type),
+                .ty = self.dest_type_ref,
                 .val = try b.addIntValue(self.dest_type, @bitCast(val)),
                 .node = undefined, // TODO: node annotation
             });
@@ -119,7 +116,7 @@ fn sint(self: *Coercion) !Hir.Index {
                 return error.Truncated;
             }
             const sext = try b.add(.sext, .{
-                .ty = try b.addType(self.dest_type),
+                .ty = self.dest_type_ref,
                 .val = self.src,
                 .node = undefined, // TODO: node annotation
             });
@@ -143,7 +140,7 @@ fn float(self: *Coercion) !Hir.Index {
         .comptime_float => {
             const val: f64 = hg.instToFloat(self.src);
             const constant = try b.add(.constant, .{
-                .ty = try b.addType(self.dest_type),
+                .ty = self.dest_type_ref,
                 .val = try b.addFloatValue(val),
                 .node = undefined, // TODO: node annotation
             });
@@ -158,7 +155,7 @@ fn float(self: *Coercion) !Hir.Index {
                 return error.Truncated;
             }
             const fpext = try b.add(.fpext, .{
-                .ty = try b.addType(self.dest_type),
+                .ty = self.dest_type_ref,
                 .val = self.src,
                 .node = undefined, // TODO: node annotation
             });
@@ -174,28 +171,3 @@ fn maybeReplaceWith(self: *Coercion, new: Hir.Index) !void {
         try self.src_block.replaceAllUsesWith(old, new);
     }
 }
-// };
-
-// pub fn coerce(src_block: *BlockEditor, b: *BlockEditor, inst: Hir.Index, src: Hir.Index, dest_type: Type) !void {
-//     // if the source has the dest type, this is a nop
-//     const src_type = try b.hg.resolveType(src);
-//     if (src_type.eql(dest_type)) return;
-//
-//     // otherwise, dispatch a coercion function depending on the destination type
-//     var info = Coercion{
-//         .src_block = src_block,
-//         .b = b,
-//         .gpa = b.hg.gpa,
-//         .coerce_inst = inst,
-//         .src = src,
-//         .src_type = src_type,
-//         .dest_type = dest_type,
-//     };
-//
-//     return switch (dest_type.kind()) {
-//         .uint => info.uint(),
-//         .sint => info.sint(),
-//         .float => info.float(),
-//         else => error.NotImplemented,
-//     };
-// }

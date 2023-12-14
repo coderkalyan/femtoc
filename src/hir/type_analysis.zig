@@ -92,6 +92,7 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
             // just re-link these
             => try b.linkInst(inst),
             .pointer_ty => try pointerTy(&analysis, inst),
+            .param_type_of => try paramTypeOf(&analysis, inst),
             .cmp_eq,
             .cmp_ne,
             .cmp_gt,
@@ -180,6 +181,7 @@ fn coerce(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const src_type = try hg.resolveType(data.val);
     const dest_type = try hg.resolveType(data.ty);
     if (src_type.eql(dest_type)) {
+        std.debug.print("%{} coerce is eql: => %{}\n", .{ inst, data.val });
         try analysis.src_block.replaceAllUsesWith(inst, data.val);
         return;
     }
@@ -191,6 +193,7 @@ fn coerce(analysis: *BlockAnalysis, inst: Hir.Index) !void {
         .coerce_inst = inst,
         .src = data.val,
         .src_type = src_type,
+        .dest_type_ref = data.ty,
         .dest_type = dest_type,
     };
     _ = try coercion.coerce();
@@ -209,6 +212,7 @@ pub fn coerceInnerImplicit(analysis: *BlockAnalysis, src: Hir.Index, dest_type: 
         .coerce_inst = null,
         .src = src,
         .src_type = src_type,
+        .dest_type_ref = try b.addType(dest_type),
         .dest_type = dest_type,
     };
     return coercion.coerce();
@@ -621,7 +625,7 @@ fn call(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     }
 
     const func_type = addr_type.extended.cast(Type.Function).?;
-    if (func_type.param_types.len != call_data.args_len) {
+    if (func_type.param_types.len != (call_data.args_end - call_data.args_start)) {
         // incorrect number of arguments to function call
         try hg.errors.append(hg.gpa, .{
             .tag = .call_argcount,
@@ -630,21 +634,21 @@ fn call(analysis: *BlockAnalysis, inst: Hir.Index) !void {
         return error.HandledUserError;
     }
 
-    const src_args = hg.extra.items[call_data.pl + 2 .. call_data.pl + 2 + call_data.args_len];
-    for (src_args, func_type.param_types, 0..) |src_arg, param_type, i| {
-        // identify the type of the ith parameter of the function type
-        // and coerce the src_arg to that type
-        _ = i;
-        // TODO: get rid of this
-        _ = try coerceInnerImplicit(analysis, src_arg, param_type);
-    }
+    const src_args = hg.extra.items[call_data.args_start..call_data.args_end];
+    // for (src_args, func_type.param_types, 0..) |src_arg, param_type, i| {
+    //     // identify the type of the ith parameter of the function type
+    //     // and coerce the src_arg to that type
+    //     // TODO: get rid of this
+    //     std.debug.print("coercing %{} to {}\n", .{ src_arg, param_type.basic });
+    //     src_args[i] = try coerceInnerImplicit(analysis, src_arg, param_type);
+    // }
 
     // const dest_args = try hg.arena.alloc(u32, call_data.args_len);
-    const updated_data = hg.get(inst, .call);
-    const dest_args = hg.extra.items[updated_data.pl + 2 .. updated_data.pl + 2 + updated_data.args_len];
+    // const updated_data = hg.get(inst, .call);
+    // const dest_args = hg.extra.items[updated_data.pl + 2 .. updated_data.pl + 2 + updated_data.args_len];
     // defer hg.arena.free(dest_args);
 
-    const new_call = try b.addCall(call_data.ptr, dest_args, call_data.node);
+    const new_call = try b.addCall(call_data.ptr, src_args, call_data.node);
     try analysis.src_block.replaceAllUsesWith(inst, new_call);
 }
 
@@ -659,5 +663,16 @@ fn pointerTy(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const pointer: Type = .{ .extended = &inner.base };
 
     const new_type = try b.add(.ty, .{ .ty = pointer });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
+fn paramTypeOf(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .param_type_of);
+    const ptr_type = (try hg.resolveType(data.ptr)).extended.cast(Type.Function).?;
+    const param_type = ptr_type.param_types[data.param_index];
+
+    const new_type = try b.add(.ty, .{ .ty = param_type });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }

@@ -34,6 +34,8 @@ fn resolveInst(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
         // via the name
         return codegen.global_map.get(data.operand).?;
     } else {
+        if (codegen.map.get(inst) == null)
+            std.debug.print("resolving %{}\n", .{inst});
         return codegen.map.get(inst).?;
     }
 }
@@ -334,9 +336,9 @@ fn call(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.extraData(pl, Hir.Inst.Call);
 
     const addr = codegen.resolveInst(data.ptr);
-    const args = try codegen.arena.alloc(c.LLVMValueRef, data.args_len);
+    const args = try codegen.arena.alloc(c.LLVMValueRef, data.args_end - data.args_start);
     defer codegen.arena.free(args);
-    const hir_args = hir.extra_data[pl + 2 .. pl + 2 + data.args_len];
+    const hir_args = hir.extra_data[data.args_start..data.args_end];
     for (hir_args, 0..) |arg, i| {
         args[i] = codegen.resolveInst(arg);
     }

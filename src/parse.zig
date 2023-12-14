@@ -423,12 +423,12 @@ const Parser = struct {
         };
     }
 
-    fn expectType(p: *Parser) !Node.Index {
+    fn expectType(p: *Parser) Error!Node.Index {
         // parses a type as either an named identifier (u32, Point),
         // function prototype, or aggregate prototype
         var inner = switch (p.token_tags[p.index]) {
             // .k_struct => p.parseStructProto(),
-            // .k_fn => p.expectFnProto(),
+            .k_fn => try p.expectFnType(),
             .ident => node: {
                 const ident_token = try p.expectToken(.ident);
                 break :node try p.addNode(.{
@@ -465,6 +465,29 @@ const Parser = struct {
                 },
                 else => return inner,
             };
+        }
+    }
+
+    fn expectFnType(p: *Parser) !Node.Index {
+        const fn_token = try p.expectToken(.k_fn);
+        const params = try p.expectParamList();
+        if (p.expectType()) |return_ty| {
+            return p.addNode(.{
+                .main_token = fn_token,
+                .data = .{
+                    .fn_type = try p.addExtra(Node.FnSignature{
+                        .params_start = params.start,
+                        .params_end = params.end,
+                        .return_ty = return_ty,
+                    }),
+                },
+            });
+        } else |err| switch (err) {
+            Error.UnexpectedToken => {
+                try p.errors.append(.{ .tag = .missing_return_type, .token = p.index });
+                return Error.HandledUserError;
+            },
+            else => return err,
         }
     }
 
@@ -511,7 +534,7 @@ const Parser = struct {
         }
     }
 
-    fn expectParamList(p: *Parser) !Node.ExtraRange {
+    fn expectParamList(p: *Parser) Error!Node.ExtraRange {
         _ = try p.expectToken(.l_paren);
 
         // since each parameter may create multiple nodes (depending on type complexity)

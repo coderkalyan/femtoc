@@ -670,8 +670,15 @@ fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 
     const arg_nodes = b.hg.tree.extra_data[call_expr.args_start..call_expr.args_end];
     try b.scratch.ensureUnusedCapacity(b.hg.arena, arg_nodes.len);
-    for (arg_nodes) |arg_node| {
-        const arg = try valExpr(b, scope, arg_node);
+    for (arg_nodes, 0..) |arg_node, i| {
+        const arg_inner = try valExpr(b, scope, arg_node);
+        const param_index: u32 = @intCast(i);
+        const param_type = try b.add(.param_type_of, .{
+            .ptr = ptr,
+            .param_index = param_index,
+            .node = arg_node,
+        });
+        const arg = try b.add(.coerce, .{ .ty = param_type, .val = arg_inner, .node = arg_node });
         b.scratch.appendAssumeCapacity(arg);
     }
 
@@ -723,20 +730,12 @@ fn block(b: *BlockEditor, scope: *Scope, node: Node.Index, comptime add_unlinked
 
 fn coerce(b: *BlockEditor, s: *Scope, val: Hir.Index, dest_ty: Hir.Index, node: Node.Index) !Hir.Index {
     _ = s;
-    const coerce_data = try b.hg.addExtra(Inst.Coerce{
-        .val = val,
-        .ty = dest_ty,
-    });
-
     // generate a "type validation" marker instruction
     // this is a passthrough which takes in the above value reference
     // and the type reference and returns the value reference
     // semantic analysis will validate that the type is as it should be
     // and then remove this instruction in the mir
-    return b.addInst(.{
-        .tag = .coerce,
-        .data = .{ .pl_node = .{ .node = node, .pl = coerce_data } },
-    });
+    return b.add(.coerce, .{ .val = val, .ty = dest_ty, .node = node });
 }
 
 fn constDecl(b: *BlockEditor, s: *Scope, node: Node.Index) !Hir.Index {

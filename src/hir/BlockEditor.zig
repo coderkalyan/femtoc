@@ -330,6 +330,7 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                 Inst.Loop => .{ "condition", "body" },
                 Inst.Block => .{},
                 Inst.Module => .{},
+                Inst.ParamType => .{"ptr"},
                 else => unreachable,
             };
 
@@ -341,6 +342,19 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
 
             // and "replace" the instruction
             try b.put(tag, data, inst);
+
+            switch (tag) {
+                .call => {
+                    data = hg.get(inst, .call);
+                    const old_args = hg.extra.items[data.args_start..data.args_end];
+                    for (old_args, 0..) |old_arg, i| {
+                        if (old_arg == old) {
+                            old_args[i] = new;
+                        }
+                    }
+                },
+                else => {},
+            }
         },
     }
 
@@ -375,15 +389,15 @@ pub fn commit(b: *BlockEditor) Inst.Block {
 }
 
 pub fn addCall(b: *BlockEditor, ptr: Hir.Index, args: []u32, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Call{
-        .ptr = ptr,
-        .args_len = @intCast(args.len),
-    });
+    const args_start: u32 = @intCast(b.hg.extra.items.len);
     try b.hg.extra.appendSlice(b.hg.gpa, args);
+    const args_end: u32 = @intCast(b.hg.extra.items.len);
 
-    return b.addInst(.{
-        .tag = .call,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
+    return b.add(.call, .{
+        .ptr = ptr,
+        .args_start = args_start,
+        .args_end = args_end,
+        .node = node,
     });
 }
 
