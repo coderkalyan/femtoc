@@ -53,6 +53,10 @@ pub inline fn insertInst(b: *BlockEditor, index: usize, inst: Hir.Index) !void {
     try b.insts.insert(b.hg.gpa, index, inst);
 }
 
+pub inline fn removeInst(b: *BlockEditor, index: usize) !void {
+    _ = b.insts.orderedRemove(index);
+}
+
 pub fn addInst(b: *BlockEditor, inst: Inst) !Hir.Index {
     const index = try b.hg.addInstUnlinked(inst);
     try b.linkInst(index);
@@ -122,6 +126,12 @@ pub fn addUnlinked(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstDa
     return b.hg.addInstUnlinked(inst);
 }
 
+pub fn insert(b: *BlockEditor, i: usize, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Index {
+    const index = try b.addUnlinked(tag, data);
+    try b.insertInst(i, index);
+    return index;
+}
+
 pub fn put(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag), index: Hir.Index) !void {
     const inst = try b.addInner(tag, data);
     b.hg.insts.items(.tag)[index] = inst.tag;
@@ -187,10 +197,42 @@ pub fn addIntConstant(b: *BlockEditor, ty: Type, int: u64, node: Node.Index) !u3
     }
 }
 
+pub fn addIntValue(b: *BlockEditor, ty: Type, int: u64) !u32 {
+    if (int == 0) return b.addValue(.{ .basic = .{ .kind = .zero } });
+    if (int == 1) return b.addValue(.{ .basic = .{ .kind = .one } });
+
+    const hg = b.hg;
+    if (ty.basic.kind == .comptime_uint or ty.basic.kind == .comptime_sint) {
+        if (int <= std.math.maxInt(u32)) {
+            var payload = try hg.gpa.create(Value.U32);
+            payload.* = .{ .int = @truncate(int) };
+            return b.addValue(.{ .extended = &payload.base });
+        } else {
+            var payload = try hg.gpa.create(Value.U64);
+            payload.* = .{ .int = int };
+            return b.addValue(.{ .extended = &payload.base });
+        }
+    } else if (ty.basic.width <= 32) {
+        var payload = try hg.gpa.create(Value.U32);
+        payload.* = .{ .int = @truncate(int) };
+        return b.addValue(.{ .extended = &payload.base });
+    } else {
+        var payload = try b.hg.gpa.create(Value.U64);
+        payload.* = .{ .int = int };
+        return b.addValue(.{ .extended = &payload.base });
+    }
+}
+
 pub fn addFloatConstant(b: *BlockEditor, ty: Type, f: f64, node: Node.Index) !u32 {
     var payload = try b.hg.gpa.create(Value.F64);
     payload.* = .{ .float = f };
     return b.addConstant(ty, .{ .extended = &payload.base }, node);
+}
+
+pub fn addFloatValue(b: *BlockEditor, float: f64) !u32 {
+    var payload = try b.hg.gpa.create(Value.F64);
+    payload.* = .{ .float = float };
+    return b.addValue(.{ .extended = &payload.base });
 }
 
 pub fn addBlock(b: *BlockEditor, data_block: *BlockEditor, node: Node.Index) !Hir.Index {

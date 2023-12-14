@@ -14,78 +14,113 @@ const HirGen = @import("../HirGen.zig");
 const BlockEditor = @import("BlockEditor.zig");
 const Type = @import("type.zig").Type;
 const Value = @import("../value.zig").Value;
-const coercion = @import("coercion.zig");
+// const coercion = @import("coercion.zig");
+const Coercion = @import("Coercion.zig");
+
+const BlockAnalysis = struct {
+    hg: *HirGen,
+    // copy of block we are analyzing, used to update references
+    src_block: *BlockEditor,
+    // where all new instructions go (replaced or copied)
+    b: *BlockEditor,
+    block_index: Hir.Index,
+};
+
+const Error = error{
+    OutOfMemory,
+    InvalidCoercion,
+    NotImplemented,
+    Truncated,
+    HandledUserError,
+};
 
 pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
-    const module_pl = hg.insts.items(.data)[module_index].pl_node.pl;
-    const module_data = hg.extraData(module_pl, Hir.Inst.Module);
+    const module = hg.get(module_index, .module);
 
     var inner_blocks = std.ArrayListUnmanaged(u32){};
     defer inner_blocks.deinit(hg.arena);
 
     var extra_index: u32 = 0;
-    while (extra_index < module_data.len * 2) : (extra_index += 2) {
-        const base = module_pl + 1;
+    while (extra_index < module.len * 2) : (extra_index += 2) {
+        const base = module.pl + 1;
+        const inst = hg.extra.items[base + extra_index + 1];
+        try analyze(hg, false, inst);
+    }
+
+    // second pass
+    extra_index = 0;
+    while (extra_index < module.len * 2) : (extra_index += 2) {
+        const base = module.pl + 1;
         const inst = hg.extra.items[base + extra_index + 1];
 
-        // load the inline block
-        const block_inline_pl = hg.insts.items(.data)[inst].pl_node.pl;
-        const block_inline = hg.extraData(block_inline_pl, Hir.Inst.Block);
-
-        var editor = try BlockEditor.init(hg);
-
-        const slice = hg.block_slices.items[block_inline.head];
+        const block_data = hg.get(inst, .block);
+        const slice = hg.block_slices.items[block_data.head];
         for (slice) |block_inst| {
-            try processInst(&editor, block_inst, &inner_blocks);
-            // TODO: we need a better solution to this
-            BlockEditor.commitRemap(hg, &editor.remaps, block_inline.head);
+            try hg.explore(block_inst, analyze, .{ hg, true });
         }
-
-        try BlockEditor.updateBlock(hg, &editor, inst);
-    }
-
-    // for (inner_blocks.items) |inst| {
-    while (inner_blocks.items.len > 0) {
-        const inst = inner_blocks.pop();
-        const block_inline_pl = hg.insts.items(.data)[inst].pl_node.pl;
-        const block_inline = hg.extraData(block_inline_pl, Hir.Inst.Block);
-
-        var editor = try BlockEditor.init(hg);
-
-        const slice = hg.block_slices.items[block_inline.head];
-        for (slice) |block_inst| {
-            try processInst(&editor, block_inst, &inner_blocks);
-            // TODO: we need a better solution to this
-            BlockEditor.commitRemap(hg, &editor.remaps, block_inline.head);
-        }
-
-        try BlockEditor.updateBlock(hg, &editor, inst);
     }
 }
 
-fn processInst(b: *BlockEditor, inst: Hir.Index, inner_blocks: *std.ArrayListUnmanaged(Hir.Index)) !void {
-    const hg = b.hg;
-    switch (hg.insts.items(.tag)[inst]) {
-        .fn_decl => try fnDecl(b, inst, inner_blocks),
-        .int => _ = try integer(b, inst),
-        .float => _ = try float(b, inst),
-        .coerce => try coerce(b, inst),
-        .add, .sub, .mul, .div, .mod => try binaryArithOp(b, inst),
-        .cmp_eq, .cmp_ne, .cmp_gt, .cmp_ge, .cmp_lt, .cmp_le => try binaryCmp(b, inst),
-        .branch_single => try branchSingle(b, inst, inner_blocks),
-        .branch_double => try branchDouble(b, inst, inner_blocks),
-        .loop => try loop(b, inst, inner_blocks),
-        .block => try block(b, inst, inner_blocks),
-        .call => try call(b, inst),
-        .pointer_ty => try pointerTy(b, inst),
-        else => try b.linkInst(inst),
+fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
+    const block_data = hg.get(block, .block);
+    const slice = hg.block_slices.items[block_data.head];
+    var src_block = try BlockEditor.clone(hg, slice);
+    var b = try BlockEditor.init(hg);
+    var analysis = BlockAnalysis{
+        .hg = hg,
+        .src_block = &src_block,
+        .b = &b,
+        .block_index = block,
+    };
+
+    for (slice, 0..) |inst, i| {
+        _ = i;
+        switch (hg.insts.items(.tag)[inst]) {
+            .int => try integer(&analysis, inst),
+            .float => try float(&analysis, inst),
+            .coerce => try coerce(&analysis, inst),
+            .fn_decl => try fnDecl(&analysis, inst),
+            .call => try call(&analysis, inst),
+            .branch_single,
+            .branch_double,
+            .loop,
+            .block,
+            .yield_node,
+            .yield_implicit,
+            .yield_inline,
+            .global_mut,
+            // just re-link these
+            => try b.linkInst(inst),
+            .pointer_ty => try pointerTy(&analysis, inst),
+            .cmp_eq,
+            .cmp_ne,
+            .cmp_gt,
+            .cmp_ge,
+            .cmp_lt,
+            .cmp_le,
+            => try binaryCmp(&analysis, inst),
+            inline .add,
+            .sub,
+            .mul,
+            .div,
+            .mod,
+            => |tag| try binaryArithOp(&analysis, inst, tag),
+            // else => {},
+            // TODO: remove else clause and switch explicitly
+            // to avoid copying bad instructions
+            else => try b.linkInst(inst),
+        }
+
+        if (explore) try hg.explore(inst, analyze, .{ hg, explore });
     }
+
+    try BlockEditor.updateBlock(hg, analysis.b, block);
 }
 
-fn fnDecl(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
-    const hg = b.hg;
-    const fn_data = hg.insts.items(.data)[inst].pl_node;
-    const fn_decl = hg.extraData(fn_data.pl, Hir.Inst.FnDecl);
+fn fnDecl(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const fn_decl = hg.get(inst, .fn_decl);
 
     // analyze the parameters, generating their types and a list of parameter instructions
     const num_params = fn_decl.params_end - fn_decl.params_start;
@@ -108,46 +143,82 @@ fn fnDecl(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32))
     function.* = .{ .params = params, .body = fn_decl.body };
     const fn_value: Value = .{ .extended = &function.base };
 
-    try inner.append(hg.arena, function.body);
-
-    const constant = try b.addConstant(fn_type, fn_value, fn_data.node);
-    try b.addRemap(inst, constant);
+    const constant = try b.add(.constant, .{
+        .ty = try b.add(.ty, .{ .ty = fn_type }),
+        .val = try b.addValue(fn_value),
+        .node = fn_decl.node,
+    });
+    try analysis.src_block.replaceAllUsesWith(inst, constant);
 }
 
-fn integer(b: *BlockEditor, inst: Hir.Index) !Hir.Index {
-    const data = b.hg.getTempHir().get(inst, .int);
+fn integer(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .int);
+    const value = try b.addIntValue(Type.Common.comptime_uint, data.int);
+    const ty = try b.add(.ty, .{ .ty = Type.Common.comptime_uint });
     // TODO: maybe try to store the node
-    const constant = try b.addIntConstant(Type.Common.comptime_uint, data.int, undefined);
-    try b.addRemap(inst, constant);
-
-    return constant;
+    const constant = try b.add(.constant, .{ .ty = ty, .val = value, .node = undefined });
+    try analysis.src_block.replaceAllUsesWith(inst, constant);
 }
 
-fn float(b: *BlockEditor, inst: Hir.Index) !Hir.Index {
-    const data = b.hg.getTempHir().get(inst, .float);
+fn float(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .float);
+    const value = try b.addFloatValue(data.float);
+    const ty = try b.add(.ty, .{ .ty = Type.Common.comptime_float });
     // TODO: maybe try to store the node
-    const constant = try b.addFloatConstant(Type.Common.comptime_float, data.float, undefined);
-    try b.addRemap(inst, constant);
-
-    return constant;
+    const constant = try b.add(.constant, .{ .ty = ty, .val = value, .node = undefined });
+    try analysis.src_block.replaceAllUsesWith(inst, constant);
 }
 
-fn coerce(b: *BlockEditor, inst: Hir.Index) !void {
-    const hg = b.hg;
-    const data = hg.insts.items(.data)[inst];
-    const coerce_data = hg.extraData(data.pl_node.pl, Hir.Inst.Coerce);
+fn coerce(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .coerce);
+    const src_type = try hg.resolveType(data.val);
+    const dest_type = try hg.resolveType(data.ty);
+    if (src_type.eql(dest_type)) {
+        try analysis.src_block.replaceAllUsesWith(inst, data.val);
+        return;
+    }
 
-    const dest_ty = try hg.resolveType(coerce_data.ty);
-    const new_inst = try coercion.coerce(b, coerce_data.val, dest_ty);
-    try b.addRemap(inst, new_inst);
+    var coercion = Coercion{
+        .src_block = analysis.src_block,
+        .b = b,
+        .gpa = b.hg.gpa,
+        .coerce_inst = inst,
+        .src = data.val,
+        .src_type = src_type,
+        .dest_type = dest_type,
+    };
+    _ = try coercion.coerce();
 }
 
-fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
-    const hg = b.hg;
-    const tag = hg.insts.items(.tag)[inst];
-    const data = hg.insts.items(.data)[inst];
-    const binary = hg.extraData(data.pl_node.pl, Hir.Inst.Binary);
-    const op_token = hg.tree.mainToken(data.pl_node.node);
+pub fn coerceInnerImplicit(analysis: *BlockAnalysis, src: Hir.Index, dest_type: Type) !Hir.Index {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const src_type = try hg.resolveType(src);
+    if (src_type.eql(dest_type)) return src;
+
+    var coercion = Coercion{
+        .src_block = analysis.src_block,
+        .b = b,
+        .gpa = b.hg.gpa,
+        .coerce_inst = null,
+        .src = src,
+        .src_type = src_type,
+        .dest_type = dest_type,
+    };
+    return coercion.coerce();
+}
+
+fn binaryArithOp(analysis: *BlockAnalysis, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !void {
+    const b = analysis.b;
+    const hg = analysis.hg;
+    const binary = hg.get(inst, tag);
+    const op_token = hg.tree.mainToken(binary.node);
 
     const lty = try hg.resolveType(binary.lref);
     const rty = try hg.resolveType(binary.rref);
@@ -165,10 +236,10 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                 .uint => {
                     const bits = @max(lty.basic.width, rty.basic.width);
                     const dest_ty = Type.initLiteral(.uint, bits);
-                    const lref = try coercion.coerce(b, binary.lref, dest_ty);
-                    const rref = try coercion.coerce(b, binary.rref, dest_ty);
-                    const new_arith = try b.addBinary(tag, lref, rref, data.pl_node.node);
-                    try b.addRemap(inst, new_arith);
+                    const lref = try coerceInnerImplicit(analysis, binary.lref, dest_ty);
+                    const rref = try coerceInnerImplicit(analysis, binary.rref, dest_ty);
+                    const new_arith = try b.addBinary(tag, lref, rref, binary.node);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_arith);
                 },
                 .sint => {
                     try hg.errors.append(hg.gpa, .{
@@ -179,9 +250,9 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                 },
                 .comptime_uint, .comptime_sint => {
                     const lref = binary.lref;
-                    const rref = try coercion.coerce(b, binary.rref, lty);
-                    const new_arith = try b.addBinary(tag, lref, rref, data.pl_node.node);
-                    try b.addRemap(inst, new_arith);
+                    const rref = try coerceInnerImplicit(analysis, binary.rref, lty);
+                    const new_arith = try b.addBinary(tag, lref, rref, binary.node);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_arith);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -198,17 +269,17 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
                 .sint => {
                     const bits = @max(lty.basic.width, rty.basic.width);
                     const dest_ty = Type.initLiteral(.sint, bits);
-                    const lref = try coercion.coerce(b, binary.lref, dest_ty);
-                    const rref = try coercion.coerce(b, binary.rref, dest_ty);
-                    const new_arith = try b.addBinary(tag, lref, rref, data.pl_node.node);
-                    try b.addRemap(inst, new_arith);
+                    const lref = try coerceInnerImplicit(analysis, binary.lref, dest_ty);
+                    const rref = try coerceInnerImplicit(analysis, binary.rref, dest_ty);
+                    const new_arith = try b.addBinary(tag, lref, rref, binary.node);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_arith);
                 },
                 .comptime_uint, .comptime_sint => {
                     const lref = binary.lref;
-                    const rref = try coercion.coerce(b, binary.rref, lty);
+                    const rref = try coerceInnerImplicit(analysis, binary.rref, lty);
 
-                    const new_arith = try b.addBinary(tag, lref, rref, data.pl_node.node);
-                    try b.addRemap(inst, new_arith);
+                    const new_arith = try b.addBinary(tag, lref, rref, binary.node);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_arith);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -216,11 +287,11 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
         .comptime_uint, .comptime_sint => {
             switch (rkind) {
                 .uint, .sint => {
-                    const lref = try coercion.coerce(b, binary.lref, rty);
+                    const lref = try coerceInnerImplicit(analysis, binary.lref, rty);
                     const rref = binary.rref;
 
-                    const new_arith = try b.addBinary(tag, lref, rref, data.pl_node.node);
-                    try b.addRemap(inst, new_arith);
+                    const new_arith = try b.addBinary(tag, lref, rref, binary.node);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_arith);
                 },
                 .comptime_uint, .comptime_sint => {
                     unreachable; // TODO: constant folding
@@ -284,8 +355,9 @@ fn binaryArithOp(b: *BlockEditor, inst: Hir.Index) !void {
 //     };
 // }
 
-fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
-    const hg = b.hg;
+fn binaryCmp(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const b = analysis.b;
+    const hg = analysis.hg;
     const data = hg.insts.items(.data)[inst];
     const binary = hg.extraData(data.pl_node.pl, Hir.Inst.Binary);
 
@@ -307,9 +379,9 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        cmp_lref = try coercion.coerce(b, cmp_lref, rty);
+                        cmp_lref = try coerceInnerImplicit(analysis, cmp_lref, rty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        cmp_rref = try coercion.coerce(b, cmp_rref, lty);
+                        cmp_rref = try coerceInnerImplicit(analysis, cmp_rref, lty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -322,12 +394,12 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 .sint => return error.Truncated, // TODO: should emit error
                 .comptime_uint, .comptime_sint => {
                     const cmp_lref = binary.lref;
-                    const cmp_rref = try coercion.coerce(b, binary.rref, lty);
+                    const cmp_rref = try coerceInnerImplicit(analysis, binary.rref, lty);
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq => .icmp_eq,
@@ -339,7 +411,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -357,9 +429,9 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        cmp_lref = try coercion.coerce(b, cmp_lref, rty);
+                        cmp_lref = try coerceInnerImplicit(analysis, cmp_lref, rty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        cmp_rref = try coercion.coerce(b, cmp_rref, lty);
+                        cmp_rref = try coerceInnerImplicit(analysis, cmp_rref, lty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -372,11 +444,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 .comptime_uint, .comptime_sint => {
                     const cmp_lref = binary.lref;
-                    const cmp_rref = try coercion.coerce(b, binary.rref, lty);
+                    const cmp_rref = try coerceInnerImplicit(analysis, binary.rref, lty);
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq => .icmp_eq,
@@ -388,7 +460,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -400,7 +472,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
             // and a constant bool emitted
             switch (rkind) {
                 .uint => {
-                    const cmp_lref = try coercion.coerce(b, binary.lref, rty);
+                    const cmp_lref = try coerceInnerImplicit(analysis, binary.lref, rty);
                     const cmp_rref = binary.rref;
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -413,7 +485,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 .comptime_uint => {
                     const lval: u64 = hg.instToInt(binary.lref);
@@ -432,8 +504,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     const result_int: u64 = if (result) 1 else 0;
                     const dest_ty = Type.Common.u1_type;
                     const result_inst = try b.addIntConstant(dest_ty, result_int, data.pl_node.node);
-
-                    try b.addRemap(inst, result_inst);
+                    try analysis.src_block.replaceAllUsesWith(inst, result_inst);
                 },
                 .sint => return error.Truncated, // TODO: should emit error
                 else => unreachable, // TODO: should emit error
@@ -451,9 +522,9 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     var cmp_rref = binary.rref;
 
                     if (lty.basic.width < rty.basic.width) {
-                        cmp_lref = try coercion.coerce(b, cmp_lref, rty);
+                        cmp_lref = try coerceInnerImplicit(analysis, cmp_lref, rty);
                     } else if (rty.basic.width < lty.basic.width) {
-                        cmp_rref = try coercion.coerce(b, cmp_rref, lty);
+                        cmp_rref = try coerceInnerImplicit(analysis, cmp_rref, lty);
                     }
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -465,11 +536,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 .comptime_float => {
                     const cmp_lref = binary.lref;
-                    const cmp_rref = try coercion.coerce(b, binary.rref, lty);
+                    const cmp_rref = try coerceInnerImplicit(analysis, binary.rref, lty);
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
                         .cmp_eq, .cmp_ne => unreachable, // TODO: generate float comparison error
@@ -480,7 +551,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -492,7 +563,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
             // and a constant bool emitted
             switch (rkind) {
                 .float => {
-                    const cmp_lref = try coercion.coerce(b, binary.lref, rty);
+                    const cmp_lref = try coerceInnerImplicit(analysis, binary.lref, rty);
                     const cmp_rref = binary.rref;
 
                     const tag: Hir.Inst.Tag = switch (hg.insts.items(.tag)[inst]) {
@@ -504,7 +575,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                         else => unreachable,
                     };
                     const new_cmp = try b.addBinary(tag, cmp_lref, cmp_rref, data.pl_node.node);
-                    try b.addRemap(inst, new_cmp);
+                    try analysis.src_block.replaceAllUsesWith(inst, new_cmp);
                 },
                 .comptime_float => {
                     const lval: f64 = hg.instToFloat(binary.lref);
@@ -523,8 +594,7 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
                     const result_int: u64 = if (result) 1 else 0;
                     const dest_ty = Type.Common.u1_type;
                     const result_inst = try b.addIntConstant(dest_ty, result_int, data.pl_node.node);
-
-                    try b.addRemap(inst, result_inst);
+                    try analysis.src_block.replaceAllUsesWith(inst, result_inst);
                 },
                 else => unreachable, // TODO: should emit error
             }
@@ -533,45 +603,11 @@ fn binaryCmp(b: *BlockEditor, inst: Hir.Index) !void {
     }
 }
 
-fn branchSingle(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
-    const hg = b.hg;
-    const pl = hg.insts.items(.data)[inst].pl_node.pl;
-    const branch_single = hg.extraData(pl, Hir.Inst.BranchSingle);
-
-    try inner.append(hg.arena, branch_single.exec_true);
-    try b.linkInst(inst);
-}
-
-fn branchDouble(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
-    const hg = b.hg;
-    const pl = hg.insts.items(.data)[inst].pl_node.pl;
-    const branch_double = hg.extraData(pl, Hir.Inst.BranchDouble);
-
-    try inner.append(hg.arena, branch_double.exec_true);
-    try inner.append(hg.arena, branch_double.exec_false);
-    try b.linkInst(inst);
-}
-
-fn loop(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
-    const hg = b.hg;
-    const pl = hg.insts.items(.data)[inst].pl_node.pl;
-    const loop_data = hg.extraData(pl, Hir.Inst.Loop);
-
-    try inner.append(hg.arena, loop_data.condition);
-    try inner.append(hg.arena, loop_data.body);
-    try b.linkInst(inst);
-}
-
-fn block(b: *BlockEditor, inst: Hir.Index, inner: *std.ArrayListUnmanaged(u32)) !void {
-    try inner.append(b.hg.arena, inst);
-    try b.linkInst(inst);
-}
-
-fn call(b: *BlockEditor, inst: Hir.Index) !void {
-    const hg = b.hg;
-    const data = hg.insts.items(.data)[inst].pl_node;
-    const call_data = hg.extraData(data.pl, Hir.Inst.Call);
-    const addr_token = hg.tree.mainToken(data.node);
+fn call(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const call_data = hg.get(inst, .call);
+    const addr_token = hg.tree.mainToken(call_data.node);
 
     // TODO: should we try to coerce this? not sure yet
     const addr_type = try hg.resolveType(call_data.ptr);
@@ -594,22 +630,27 @@ fn call(b: *BlockEditor, inst: Hir.Index) !void {
         return error.HandledUserError;
     }
 
-    const src_args = hg.extra.items[data.pl + 2 .. data.pl + 2 + call_data.args_len];
-    const dest_args = try hg.arena.alloc(u32, call_data.args_len);
-    defer hg.arena.free(dest_args);
+    const src_args = hg.extra.items[call_data.pl + 2 .. call_data.pl + 2 + call_data.args_len];
     for (src_args, func_type.param_types, 0..) |src_arg, param_type, i| {
         // identify the type of the ith parameter of the function type
         // and coerce the src_arg to that type
-        const dest_arg = try coercion.coerce(b, src_arg, param_type);
-        dest_args[i] = dest_arg;
+        _ = i;
+        // TODO: get rid of this
+        _ = try coerceInnerImplicit(analysis, src_arg, param_type);
     }
 
-    const new_call = try b.addCall(call_data.ptr, dest_args, data.node);
-    try b.addRemap(inst, new_call);
+    // const dest_args = try hg.arena.alloc(u32, call_data.args_len);
+    const updated_data = hg.get(inst, .call);
+    const dest_args = hg.extra.items[updated_data.pl + 2 .. updated_data.pl + 2 + updated_data.args_len];
+    // defer hg.arena.free(dest_args);
+
+    const new_call = try b.addCall(call_data.ptr, dest_args, call_data.node);
+    try analysis.src_block.replaceAllUsesWith(inst, new_call);
 }
 
-fn pointerTy(b: *BlockEditor, inst: Hir.Index) !void {
-    const hg = b.hg;
+fn pointerTy(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
     const data = hg.insts.items(.data)[inst].un_node;
     const pointee = try hg.resolveType(data.operand);
 
@@ -617,6 +658,6 @@ fn pointerTy(b: *BlockEditor, inst: Hir.Index) !void {
     inner.* = .{ .pointee = pointee };
     const pointer: Type = .{ .extended = &inner.base };
 
-    const new_type = try b.addType(pointer);
-    try b.addRemap(inst, new_type);
+    const new_type = try b.add(.ty, .{ .ty = pointer });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }

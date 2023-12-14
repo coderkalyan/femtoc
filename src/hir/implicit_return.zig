@@ -10,39 +10,28 @@ const HirGen = @import("../HirGen.zig");
 const BlockEditor = @import("BlockEditor.zig");
 
 pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
-    const module_pl = hg.insts.items(.data)[module_index].pl_node.pl;
-    const data = hg.extraData(module_pl, Hir.Inst.Module);
+    const module = hg.get(module_index, .module);
 
     var extra_index: u32 = 0;
-    while (extra_index < data.len * 2) : (extra_index += 2) {
-        const base = module_pl + 1;
+    while (extra_index < module.len * 2) : (extra_index += 2) {
+        const base = module.pl + 1;
         const inst = hg.extra.items[base + extra_index + 1];
 
         // load the inline block
-        const block_inline_pl = hg.insts.items(.data)[inst].pl_node.pl;
-        const block_inline = hg.extraData(block_inline_pl, Hir.Inst.Block);
-
-        const inline_slice = hg.block_slices.items[block_inline.head];
-        for (inline_slice) |block_inst| {
+        const block_inline = hg.get(inst, .block_inline);
+        const block_insts = hg.block_slices.items[block_inline.head];
+        for (block_insts) |block_inst| {
             if (hg.insts.items(.tag)[block_inst] == .fn_decl) {
-                const fn_pl = hg.insts.items(.data)[block_inst].pl_node.pl;
-                const fn_decl = hg.extraData(fn_pl, Hir.Inst.FnDecl);
+                const fn_decl = hg.get(block_inst, .fn_decl);
 
                 if (!instructionReturns(hg, fn_decl.body)) {
-                    const block_pl = hg.insts.items(.data)[fn_decl.body].pl_node.pl;
-                    const block = hg.extraData(block_pl, Hir.Inst.Block);
-                    var editor = try BlockEditor.init(hg);
-
-                    // copy all existing instructions, we just want to append
-                    // an implicit return to the end
+                    const block = hg.get(fn_decl.body, .block);
                     const slice = hg.block_slices.items[block.head];
-                    for (slice) |_inst| {
-                        try editor.linkInst(_inst);
-                    }
+                    var b = try BlockEditor.clone(hg, slice);
 
-                    const return_val = try editor.add(.none, .{});
-                    _ = try editor.add(.ret_implicit, .{ .operand = return_val, .tok = undefined });
-                    try BlockEditor.updateBlock(hg, &editor, fn_decl.body);
+                    const return_val = try b.add(.none, .{});
+                    _ = try b.add(.ret_implicit, .{ .operand = return_val, .tok = undefined });
+                    try BlockEditor.updateBlock(hg, &b, fn_decl.body);
                 }
             }
         }

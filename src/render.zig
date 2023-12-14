@@ -421,7 +421,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                             const func = val.extended.cast(Value.Function).?;
                             const func_type = ty.extended.cast(Type.Function).?;
 
-                            try writer.print("constant([function] (", .{});
+                            try writer.print("function(", .{});
                             for (func.params, func_type.param_types) |param, param_type| {
                                 _ = param_type;
                                 const param_pl = ir.insts.items(.data)[param].pl_node.pl;

@@ -6,6 +6,7 @@ const Value = @import("value.zig").Value;
 const Type = @import("hir/type.zig").Type;
 const error_handler = @import("error_handler.zig");
 const Allocator = std.mem.Allocator;
+const render = @import("render.zig");
 
 const Node = Ast.Node;
 pub const Error = error{InvalidRef};
@@ -586,7 +587,7 @@ pub fn get(hir: *const Hir, index: Index, comptime tag: Inst.Tag) InstData(tag) 
 // either by the type of instruction (comparison => u1),
 // signature (call is the return type of the address),
 // or by recursively resolving the operand type (arithmetic)
-pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) !Type {
+pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMemory}!Type {
     const data = hir.insts.items(.data)[index];
     return switch (hir.insts.items(.tag)[index]) {
         // type instructions just store a type
@@ -712,7 +713,16 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) !Type {
         .fn_decl,
         .module,
         .pointer_ty,
-        => unreachable,
+        => |tag| {
+            std.debug.print("%{}: {}\n", .{ index, tag });
+            const out = std.io.getStdOut();
+            var buffered_out = std.io.bufferedWriter(out.writer());
+            var writer = buffered_out.writer();
+            var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, hir);
+            hir_renderer.render() catch unreachable;
+            buffered_out.flush() catch unreachable;
+            unreachable;
+        },
     };
 }
 

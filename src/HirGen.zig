@@ -11,7 +11,6 @@ const error_handler = @import("error_handler.zig");
 const Value = @import("value.zig").Value;
 const Type = @import("hir/type.zig").Type;
 const BlockEditor = @import("hir/BlockEditor.zig");
-const coercion = @import("hir/coercion.zig");
 
 const implicit_return = @import("hir/implicit_return.zig");
 const type_analysis = @import("hir/type_analysis.zig");
@@ -52,6 +51,7 @@ untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 interner: Interner,
 errors: std.ArrayListUnmanaged(error_handler.SourceError),
 instmap: std.ArrayListUnmanaged(Hir.Index),
+module_index: Hir.Index,
 
 pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -70,20 +70,21 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .interner = Interner.init(gpa),
         .errors = .{},
         .instmap = .{},
+        .module_index = undefined,
     };
 
     // post order format guarantees that the module node will be the last
     const module_node: u32 = @intCast(tree.nodes.len - 1);
-    const module_index = try module(&hirgen, module_node);
-    try implicit_return.executePass(&hirgen, module_index);
-    try type_analysis.executePass(&hirgen, module_index); // catch {};
-    try stack_analysis.executePass(&hirgen, module_index);
+    hirgen.module_index = try module(&hirgen, module_node);
+    try implicit_return.executePass(&hirgen, hirgen.module_index);
+    try type_analysis.executePass(&hirgen, hirgen.module_index); // catch {};
+    try stack_analysis.executePass(&hirgen, hirgen.module_index);
     // try dead_code_elimination.executePass(&hirgen, module_index);
 
     return Hir{
         .tree = tree,
         .insts = hirgen.insts.toOwnedSlice(),
-        .module_index = module_index,
+        .module_index = hirgen.module_index,
         .block_slices = try hirgen.block_slices.toOwnedSlice(gpa),
         .extra_data = try hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
@@ -1176,7 +1177,7 @@ pub fn getTempHir(hg: *HirGen) Hir {
         .instmap = hg.instmap.items,
         .untyped_decls = hg.untyped_decls, // TODO: not good
         .errors = hg.errors.items,
-        .module_index = undefined,
+        .module_index = hg.module_index,
     };
 }
 

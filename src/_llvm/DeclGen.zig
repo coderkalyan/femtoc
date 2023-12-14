@@ -83,6 +83,7 @@ fn resolveInst(dg: *DeclGen, index: Hir.Index) c.LLVMValueRef {
         //     return llvm.c.LLVMGetNamedGlobal(backend.module.module, decl.name);
         // }
     } else {
+        std.debug.print("resolve: {}\n", .{index});
         return dg.map.get(index).?;
     }
 }
