@@ -13,15 +13,12 @@ const BlockEditor = @This();
 hg: *HirGen,
 // insts: InstList,
 insts: std.ArrayListUnmanaged(Hir.Index),
-// TODO: this leaks once the editor is discarded, we need a deinit for BlockEditor
-remaps: std.AutoHashMapUnmanaged(Hir.Index, Hir.Index),
 scratch: std.ArrayListUnmanaged(u32),
 
 pub fn init(hg: *HirGen) !BlockEditor {
     return .{
         .hg = hg,
         .insts = .{},
-        .remaps = .{},
         .scratch = .{},
     };
 }
@@ -34,7 +31,6 @@ pub fn clone(hg: *HirGen, insts: []Hir.Index) !BlockEditor {
     return .{
         .hg = hg,
         .insts = arraylist,
-        .remaps = .{},
         .scratch = .{},
     };
 }
@@ -66,11 +62,6 @@ pub fn addInst(b: *BlockEditor, inst: Inst) !Hir.Index {
 
 pub inline fn numInsts(b: *BlockEditor) u32 {
     return @intCast(b.insts.items.len);
-}
-
-pub inline fn addRemap(b: *BlockEditor, src: Hir.Index, dest: Hir.Index) !void {
-    // TODO: should we use arena?
-    try b.remaps.put(b.hg.gpa, src, dest);
 }
 
 pub fn addInner(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Inst {
@@ -305,8 +296,6 @@ pub fn updateBlock(hg: *HirGen, data_block: *BlockEditor, inst: Hir.Index) !void
     hg.gpa.free(hg.block_slices.items[data.head]);
     const slice = try data_block.insts.toOwnedSlice(hg.gpa);
     hg.block_slices.items[data.head] = slice;
-
-    commitRemap(hg, &data_block.remaps, data.head);
 }
 
 fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime tag: Hir.Inst.Tag, inst: Hir.Index) error{OutOfMemory}!void {
@@ -375,183 +364,6 @@ pub fn replaceAllUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index) !void
         switch (hg.insts.items(.tag)[inst]) {
             inline else => |tag| try b.replaceInstUsesWith(old, new, tag, inst),
         }
-    }
-}
-
-pub fn commitRemap(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Index), head: u32) void {
-    const slice = hg.block_slices.items[head];
-    for (slice) |inst| {
-        switch (hg.insts.items(.tag)[inst]) {
-            .int,
-            .float,
-            .ty,
-            .none,
-            => {},
-            .add,
-            .sub,
-            .mul,
-            .div,
-            .mod,
-            .cmp_eq,
-            .cmp_ne,
-            .cmp_gt,
-            .cmp_ge,
-            .cmp_lt,
-            .cmp_le,
-            .icmp_eq,
-            .icmp_ne,
-            .icmp_ugt,
-            .icmp_uge,
-            .icmp_ult,
-            .icmp_ule,
-            .icmp_sgt,
-            .icmp_sge,
-            .icmp_slt,
-            .icmp_sle,
-            .fcmp_gt,
-            .fcmp_ge,
-            .fcmp_lt,
-            .fcmp_le,
-            .lsl,
-            .lsr,
-            .asl,
-            .asr,
-            => {
-                // Binary
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 0); // lref
-                remapIndexPl(hg, remaps, pl + 1); // rref
-            },
-            .coerce => {
-                // Coerce
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 0); // val
-                remapIndexPl(hg, remaps, pl + 1); // ty
-            },
-            .constant => {
-                // Constant
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 1); // ty
-            },
-            .zext, .sext, .fpext => {
-                // Extend
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 0); // val
-                remapIndexPl(hg, remaps, pl + 1); // ty
-            },
-            .pointer_ty,
-            .push,
-            .load,
-            .neg,
-            .log_not,
-            .bit_not,
-            .global_mut,
-            .link_extern,
-            => {
-                // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
-                remapIndex(hg, remaps, op);
-            },
-            .store => {
-                // Store
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 0); // ptr
-                remapIndexPl(hg, remaps, pl + 1); // val
-            },
-            .fn_decl => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const data = hg.extraData(pl, Hir.Inst.FnDecl);
-
-                const block_pl = hg.insts.items(.data)[data.body].pl_node.pl;
-                const block_data = hg.extraData(block_pl, Hir.Inst.Block);
-                commitRemap(hg, remaps, block_data.head);
-            },
-            .param => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                remapIndexPl(hg, remaps, pl + 1); // ty
-            },
-            .call => {
-                // Call
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const data = hg.extraData(pl, Hir.Inst.Call);
-                remapIndexPl(hg, remaps, pl + 0); // addr
-
-                var extra_index: u32 = 0;
-                while (extra_index < data.args_len) : (extra_index += 1) {
-                    remapIndexPl(hg, remaps, pl + 2 + extra_index);
-                }
-            },
-            .block, .block_inline => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const data = hg.extraData(pl, Hir.Inst.Block);
-
-                commitRemap(hg, remaps, data.head);
-            },
-            .branch_single => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const data = hg.extraData(pl, Hir.Inst.BranchSingle);
-
-                remapIndexPl(hg, remaps, pl + 0); // condition
-
-                const block_pl = hg.insts.items(.data)[data.exec_true].pl_node.pl;
-                const block_data = hg.extraData(block_pl, Hir.Inst.Block);
-                commitRemap(hg, remaps, block_data.head);
-            },
-            .branch_double => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const data = hg.extraData(pl, Hir.Inst.BranchDouble);
-
-                remapIndexPl(hg, remaps, pl + 0); // condition
-
-                const block1_pl = hg.insts.items(.data)[data.exec_true].pl_node.pl;
-                const block1_data = hg.extraData(block1_pl, Hir.Inst.Block);
-                commitRemap(hg, remaps, block1_data.head);
-
-                const block2_pl = hg.insts.items(.data)[data.exec_false].pl_node.pl;
-                const block2_data = hg.extraData(block2_pl, Hir.Inst.Block);
-                commitRemap(hg, remaps, block2_data.head);
-            },
-            .loop => {
-                const pl = hg.insts.items(.data)[inst].pl_node.pl;
-                const data = hg.extraData(pl, Hir.Inst.Loop);
-
-                const condition_pl = hg.insts.items(.data)[data.condition].pl_node.pl;
-                const condition_data = hg.extraData(condition_pl, Hir.Inst.Block);
-                commitRemap(hg, remaps, condition_data.head);
-
-                const body_pl = hg.insts.items(.data)[data.body].pl_node.pl;
-                const body_data = hg.extraData(body_pl, Hir.Inst.Block);
-                commitRemap(hg, remaps, body_data.head);
-            },
-            .loop_break => {},
-            .ret_implicit, .yield_implicit => {
-                // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_tok.operand;
-                remapIndex(hg, remaps, op);
-            },
-            .ret_node, .yield_node, .yield_inline => {
-                // unary operand
-                var op = &hg.insts.slice().items(.data)[inst].un_node.operand;
-                remapIndex(hg, remaps, op);
-            },
-            .alloca, .load_global => {},
-            // .dbg_value, .dbg_declare, .dbg_assign => {},
-            .module => unreachable,
-        }
-    }
-}
-
-fn remapIndex(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Index), inst: *Hir.Index) void {
-    _ = hg;
-    if (remaps.get(inst.*)) |new| {
-        inst.* = new;
-    }
-}
-
-fn remapIndexPl(hg: *HirGen, remaps: *std.AutoHashMapUnmanaged(Hir.Index, Hir.Index), pl: u32) void {
-    const index = &hg.extra.items[pl];
-    if (remaps.get(index.*)) |new| {
-        index.* = new;
     }
 }
 
