@@ -299,6 +299,17 @@ fn boolLiteral(b: *BlockEditor, node: Node.Index) !Hir.Index {
     };
 }
 
+fn charLiteral(b: *BlockEditor, node: Node.Index) !Hir.Index {
+    const char_token = b.hg.tree.mainToken(node);
+    const char_str = b.hg.tree.tokenString(char_token);
+
+    return try b.add(.constant, .{
+        .ty = try b.add(.ty, .{ .ty = Type.Common.u8_type }),
+        .val = try b.addIntValue(Type.Common.u8_type, char_str[1]),
+        .node = node,
+    });
+}
+
 fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.Index {
     const hg = b.hg;
     const ident_token = hg.tree.mainToken(node);
@@ -568,6 +579,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .integer_literal => integerLiteral(b, node),
             .float_literal => floatLiteral(b, node),
             .bool_literal => boolLiteral(b, node),
+            .char_literal => charLiteral(b, node),
             .var_expr => identExpr(b, scope, ri, node),
             .call_expr => try call(b, scope, node),
             .binary_expr => try binary(b, scope, node),

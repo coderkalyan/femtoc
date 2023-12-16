@@ -349,6 +349,10 @@ const Parser = struct {
                 .main_token = try p.expectToken(.k_false),
                 .data = .{ .bool_literal = {} },
             }),
+            .char_lit => p.addNode(.{
+                .main_token = p.eatCurrentToken(),
+                .data = .{ .char_literal = {} },
+            }),
             .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
                 .data = .{ .unary_expr = try p.parsePrimaryExpr() },

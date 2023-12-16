@@ -92,6 +92,7 @@ pub const Node = struct {
         // main_token = unparsed literal string
         float_literal: void,
         bool_literal: void,
+        char_literal: void,
         // binary expression 'a [+-*/...] b'
         // main_token = operator token
         // left = left side expression node
