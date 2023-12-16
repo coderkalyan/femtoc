@@ -88,7 +88,10 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
             .yield_node,
             .yield_implicit,
             .yield_inline,
-            .global_mut,
+            .global_handle,
+            .global_set_init,
+            .global_set_mutable,
+            .global_set_type,
             // just re-link these
             => try b.linkInst(inst),
             .pointer_ty => try pointerTy(&analysis, inst),
@@ -106,6 +109,7 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
             .div,
             .mod,
             => |tag| try binaryArithOp(&analysis, inst, tag),
+            .function_type => try functionType(&analysis, inst),
             // else => {},
             // TODO: remove else clause and switch explicitly
             // to avoid copying bad instructions
@@ -663,6 +667,29 @@ fn pointerTy(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const pointer: Type = .{ .extended = &inner.base };
 
     const new_type = try b.add(.ty, .{ .ty = pointer });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
+fn functionType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .function_type);
+    const return_type = try hg.resolveType(data.return_type);
+
+    const param_types = try hg.gpa.alloc(Type, data.params_end - data.params_start);
+    var extra_index: u32 = data.params_start;
+    var i: u32 = 0;
+    while (extra_index < data.params_end) : (extra_index += 1) {
+        const param_type = hg.extra.items[extra_index];
+        param_types[i] = try hg.resolveType(param_type);
+        i += 1;
+    }
+
+    const inner = try hg.gpa.create(Type.Function);
+    inner.* = .{ .return_type = return_type, .param_types = param_types };
+    const function_type: Type = .{ .extended = &inner.base };
+
+    const new_type = try b.add(.ty, .{ .ty = function_type });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 

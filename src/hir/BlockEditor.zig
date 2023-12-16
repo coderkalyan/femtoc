@@ -331,6 +331,8 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                 Inst.Block => .{},
                 Inst.Module => .{},
                 Inst.ParamType => .{"ptr"},
+                Inst.GlobalOperand => .{ "handle", "operand" },
+                Inst.FunctionType => .{"return_type"},
                 else => unreachable,
             };
 
@@ -350,6 +352,15 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                     for (old_args, 0..) |old_arg, i| {
                         if (old_arg == old) {
                             old_args[i] = new;
+                        }
+                    }
+                },
+                .function_type => {
+                    data = hg.get(inst, .function_type);
+                    const old_params = hg.extra.items[data.params_start..data.params_end];
+                    for (old_params, 0..) |old_param, i| {
+                        if (old_param == old) {
+                            old_params[i] = new;
                         }
                     }
                 },
@@ -397,6 +408,19 @@ pub fn addCall(b: *BlockEditor, ptr: Hir.Index, args: []u32, node: Node.Index) !
         .ptr = ptr,
         .args_start = args_start,
         .args_end = args_end,
+        .node = node,
+    });
+}
+
+pub fn addFunctionType(b: *BlockEditor, return_type: Hir.Index, params: []Hir.Index, node: Node.Index) !Hir.Index {
+    const params_start: u32 = @intCast(b.hg.extra.items.len);
+    try b.hg.extra.appendSlice(b.hg.gpa, params);
+    const params_end: u32 = @intCast(b.hg.extra.items.len);
+
+    return b.add(.function_type, .{
+        .return_type = return_type,
+        .params_start = params_start,
+        .params_end = params_end,
         .node = node,
     });
 }

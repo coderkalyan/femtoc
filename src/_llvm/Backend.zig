@@ -3,6 +3,7 @@ const Hir = @import("../Hir.zig");
 const BackendInterface = @import("../codegen/Backend.zig");
 const DeclGen = @import("DeclGen.zig");
 const CodeGen = @import("CodeGen.zig");
+const DeclInfo = @import("../hir/DeclInfo.zig");
 const Context = @import("Context.zig");
 const Allocator = std.mem.Allocator;
 const c = Context.c;
@@ -41,6 +42,8 @@ fn generate(iface: *BackendInterface, hir: *const Hir) !void {
         const id = hir.extra_data[base + extra_index];
         const inst = hir.extra_data[base + extra_index + 1];
 
+        const declinfo = try DeclInfo.generate(hir, self.gpa, inst, id);
+        std.debug.print("declinfo: {any}\n", .{declinfo});
         var declgen = DeclGen{
             .gpa = self.gpa,
             .arena = arena.allocator(),
@@ -50,6 +53,7 @@ fn generate(iface: *BackendInterface, hir: *const Hir) !void {
             .inline_block = inst,
             .map = .{},
             .global_map = &self.map,
+            .decl_info = declinfo,
         };
         const val = try declgen.generate(&codegens);
         try self.map.put(arena.allocator(), id, val);

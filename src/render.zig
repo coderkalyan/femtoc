@@ -391,6 +391,20 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
                     try writer.print(")", .{});
                 },
+                .function_type => {
+                    const function_type = ir.get(index, .function_type);
+                    try self.formatIndex(function_type.return_type, &lbuf);
+                    try writer.print("function_type({s}", .{lbuf});
+
+                    var extra_index: u32 = function_type.params_start;
+                    while (extra_index < function_type.params_end) : (extra_index += 1) {
+                        const arg = ir.extra_data[extra_index];
+                        try self.formatIndex(arg, &rbuf);
+                        try writer.print(", {s}", .{rbuf});
+                    }
+
+                    try writer.print(")", .{});
+                },
                 // .dbg_value => {
                 //     const pl = ir.insts.items(.data)[index].pl_node.pl;
                 //     const data = ir.extraData(pl, Hir.Inst.DebugValue);
@@ -526,7 +540,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                                 }
                             }
                         },
-                        .node, .token => unreachable,
+                        .node, .token => {},
                     }
 
                     try writer.print(")", .{});

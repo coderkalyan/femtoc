@@ -43,7 +43,9 @@ pub const Inst = struct {
         // TODO: why do we need this instead of types[]?
         ty,
         pointer_ty,
+        function_type,
         param_type_of,
+        type_of,
         // declare a new typed immediate constant
         // data.pl_node.pl = Inst.Constant
         constant,
@@ -139,11 +141,15 @@ pub const Inst = struct {
         // marks a value in a global variable block_inline as mutable
         // and returns the "modified" instruction
         // data.un_node.operand = variable just marked mutable
-        global_mut,
+        // glo
+        global_handle,
+        global_set_mutable,
+        global_set_init,
+        global_set_type,
         // marks a value in a global variable block_inline as externally linked
         // and returns the "modified" instruction
         // data.un_node.operand = variable just marked externally linked
-        link_extern,
+        global_set_linkage_external,
 
         // TODO
         fn_decl,
@@ -323,6 +329,16 @@ pub const Inst = struct {
         param_index: u32,
     };
 
+    pub const GlobalOperand = struct {
+        handle: Index,
+        operand: Index,
+    };
+
+    pub const FunctionType = struct {
+        return_type: Index,
+        params_start: ExtraIndex,
+        params_end: ExtraIndex,
+    };
     // pub const DebugValue = struct {
     //     name: u32,
     //     value: Ref,
@@ -337,8 +353,11 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
     return switch (tag) {
         .int => .int,
         .float => .float,
-        .none, .loop_break => .placeholder,
+        .none,
+        .loop_break,
+        => .placeholder,
         .ty => .ty,
+        .global_handle => .node,
         .constant,
         .add,
         .sub,
@@ -384,6 +403,9 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .loop,
         .module,
         .param_type_of,
+        .global_set_init,
+        .global_set_type,
+        .function_type,
         => .pl_node,
         .neg,
         .log_not,
@@ -391,13 +413,14 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .push,
         .alloca,
         .load,
-        .global_mut,
-        .link_extern,
+        .global_set_mutable,
+        .global_set_linkage_external,
         .ret_node,
         .yield_node,
         .yield_inline,
         .load_global,
         .pointer_ty,
+        .type_of,
         => .un_node,
         .ret_implicit,
         .yield_implicit,
@@ -455,6 +478,10 @@ pub fn payloadType(comptime tag: Inst.Tag) type {
         .loop => Inst.Loop,
         .module => Inst.Module,
         .param_type_of => Inst.ParamType,
+        .global_set_init,
+        .global_set_type,
+        => Inst.GlobalOperand,
+        .function_type => Inst.FunctionType,
         else => {
             @compileLog(tag);
             unreachable;
@@ -611,11 +638,10 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .neg,
         .log_not,
         .bit_not,
-        .global_mut,
-        .link_extern,
         .ret_node,
         .yield_node,
         .yield_inline,
+        .type_of,
         => hir.resolveType(gpa, data.un_node.operand),
         .yield_implicit,
         .ret_implicit,
@@ -687,12 +713,32 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             break :ty hir.resolveType(gpa, ext_data.ty);
         },
         // resolve the last instruction in the block
-        .block,
-        .block_inline,
-        => ty: {
+        .block => ty: {
             const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
             const insts = hir.block_slices[block_data.head];
             break :ty hir.resolveType(gpa, insts[insts.len - 1]);
+        },
+        // TODO: this won't be generic to local inline_blocks if those
+        // exist in the future
+        .block_inline => ty: {
+            const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
+            const insts = hir.block_slices[block_data.head];
+            const yield = hir.get(insts[insts.len - 1], .yield_inline);
+            const handle = yield.operand;
+
+            // find a global_set_type that references this handle
+            for (insts) |block_inst| {
+                std.debug.print("handle: {} cur: {}\n", .{ handle, hir.insts.items(.tag)[block_inst] });
+                if (hir.insts.items(.tag)[block_inst] == .global_set_type) {
+                    const set_type = hir.get(block_inst, .global_set_type);
+                    if (set_type.handle == handle) {
+                        break :ty hir.resolveType(gpa, set_type.operand);
+                    }
+                }
+            }
+
+            // uh oh, bad IR
+            unreachable;
         },
         .branch_single,
         .branch_double,
@@ -708,7 +754,13 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         // .dbg_value,
         // .dbg_declare,
         // .dbg_assign,
-        .store => unreachable,
+        .store,
+        .global_set_mutable,
+        .global_set_init,
+        .global_set_type,
+        .global_handle, // TODO
+        .global_set_linkage_external,
+        => unreachable,
         // untyped instructions should be replaced before they're referred to
         .int,
         .float,
@@ -723,6 +775,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .module,
         .pointer_ty,
         .param_type_of,
+        .function_type,
         => |tag| {
             std.debug.print("%{}: {}\n", .{ index, tag });
             const out = std.io.getStdOut();

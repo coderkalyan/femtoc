@@ -109,8 +109,7 @@ const Parser = struct {
 
     fn eatToken(p: *Parser, tag: Token.Tag) ?TokenIndex {
         if (p.token_tags[p.index] == tag) {
-            p.index += 1;
-            return p.index - 1;
+            return p.eatCurrentToken();
         } else {
             return null;
         }
@@ -122,6 +121,11 @@ const Parser = struct {
         } else {
             return Error.UnexpectedToken;
         }
+    }
+
+    fn eatCurrentToken(p: *Parser) TokenIndex {
+        p.index += 1;
+        return p.index - 1;
     }
 
     fn addExtra(p: *Parser, extra: anytype) Allocator.Error!Node.Index {
@@ -242,11 +246,10 @@ const Parser = struct {
         while (true) {
             const node = switch (p.token_tags[p.index]) {
                 .eof => break,
-                .a_export => {
-                    try p.parseExport();
-                    continue;
-                },
-                .k_let => p.parseDecl() catch |err| {
+                .a_export,
+                .a_import,
+                .k_let,
+                => p.parseDecl() catch |err| {
                     if (err == Error.HandledUserError) {
                         while (true) {
                             // this should be cleaned up by the emitter fo the HandledUserError
@@ -706,9 +709,6 @@ const Parser = struct {
             else => node: {
                 const expr = try p.expectExpr();
                 break :node switch (p.token_tags[p.index]) {
-                    // function calls can exist on their own (implicit discard of return value)
-                    .l_paren => try p.expectCall(expr),
-                    // everything else should be an assignment using expr as an lvalue
                     .equal,
                     .plus_equal,
                     .minus_equal,
@@ -722,6 +722,12 @@ const Parser = struct {
                     .r_angle_r_angle_equal,
                     => p.parseAssignment(expr),
                     else => {
+                        if (p.nodes.items(.data)[expr] == .call_expr) {
+                            // function calls can exist on their own
+                            // (implicit discard of return value)
+                            break :node expr;
+                        }
+
                         try p.errors.append(.{ .tag = .unexpected_identifier, .token = p.index });
 
                         // try eating until we get a semicolon
@@ -788,84 +794,95 @@ const Parser = struct {
     }
 
     fn parseDecl(p: *Parser) !Node.Index {
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        while (true) {
+            const attr = switch (p.token_tags[p.index]) {
+                .a_export => try p.parseExport(),
+                .a_import => try p.parseImport(),
+                else => break,
+            };
+
+            try p.scratch.append(attr);
+        }
+
+        // std.debug.print("p1 {any}, {}\n", .{ attributes, attributes.len });
+
         const let_token = try p.expectToken(.k_let);
+        var is_mut = false;
         if (p.token_tags[p.index] == .k_mut) {
-            _ = p.eatToken(.k_mut);
+            _ = p.eatCurrentToken();
+            is_mut = true;
+        }
 
-            if (p.expectToken(.ident)) |_| {} else |err| switch (err) {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
-                },
-                else => return err,
-            }
+        if (p.token_tags[p.index] == .ident) {
+            _ = p.eatCurrentToken();
+        } else {
+            try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
+        }
+        const type_annotation = if (p.eatToken(.colon) == null) 0 else try p.expectType();
 
-            const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
-            if (p.expectToken(.equal)) |_| {} else |err| switch (err) {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{ .tag = .missing_equals, .token = p.index });
-                },
-                else => return err,
-            }
+        var is_definition = true;
+        switch (p.token_tags[p.index]) {
+            .equal => _ = p.eatCurrentToken(),
+            .semi => is_definition = false,
+            else => try p.errors.append(.{ .tag = .missing_equals, .token = p.index }),
+        }
 
+        var rvalue: Node.Index = 0;
+        if (is_definition) {
             if (p.expectExpr()) |val| {
+                rvalue = val;
+            } else |err| switch (err) {
+                Error.UnexpectedToken => {
+                    try p.errors.append(.{ .tag = .missing_expression, .token = p.index });
+                    try consumeUntilSemi(p);
+                    return Error.HandledUserError;
+                },
+                else => return err,
+            }
+        }
+
+        if (!is_definition and type_annotation == 0) {
+            // nothing to infer type from, so it must be annotated
+            try p.errors.append(.{ .tag = .missing_expression, .token = p.index });
+            try consumeUntilSemi(p);
+            return Error.HandledUserError;
+        }
+
+        if (is_mut) {
+            // var decl
+            return p.addNode(.{
+                .main_token = let_token,
+                .data = .{ .var_decl = .{ .ty = type_annotation, .val = rvalue } },
+            });
+        } else {
+            // const decl
+            // std.debug.print("p2 {any}, {}\n", .{ attributes, attributes.len });
+            const attributes = p.scratch.items[scratch_top..];
+            if (attributes.len > 0) {
+                // const with attributes
+                const attrs_start: u32 = @intCast(p.extra.items.len);
+                std.debug.print("p3 {any}, {}\n", .{ attributes, attributes.len });
+                try p.extra.appendSlice(p.gpa, attributes);
+                const attrs_end: u32 = @intCast(p.extra.items.len);
+
+                const data = try p.addExtra(Node.DeclMetadata{
+                    .ty = type_annotation,
+                    .attrs_start = attrs_start,
+                    .attrs_end = attrs_end,
+                });
                 return p.addNode(.{
                     .main_token = let_token,
-                    .data = .{ .var_decl = .{ .ty = ty, .val = val } },
+                    .data = .{ .const_decl_attr = .{ .metadata = data, .val = rvalue } },
                 });
-            } else |err| switch (err) {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{ .tag = .missing_expression, .token = p.index });
-                    try consumeUntilSemi(p);
-                    return Error.HandledUserError;
-                },
-                else => return err,
-            }
-        } else {
-            // _ = try p.expectToken(.ident);
-            if (p.expectToken(.ident)) |_| {} else |err| switch (err) {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
-                },
-                else => return err,
-            }
-
-            const ty = if (p.eatToken(.colon) == null) 0 else try p.expectType();
-            if (p.expectToken(.equal)) |_| {} else |err| switch (err) {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{ .tag = .missing_equals, .token = p.index });
-                },
-                else => return err,
-            }
-
-            if (p.expectExpr()) |val| {
-                if (p.attributes.items.len > 0) {
-                    const attrs_start: u32 = @intCast(p.extra.items.len);
-                    try p.extra.appendSlice(p.gpa, p.attributes.items);
-                    const attrs_end: u32 = @intCast(p.extra.items.len);
-
-                    const data = try p.addExtra(Node.DeclMetadata{
-                        .ty = ty,
-                        .attrs_start = attrs_start,
-                        .attrs_end = attrs_end,
-                    });
-                    // p.attributes.clearRetainingCapacity();
-                    return p.addNode(.{
-                        .main_token = let_token,
-                        .data = .{ .const_decl_attr = .{ .metadata = data, .val = val } },
-                    });
-                } else {
-                    return p.addNode(.{
-                        .main_token = let_token,
-                        .data = .{ .const_decl = .{ .ty = ty, .val = val } },
-                    });
-                }
-            } else |err| switch (err) {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{ .tag = .missing_expression, .token = p.index });
-                    try consumeUntilSemi(p);
-                    return Error.HandledUserError;
-                },
-                else => return err,
+            } else {
+                // simple const
+                return p.addNode(.{
+                    .main_token = let_token,
+                    .data = .{ .const_decl = .{ .ty = type_annotation, .val = rvalue } },
+                });
             }
         }
     }
@@ -997,7 +1014,7 @@ const Parser = struct {
         });
     }
 
-    fn parseExport(p: *Parser) !void {
+    fn parseExport(p: *Parser) !Node.Index {
         const export_token = try p.expectToken(.a_export);
 
         const scratch_top = p.scratch.items.len;
@@ -1028,7 +1045,43 @@ const Parser = struct {
                 .args_end = args_end,
             },
         } });
-        try p.attributes.append(p.gpa, attribute);
+        return attribute;
+        // try p.attributes.append(p.gpa, attribute);
+    }
+
+    fn parseImport(p: *Parser) !Node.Index {
+        const import_token = try p.expectToken(.a_import);
+
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+        if (p.token_tags[p.index] == .l_paren) {
+            _ = try p.expectToken(.l_paren);
+            while (true) {
+                switch (p.token_tags[p.index]) {
+                    .r_paren => {
+                        _ = try p.expectToken(.r_paren);
+                        break;
+                    },
+                    else => {
+                        const arg = try p.expectExpr();
+                        try p.scratch.append(arg);
+                    },
+                }
+            }
+        }
+        const args = p.scratch.items[scratch_top..];
+        const args_start: u32 = @intCast(p.extra.items.len);
+        try p.extra.appendSlice(p.gpa, args);
+        const args_end: u32 = @intCast(p.extra.items.len);
+
+        const attribute = try p.addNode(.{ .main_token = import_token, .data = .{
+            .attribute = .{
+                .args_start = args_start,
+                .args_end = args_end,
+            },
+        } });
+        return attribute;
+        // try p.attributes.append(p.gpa, attribute);
     }
 };
 

@@ -587,7 +587,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .binary_expr => try binary(b, scope, node),
             .unary_expr => try unary(b, scope, ri, node),
             else => {
-                // std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
@@ -595,8 +595,9 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .named_ty => identExpr(b, scope, ri, node),
             .unary_expr => try unary(b, scope, ri, node),
             .pointer_ty => try pointerTy(b, scope, node),
+            .fn_type => try fnType(b, scope, node),
             else => {
-                // std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
@@ -625,6 +626,23 @@ fn pointerTy(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return b.add(.pointer_ty, .{ .operand = inner, .node = node });
 }
 
+fn fnType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const fn_type = hg.tree.data(node).fn_type;
+    const signature = hg.tree.extraData(fn_type, Node.FnSignature);
+
+    const params = hg.tree.extra_data[signature.params_start..signature.params_end];
+    const param_types = try hg.arena.alloc(Hir.Index, signature.params_end - signature.params_start);
+    defer hg.arena.free(param_types);
+    for (params, 0..) |param, i| {
+        const data = hg.tree.data(param).param;
+        param_types[i] = try typeExpr(b, scope, data.ty);
+    }
+    const return_type = try typeExpr(b, scope, signature.return_ty);
+
+    return b.addFunctionType(return_type, param_types, node);
+}
+
 fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return try switch (b.hg.tree.data(node)) {
         .const_decl => constDecl(b, scope, node),
@@ -640,6 +658,7 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         .loop_conditional => loopConditional(b, scope, node),
         .loop_range => loopRange(b, scope, node),
         .loop_break => loopBreak(b, scope, node),
+        .call_expr => call(b, scope, node),
         else => {
             std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
             return GenError.NotImplemented;
@@ -649,6 +668,7 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 
 fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const data = hg.tree.data(node);
+    std.debug.print("global statement: {}\n", .{data});
     return try switch (data) {
         .const_decl => globalConst(hg, scope, node),
         .const_decl_attr => globalConstAttr(hg, scope, node),
@@ -819,16 +839,34 @@ fn globalConst(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     var inline_block = try Block.initInline(hg, s);
     defer inline_block.deinit();
     const scope = &inline_block.base;
+    const b = &inline_block.editor;
 
-    const rvalue_inner = try valExpr(&inline_block.editor, scope, const_decl.val);
-    const rvalue = if (const_decl.ty == 0) rvalue_inner else ref: {
-        // if this is typed, add a coerce
-        const dest_ty = try typeExpr(&inline_block.editor, scope, const_decl.ty);
-        break :ref try coerce(&inline_block.editor, scope, rvalue_inner, dest_ty, node);
-    };
+    const handle = try b.add(.global_handle, .{ .node = node });
 
-    // const global = try inline_block.editor.addGlobal(rvalue, node);
-    _ = try inline_block.editor.add(.yield_inline, .{ .operand = rvalue, .node = node });
+    var rvalue = try valExpr(&inline_block.editor, scope, const_decl.val);
+    if (const_decl.ty != 0) {
+        // if this is typed, add a coerce and mark the global's type
+        const type_annotation = try typeExpr(&inline_block.editor, scope, const_decl.ty);
+        _ = try b.add(.global_set_type, .{
+            .handle = handle,
+            .operand = type_annotation,
+            .node = node,
+        });
+
+        rvalue = try coerce(b, scope, rvalue, type_annotation, node);
+    } else {
+        // generate a type inference, since global decls can't
+        // postpone the problem like locals can
+        const type_inference = try b.add(.type_of, .{ .operand = rvalue, .node = node });
+        _ = try b.add(.global_set_type, .{
+            .handle = handle,
+            .operand = type_inference,
+            .node = node,
+        });
+    }
+
+    _ = try b.add(.global_set_init, .{ .handle = handle, .operand = rvalue, .node = node });
+    _ = try b.add(.yield_inline, .{ .operand = handle, .node = node });
     return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
 }
 
@@ -847,28 +885,65 @@ fn globalConstAttr(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     const scope = &inline_block.base;
     const b = &inline_block.editor;
 
-    var rvalue = try valExpr(b, scope, const_decl.val);
-    if (metadata.ty != 0) {
-        const dest_ty = try typeExpr(b, scope, metadata.ty);
-        rvalue = try coerce(b, scope, rvalue, dest_ty, node);
-    }
+    const handle = try b.add(.global_handle, .{ .node = node });
 
-    const ident_index = hg.tree.mainToken(node);
-    const ident_str = hg.tree.tokenString(ident_index + 1);
-    const id = try hg.interner.intern(ident_str);
-    _ = id;
-
-    std.debug.print("attring: {} {}\n", .{ metadata.attrs_start, metadata.attrs_end });
     const attrs = hg.tree.extra_data[metadata.attrs_start..metadata.attrs_end];
+
+    var has_initializer = true;
     for (attrs) |attr| {
-        std.debug.print("attr: {} {}\n", .{ attr, hg.tree.mainToken(attr) });
         switch (hg.tree.tokenTag(hg.tree.mainToken(attr))) {
-            .a_export => rvalue = try b.add(.link_extern, .{ .operand = rvalue, .node = node }),
+            .a_export => {
+                _ = try b.add(.global_set_linkage_external, .{ .operand = handle, .node = node });
+            },
+            .a_import => {
+                _ = try b.add(.global_set_linkage_external, .{ .operand = handle, .node = node });
+                has_initializer = false;
+            },
             else => unreachable,
         }
     }
 
-    _ = try b.add(.yield_inline, .{ .operand = rvalue, .node = node });
+    var rvalue: ?u32 = null;
+    if (has_initializer) {
+        std.debug.assert(const_decl.val != 0);
+        rvalue = try valExpr(b, scope, const_decl.val);
+    } else {
+        std.debug.print("{}\n", .{const_decl.val});
+        std.debug.assert(const_decl.val == 0);
+        std.debug.assert(metadata.ty != 0); // this should be a handled user error
+    }
+
+    if (metadata.ty != 0) {
+        const type_annotation = try typeExpr(b, scope, metadata.ty);
+        _ = try b.add(.global_set_type, .{
+            .handle = handle,
+            .operand = type_annotation,
+            .node = node,
+        });
+
+        if (rvalue) |val| {
+            rvalue = try coerce(b, scope, val, type_annotation, node);
+        }
+    } else {
+        // generate a type inference, since global decls can't
+        // postpone the problem like locals can
+        const type_inference = try b.add(.type_of, .{ .operand = rvalue.?, .node = node });
+        _ = try b.add(.global_set_type, .{
+            .handle = handle,
+            .operand = type_inference,
+            .node = node,
+        });
+    }
+
+    if (rvalue) |val| {
+        _ = try b.add(.global_set_init, .{
+            .handle = handle,
+            .operand = val,
+            .node = node,
+        });
+    }
+
+    _ = try b.add(.yield_inline, .{ .operand = handle, .node = node });
     return BlockEditor.addBlockInlineUnlinked(hg, b, node);
 }
 
@@ -882,17 +957,27 @@ fn globalVar(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
     var inline_block = try Block.initInline(hg, s);
     defer inline_block.deinit();
     const scope = &inline_block.base;
+    const b = &inline_block.editor;
 
-    const rvalue_inner = try valExpr(&inline_block.editor, scope, var_decl.val);
-    const rvalue = if (var_decl.ty == 0) rvalue_inner else ref: {
-        // if this is typed, add a coerce
-        const dest_ty = try typeExpr(&inline_block.editor, scope, var_decl.ty);
-        break :ref try coerce(&inline_block.editor, scope, rvalue_inner, dest_ty, node);
-    };
+    const handle = try b.add(.global_handle, .{ .node = node });
+    _ = try b.add(.global_set_mutable, .{ .operand = handle, .node = node });
 
-    const mut = try inline_block.editor.add(.global_mut, .{ .operand = rvalue, .node = node });
-    _ = try inline_block.editor.add(.yield_inline, .{ .operand = mut, .node = node });
-    return BlockEditor.addBlockInlineUnlinked(hg, &inline_block.editor, node);
+    var rvalue = try valExpr(&inline_block.editor, scope, var_decl.val);
+    if (var_decl.ty != 0) {
+        // if this is typed, add a coerce and mark the global's type
+        const type_annotation = try typeExpr(&inline_block.editor, scope, var_decl.ty);
+        _ = try b.add(.global_set_type, .{
+            .handle = handle,
+            .operand = type_annotation,
+            .node = node,
+        });
+
+        rvalue = try coerce(b, scope, rvalue, type_annotation, node);
+        _ = try b.add(.global_set_init, .{ .handle = handle, .operand = rvalue, .node = node });
+    }
+
+    _ = try b.add(.yield_inline, .{ .operand = handle, .node = node });
+    return BlockEditor.addBlockInlineUnlinked(hg, b, node);
 }
 
 fn assignSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -1096,8 +1181,9 @@ fn loopRange(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
         _ = try block(&inner_scope.editor, &inner_scope.base, loop_range.body, false);
         _ = try outer_scope.editor.addBlock(&inner_scope.editor, node);
 
+        _ = try statement(&outer_scope.editor, &outer_scope.base, signature.afterthought);
         // if (try statement(&outer_scope.editor, &outer_scope.base, signature.afterthought)) |_| {
-        //     return error.AfterthoughtDecl;
+        // return error.AfterthoughtDecl;
         // }
 
         break :body try b.addBlockUnlinked(&outer_scope.editor, node);

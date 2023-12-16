@@ -76,16 +76,16 @@ pub const Value = extern union {
         return val.extended.kind;
     }
 
-    pub fn toInt(val: *Value) u64 {
+    pub fn toInt(val: Value) u64 {
         switch (val.kind()) {
             .zero => return 0,
             .one => return 1,
             .u32 => {
-                const payload = val.payload.cast(Value.Extended.U32).?;
+                const payload = val.extended.cast(Value.U32).?;
                 return @intCast(payload.int);
             },
             .u64 => {
-                const payload = val.payload.cast(Value.Extended.U64).?;
+                const payload = val.extended.cast(Value.U64).?;
                 return payload.int;
             },
             else => unreachable,
@@ -93,7 +93,7 @@ pub const Value = extern union {
     }
 
     pub fn toFloat(val: Value) f64 {
-        const f = val.payload.cast(Value.Extended.F64).?;
+        const f = val.extended.cast(Value.F64).?;
         return f.float;
     }
 
