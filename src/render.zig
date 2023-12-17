@@ -391,8 +391,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
                     try writer.print(")", .{});
                 },
-                .function_type => {
-                    const function_type = ir.get(index, .function_type);
+                .create_function_type => {
+                    const function_type = ir.get(index, .create_function_type);
                     try self.formatIndex(function_type.return_type, &lbuf);
                     try writer.print("function_type({s}", .{lbuf});
 

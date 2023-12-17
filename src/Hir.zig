@@ -42,8 +42,10 @@ pub const Inst = struct {
         // data.ty = type (stored directly)
         // TODO: why do we need this instead of types[]?
         ty,
-        pointer_ty,
-        function_type,
+        // create a new type thats a pointer to the given type
+        // data.operand = type to take a pointer to
+        create_pointer_type,
+        create_function_type,
         param_type_of,
         type_of,
         // declare a new typed immediate constant
@@ -99,7 +101,6 @@ pub const Inst = struct {
         // data.un_node.operand = operand to use
         neg,
         // TODO: phase this out in codegen (turn it into a cmp)
-        log_not,
         bit_not,
 
         // user requested implicit type coercion
@@ -405,10 +406,9 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .param_type_of,
         .global_set_init,
         .global_set_type,
-        .function_type,
+        .create_function_type,
         => .pl_node,
         .neg,
-        .log_not,
         .bit_not,
         .push,
         .alloca,
@@ -419,7 +419,7 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .yield_node,
         .yield_inline,
         .load_global,
-        .pointer_ty,
+        .create_pointer_type,
         .type_of,
         => .un_node,
         .ret_implicit,
@@ -481,7 +481,7 @@ pub fn payloadType(comptime tag: Inst.Tag) type {
         .global_set_init,
         .global_set_type,
         => Inst.GlobalOperand,
-        .function_type => Inst.FunctionType,
+        .create_function_type => Inst.FunctionType,
         else => {
             @compileLog(tag);
             unreachable;
@@ -636,7 +636,6 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .none => Type.Common.void_type,
         // unary operand instructions - recursively resolve
         .neg,
-        .log_not,
         .bit_not,
         .ret_node,
         .yield_node,
@@ -728,7 +727,6 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
 
             // find a global_set_type that references this handle
             for (insts) |block_inst| {
-                std.debug.print("handle: {} cur: {}\n", .{ handle, hir.insts.items(.tag)[block_inst] });
                 if (hir.insts.items(.tag)[block_inst] == .global_set_type) {
                     const set_type = hir.get(block_inst, .global_set_type);
                     if (set_type.handle == handle) {
@@ -773,9 +771,9 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .coerce,
         .fn_decl,
         .module,
-        .pointer_ty,
+        .create_pointer_type,
         .param_type_of,
-        .function_type,
+        .create_function_type,
         => |tag| {
             std.debug.print("%{}: {}\n", .{ index, tag });
             const out = std.io.getStdOut();

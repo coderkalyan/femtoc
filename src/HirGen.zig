@@ -487,31 +487,35 @@ fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
     const operator_token = hg.tree.mainToken(node);
 
     switch (hg.tree.tokenTag(operator_token)) {
-        .ampersand => {
-            const ptr = try refExpr(b, scope, unary_expr);
-            return ptr;
-        },
+        // calculate a reference to the pointer and return it
+        .ampersand => return refExpr(b, scope, unary_expr),
         .asterisk => {
             const ptr = try valExpr(b, scope, unary_expr);
+            // TODO: load everywhere
             switch (ri.semantics) {
                 .val => return b.add(.load, .{ .operand = ptr, .node = node }),
                 .ref => return ptr,
                 .ty => unreachable,
             }
         },
+        // nop - +x is just x
         .plus => return node,
-        inline .minus,
-        .bang,
-        .tilde,
-        => |tok| {
-            const tag: Inst.Tag = switch (tok) {
-                .minus => .neg,
-                .bang => .log_not,
-                .tilde => .bit_not,
-                else => unreachable,
-            };
+        .minus => {
             const operand = try valExpr(b, scope, unary_expr);
-            return b.add(tag, .{ .node = node, .operand = operand });
+            return b.add(.neg, .{ .node = node, .operand = operand });
+        },
+        .bang => {
+            // reduces to a bool comparison to 0
+            // just coerce this to a u1 so we know we're operating on a bool
+            const inner = try valExpr(b, scope, unary_expr);
+            const bool_type = try b.add(.ty, .{ .ty = Type.Common.u1_type });
+            const operand = try coerce(b, scope, inner, bool_type, node);
+            const other = try b.addValue(Value.Common.zero);
+            return b.add(.cmp_eq, .{ .node = node, .lref = operand, .rref = other });
+        },
+        .tilde => {
+            const operand = try valExpr(b, scope, unary_expr);
+            return b.add(.bit_not, .{ .node = node, .operand = operand });
         },
         else => {
             std.debug.print("{}\n", .{hg.tree.tokenTag(operator_token)});
@@ -635,7 +639,7 @@ fn pointerTy(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const pointee = hg.tree.data(node).pointer_ty;
     const inner = try typeExpr(b, scope, pointee);
-    return b.add(.pointer_ty, .{ .operand = inner, .node = node });
+    return b.add(.create_pointer_type, .{ .operand = inner, .node = node });
 }
 
 fn fnType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {

@@ -94,8 +94,9 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
             .global_set_type,
             // just re-link these
             => try b.linkInst(inst),
-            .pointer_ty => try pointerTy(&analysis, inst),
+            .create_pointer_type => try createPointerType(&analysis, inst),
             .param_type_of => try paramTypeOf(&analysis, inst),
+            .type_of => try typeOf(&analysis, inst),
             .cmp_eq,
             .cmp_ne,
             .cmp_gt,
@@ -109,7 +110,7 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
             .div,
             .mod,
             => |tag| try binaryArithOp(&analysis, inst, tag),
-            .function_type => try functionType(&analysis, inst),
+            .create_function_type => try createFunctionType(&analysis, inst),
             // else => {},
             // TODO: remove else clause and switch explicitly
             // to avoid copying bad instructions
@@ -638,28 +639,15 @@ fn call(analysis: *BlockAnalysis, inst: Hir.Index) !void {
         return error.HandledUserError;
     }
 
-    const src_args = hg.extra.items[call_data.args_start..call_data.args_end];
-    // for (src_args, func_type.param_types, 0..) |src_arg, param_type, i| {
-    //     // identify the type of the ith parameter of the function type
-    //     // and coerce the src_arg to that type
-    //     // TODO: get rid of this
-    //     std.debug.print("coercing %{} to {}\n", .{ src_arg, param_type.basic });
-    //     src_args[i] = try coerceInnerImplicit(analysis, src_arg, param_type);
-    // }
-
-    // const dest_args = try hg.arena.alloc(u32, call_data.args_len);
-    // const updated_data = hg.get(inst, .call);
-    // const dest_args = hg.extra.items[updated_data.pl + 2 .. updated_data.pl + 2 + updated_data.args_len];
-    // defer hg.arena.free(dest_args);
-
-    const new_call = try b.addCall(call_data.ptr, src_args, call_data.node);
-    try analysis.src_block.replaceAllUsesWith(inst, new_call);
+    try b.linkInst(inst);
 }
 
-fn pointerTy(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+// replaces a create_pointer_type instruction with an inline ty instruction
+// by constructing a pointer to the operand type
+fn createPointerType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.insts.items(.data)[inst].un_node;
+    const data = hg.get(inst, .create_pointer_type);
     const pointee = try hg.resolveType(data.operand);
 
     const inner = try hg.gpa.create(Type.Pointer);
@@ -670,10 +658,10 @@ fn pointerTy(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
-fn functionType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+fn createFunctionType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .function_type);
+    const data = hg.get(inst, .create_function_type);
     const return_type = try hg.resolveType(data.return_type);
 
     const param_types = try hg.gpa.alloc(Type, data.params_end - data.params_start);
@@ -701,5 +689,15 @@ fn paramTypeOf(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const param_type = ptr_type.param_types[data.param_index];
 
     const new_type = try b.add(.ty, .{ .ty = param_type });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
+fn typeOf(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .type_of);
+    const type_of = try hg.resolveType(data.operand);
+
+    const new_type = try b.add(.ty, .{ .ty = type_of });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }

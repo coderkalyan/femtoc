@@ -275,6 +275,10 @@ pub const Lexer = struct {
                     // char literal
                     '\'' => {
                         self.index += 1;
+                        // switch (self.source[self.index]) {
+                        //     // escape sequence
+                        //     '\\' => {},
+                        // }
                         if (self.source[self.index] == '\'') {
                             self.index += 1;
                             result.tag = .invalid;

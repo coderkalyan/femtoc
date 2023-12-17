@@ -43,14 +43,6 @@ pub fn generate(hir: *const Hir, gpa: Allocator, inline_block: Hir.Index, name: 
                 try map.put(inst, .{ .ty = data.ty });
             },
             .constant => try map.put(inst, .{ .constant = inst }),
-            .type_of => {
-                const data = hir.get(inst, .type_of);
-                const constant_inst = map.get(data.operand).?.constant;
-                const constant = hir.get(constant_inst, .constant);
-
-                const ty = try hir.resolveType(gpa, constant.ty);
-                try map.put(inst, .{ .ty = ty });
-            },
             .global_handle => {
                 const decl = try gpa.create(DeclInfo);
                 decl.* = .{

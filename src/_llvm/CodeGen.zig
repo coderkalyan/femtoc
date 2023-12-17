@@ -108,7 +108,6 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
                 continue;
             },
             .block => try codegen.block(inst),
-            .log_not => codegen.logNot(inst),
             else => {
                 std.debug.print("{}\n", .{hir.insts.items(.tag)[inst]});
                 continue;
@@ -354,12 +353,4 @@ fn ret(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) c.LLVMVal
     const is_none = hir.insts.items(.tag)[data.operand] == .none;
     const ref = if (is_none) null else codegen.resolveInst(data.operand);
     return codegen.builder.addReturn(ref);
-}
-
-fn logNot(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .log_not);
-    const ref = codegen.resolveInst(data.operand);
-    const u1_type = c.LLVMInt1TypeInContext(codegen.builder.context.context);
-    return codegen.builder.addCmp(.icmp_eq, ref, c.LLVMConstInt(u1_type, 0, 0));
 }

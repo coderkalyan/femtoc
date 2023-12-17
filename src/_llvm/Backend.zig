@@ -43,7 +43,6 @@ fn generate(iface: *BackendInterface, hir: *const Hir) !void {
         const inst = hir.extra_data[base + extra_index + 1];
 
         const declinfo = try DeclInfo.generate(hir, self.gpa, inst, id);
-        std.debug.print("declinfo: {any}\n", .{declinfo});
         var declgen = DeclGen{
             .gpa = self.gpa,
             .arena = arena.allocator(),
