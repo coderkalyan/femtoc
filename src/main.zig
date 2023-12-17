@@ -1,87 +1,146 @@
 const std = @import("std");
-const clap = @import("clap");
+const error_handler = @import("error_handler.zig");
 const Driver = @import("Driver.zig");
+const render = @import("render.zig");
+const Allocator = std.mem.Allocator;
 
 const debug = std.debug;
 const io = std.io;
+const max_file_size = std.math.maxInt(u32);
 
 fn fatal(msg: []const u8) noreturn {
     debug.print("{s}\n", .{msg});
     std.process.exit(1);
 }
 
-fn stem(path: []const u8) []const u8 {
-    var start = path.len - 1;
-    while (path[start] != '/') : (start -= 1) {}
-    var end = path.len - 1;
-    while (path[end] != '.') : (end -= 1) {}
-    return path[start + 1 .. end];
+fn print_usage() !void {
+    const message =
+        \\ --help           Display this help and exit.
+        \\ -o <str>         Specify the output filename.
+        \\ -S               Compile, but don't assemble.
+        \\ -c               Compile and assemble, but don't link.
+        \\ --emit-llvm      Emit LLVM IR (.ll) file and exit.
+        \\ --verbose-hir    Dump femto HIR to stdout.
+        \\ --verbose-llvm   Dump LLVM IR to stdout.
+        \\ <str>            Source filename to compile.
+    ;
+    std.log.info(message, .{});
+    std.os.exit(0);
 }
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help            Display this help and exit.
-        \\-o , --output <str>   Specify the output filename.
-        \\-c, --compile         Emit object file.
-        \\-S, --assemble        Emit assembly file.
-        \\--emit-llvm           Emit LLVM IR (.bc) file.
-        \\--verbose-hir         Dump femto HIR to stdout.
-        \\--verbose-mir         Dump femto HIR to stdout.
-        \\--verbose-llvm-ir     Dump LLVM IR to stdout.
-        \\<str>                 Source filename to compile.
-    );
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
 
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-    }) catch |err| {
-        diag.report(io.getStdErr().writer(), err) catch {};
-        return;
-    };
-    defer res.deinit();
-
-    if (res.positionals.len == 0) {
-        fatal("Missing source filename");
-    }
-
-    var config = Driver.Configuration{
-        .input = res.positionals[0],
-        .output = "",
-        .stage = .executable,
-        .verbose_hir = res.args.@"verbose-hir" == 1,
-        .verbose_mir = res.args.@"verbose-mir" == 1,
-        .verbose_llvm_ir = res.args.@"verbose-llvm-ir" == 1,
-        .emit_llvm = res.args.@"emit-llvm" == 1,
-    };
-
-    const input_stem = stem(config.input);
-    var extension: []const u8 = "o";
-    if (res.args.compile == 1) {
-        if (res.args.assemble == 1) {
-            fatal("-c cannot be used along with -S");
-        }
-        extension = "o";
-        config.stage = .object;
-    } else if (res.args.assemble == 1) {
-        extension = "s";
-        config.stage = .assembly;
-    }
-
-    if (res.args.@"emit-llvm" == 1) {
-        if (res.args.assemble == 1) {
-            extension = "ll";
-            config.stage = .llvm_ll;
+    var input_filename: ?[]const u8 = null;
+    var output_filename: ?[]const u8 = null;
+    var stage: Driver.Stage = .assemble;
+    var stage_set = false;
+    var verbose_hir = false;
+    var verbose_llvm = false;
+    var i: u32 = 1;
+    _ = args.next(); // skip executable
+    while (args.next()) |arg| : (i += 1) {
+        if (std.mem.eql(u8, arg, "--help")) {
+            try print_usage();
+        } else if (std.mem.eql(u8, arg, "-o")) {
+            if (output_filename != null) {
+                std.log.err("can only specify single output file\n", .{});
+                std.os.exit(1);
+            }
+            if (args.next()) |next| {
+                output_filename = next;
+            } else {
+                try print_usage();
+            }
+        } else if (std.mem.eql(u8, arg, "-S")) {
+            if (stage_set) {
+                std.log.err("cannot use multiple stage parameters [-S|-c|--emit-llvm] together\n", .{});
+                std.os.exit(1);
+            }
+            stage = .compile;
+            stage_set = true;
+        } else if (std.mem.eql(u8, arg, "-c")) {
+            if (stage_set) {
+                std.log.err("cannot use multiple stage parameters [-S|-c|--emit-llvm] together\n", .{});
+                std.os.exit(1);
+            }
+            stage = .assemble;
+            stage_set = true;
+        } else if (std.mem.eql(u8, arg, "--emit-llvm")) {
+            if (stage_set) {
+                std.log.err("cannot use multiple stage parameters [-S|-c|--emit-llvm] together\n", .{});
+                std.os.exit(1);
+            }
+            stage = .llvm;
+            stage_set = true;
+        } else if (std.mem.eql(u8, arg, "--verbose-hir")) {
+            verbose_hir = true;
+        } else if (std.mem.eql(u8, arg, "--verbose-llvm")) {
+            verbose_llvm = true;
+        } else if (arg.len == 0 or arg[0] == '-') {
+            try print_usage();
+        } else if (input_filename != null) {
+            std.log.err("can only specify single input file\n", .{});
+            std.os.exit(1);
         } else {
-            extension = "bc";
-            config.stage = .llvm_bc;
+            input_filename = arg;
         }
     }
-    const chunks: [2][]const u8 = .{ input_stem, extension };
-    config.output = try std.mem.joinZ(allocator, ".", &chunks);
-    defer allocator.free(config.output);
 
-    try Driver.build(allocator, &config);
+    if (input_filename == null) {
+        std.log.err("must specify input filename\n", .{});
+        std.os.exit(1);
+    }
+
+    const out = std.io.getStdOut();
+    var buffered_out = std.io.bufferedWriter(out.writer());
+    var writer = buffered_out.writer();
+
+    var driver = try Driver.init(allocator, arena.allocator(), input_filename.?, output_filename, stage);
+    const stage_bits = @intFromEnum(stage);
+
+    var source = try driver.readSource();
+    const ast = try driver.parseAst(source);
+    if (ast.errors.len > 0) {
+        const errors = try error_handler.LocatedSourceError.locateErrors(allocator, &ast, ast.errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, allocator, &ast, input_filename.?, errors);
+
+        try error_renderer.render();
+        try buffered_out.flush();
+        std.os.exit(1);
+    }
+
+    if (stage_bits & Driver.HIR == 0) std.os.exit(0);
+    const hir = try driver.generateHir(&ast);
+    if (hir.errors.len > 0) {
+        const errors = try error_handler.LocatedSourceError.locateErrors(allocator, &ast, hir.errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, allocator, &ast, input_filename.?, errors);
+
+        try error_renderer.render();
+        try buffered_out.flush();
+        std.os.exit(1);
+    }
+
+    if (verbose_hir) {
+        var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, &hir);
+        try hir_renderer.render();
+        try buffered_out.flush();
+    }
+
+    if (stage_bits & Driver.CODEGEN == 0) std.os.exit(0);
+    var backend = try driver.generateLlvm(&hir);
+    defer backend.deinit();
+    if (verbose_llvm) {
+        try driver.dumpLlvm(&backend);
+    }
+    if (stage == .llvm) {
+        try driver.printLlvmToFile(&backend);
+        std.os.exit(0);
+    }
 }

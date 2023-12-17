@@ -1,8 +1,8 @@
 const std = @import("std");
 const parse = @import("parse.zig");
+const Ast = @import("Ast.zig");
+const Hir = @import("Hir.zig");
 const HirGen = @import("HirGen.zig");
-// const Compilation = @import("Compilation.zig");
-const render = @import("render.zig");
 const error_handler = @import("error_handler.zig");
 const LlvmBackend = @import("_llvm/Backend.zig");
 
@@ -10,73 +10,92 @@ const Allocator = std.mem.Allocator;
 
 const time = std.time;
 const max_file_size = std.math.maxInt(u32);
+const Driver = @This();
 
-pub const Configuration = struct {
-    input: []const u8,
-    output: [:0]const u8,
-    stage: enum {
-        object,
-        assembly,
-        llvm_bc,
-        llvm_ll,
-        executable,
-    },
-    verbose_hir: bool,
-    verbose_mir: bool,
-    verbose_llvm_ir: bool,
-    emit_llvm: bool,
+gpa: Allocator,
+arena: Allocator,
+input_filename: []const u8,
+output_filename: []const u8,
+stage: Stage,
+
+pub const HIR = (1 << 0);
+pub const CODEGEN = (1 << 1);
+pub const COMPILE = (1 << 2);
+pub const ASSEMBLE = (1 << 3);
+
+pub const Stage = enum(u8) {
+    llvm = HIR | CODEGEN,
+    compile = HIR | CODEGEN | COMPILE,
+    assemble = HIR | CODEGEN | COMPILE | ASSEMBLE,
 };
 
-pub fn build(gpa: Allocator, config: *Configuration) !void {
-    const out = std.io.getStdOut();
-    var buffered_out = std.io.bufferedWriter(out.writer());
-    var writer = buffered_out.writer();
+fn stem(path: []const u8) []const u8 {
+    var start = path.len - 1;
+    while (path[start] != '/') : (start -= 1) {}
+    var end = path.len - 1;
+    while (path[end] != '.') : (end -= 1) {}
+    return path[start + 1 .. end];
+}
 
-    var file = try std.fs.cwd().openFile(config.input, .{});
+fn guessOutputFilename(allocator: Allocator, input_filename: []const u8, stage: Stage) ![]u8 {
+    const input_stem = stem(input_filename);
+    const extension = switch (stage) {
+        .llvm => "ll",
+        .compile => "s",
+        .assemble => "o",
+    };
+
+    return std.fmt.allocPrint(allocator, "{s}.{s}", .{ input_stem, extension });
+}
+
+pub fn init(gpa: Allocator, arena: Allocator, input_filename: []const u8, output_filename: ?[]const u8, stage: Stage) !Driver {
+    return .{
+        .gpa = gpa,
+        .arena = arena,
+        .input_filename = input_filename,
+        .output_filename = output_filename orelse try guessOutputFilename(gpa, input_filename, stage),
+        .stage = stage,
+    };
+}
+
+pub fn readSource(driver: *Driver) ![:0]u8 {
+    var file = try std.fs.cwd().openFile(driver.input_filename, .{});
     defer file.close();
-
     const stat = try file.stat();
     if (stat.size > max_file_size) {
         std.log.err("File size too large, must be at most {} bytes", .{max_file_size});
         std.process.exit(1);
     }
 
-    var source = try gpa.allocSentinel(u8, @intCast(stat.size), 0);
+    var source = try driver.gpa.allocSentinel(u8, @intCast(stat.size), 0);
     const size = try file.readAll(source);
     if (stat.size != size) {
         std.log.err("Failed to read entire source file", .{});
-        std.process.exit(1);
+        std.os.exit(1);
     }
 
-    const ast = try parse.parse(gpa, source);
+    return source;
+}
 
-    if (ast.errors.len > 0) {
-        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, ast.errors);
-        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, config.input, errors);
+pub fn parseAst(driver: *Driver, source: [:0]const u8) !Ast {
+    return parse.parse(driver.gpa, source);
+}
 
-        try error_renderer.render();
-        try buffered_out.flush();
-        std.debug.print("{any} errors\n", .{errors.len});
-        std.process.exit(1);
-    }
+pub fn generateHir(driver: *Driver, ast: *const Ast) !Hir {
+    return HirGen.generate(driver.gpa, ast);
+}
 
-    const hir = try HirGen.generate(gpa, &ast);
-    if (hir.errors.len > 0) {
-        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, hir.errors);
-        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, config.input, errors);
+pub fn generateLlvm(driver: *Driver, hir: *const Hir) !LlvmBackend {
+    var backend = LlvmBackend.init(driver.gpa, driver.arena);
+    try backend.generate(hir);
+    return backend;
+}
 
-        try error_renderer.render();
-        try buffered_out.flush();
-        std.debug.print("{any} errors\n", .{errors.len});
-        std.process.exit(1);
-    }
+pub fn dumpLlvm(driver: *Driver, backend: *LlvmBackend) !void {
+    _ = driver;
+    try backend.dumpToStdout();
+}
 
-    if (config.verbose_hir) {
-        var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, &hir);
-        try hir_renderer.render();
-        try buffered_out.flush();
-    }
-
-    var backend = LlvmBackend.init(gpa);
-    try backend.iface.generate(&hir);
+pub fn printLlvmToFile(driver: *Driver, backend: *LlvmBackend) !void {
+    try backend.printToFile(driver.output_filename);
 }

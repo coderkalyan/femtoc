@@ -186,7 +186,6 @@ fn coerce(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const src_type = try hg.resolveType(data.val);
     const dest_type = try hg.resolveType(data.ty);
     if (src_type.eql(dest_type)) {
-        std.debug.print("%{} coerce is eql: => %{}\n", .{ inst, data.val });
         try analysis.src_block.replaceAllUsesWith(inst, data.val);
         return;
     }

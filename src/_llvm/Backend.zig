@@ -11,30 +11,29 @@ const c = Context.c;
 const Backend = @This();
 
 gpa: Allocator,
-map: std.AutoHashMapUnmanaged(u32, c.LLVMValueRef),
-iface: BackendInterface,
+arena: Allocator,
+context: Context,
 
-pub fn init(gpa: Allocator) Backend {
+pub fn init(gpa: Allocator, arena: Allocator) Backend {
     return .{
         .gpa = gpa,
-        .map = .{},
-        .iface = .{ .generateFn = generate },
+        .arena = arena,
+        .context = Context.init(arena, "femto_main"),
     };
 }
 
-fn generate(iface: *BackendInterface, hir: *const Hir) !void {
-    const self = @fieldParentPtr(Backend, "iface", iface);
+pub fn deinit(self: *Backend) void {
+    self.context.deinit();
+}
+
+pub fn generate(self: *Backend, hir: *const Hir) !void {
     const module_pl = hir.insts.items(.data)[hir.module_index].pl_node.pl;
     const module = hir.extraData(module_pl, Hir.Inst.Module);
 
-    var arena = std.heap.ArenaAllocator.init(self.gpa);
-    defer arena.deinit();
-    var context = Context.init(arena.allocator(), "femto_main");
-    defer context.deinit();
-    // var bodies = std.ArrayList(Hir.Index).init(arena.allocator());
-    // defer bodies.deinit();
-    var codegens = std.ArrayList(CodeGen).init(arena.allocator());
+    var codegens = std.ArrayList(CodeGen).init(self.arena);
     defer codegens.deinit();
+    var global_map = std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef){};
+    defer global_map.deinit(self.arena);
 
     var extra_index: u32 = 0;
     while (extra_index < module.len * 2) : (extra_index += 2) {
@@ -45,17 +44,16 @@ fn generate(iface: *BackendInterface, hir: *const Hir) !void {
         const declinfo = try DeclInfo.generate(hir, self.gpa, inst, id);
         var declgen = DeclGen{
             .gpa = self.gpa,
-            .arena = arena.allocator(),
-            .context = &context,
+            .arena = self.arena,
+            .context = &self.context,
             .hir = hir,
             .name = id,
             .inline_block = inst,
-            .map = .{},
-            .global_map = &self.map,
+            .global_map = &global_map,
             .decl_info = declinfo,
         };
         const val = try declgen.generate(&codegens);
-        try self.map.put(arena.allocator(), id, val);
+        try global_map.put(self.arena, id, val);
     }
 
     var i: u32 = 0;
@@ -65,5 +63,12 @@ fn generate(iface: *BackendInterface, hir: *const Hir) !void {
         defer codegen.builder.deinit();
         try codegen.generate();
     }
-    context.dump();
+}
+
+pub fn dumpToStdout(self: *Backend) !void {
+    self.context.dump();
+}
+
+pub fn printToFile(self: *Backend, filename: []const u8) !void {
+    try self.context.printToFile(filename);
 }

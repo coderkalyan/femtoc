@@ -37,12 +37,25 @@ pub fn dump(context: *Context) void {
     c.LLVMDumpModule(context.module);
 }
 
+pub fn printToFile(context: *Context, filename: []const u8) !void {
+    var err: [*c]u8 = @ptrFromInt(0);
+    defer c.LLVMDisposeMessage(err);
+    const c_str = try std.fmt.allocPrintZ(context.arena, "{s}", .{filename});
+    defer context.arena.free(c_str);
+
+    const result = c.LLVMPrintModuleToFile(context.module, c_str.ptr, &err);
+    if (result != 0) {
+        std.log.err("codegen: failed to print module to file {s}", .{filename});
+        std.os.exit(1);
+    }
+}
+
 pub fn verify(context: *Context) void {
     var err: [*c]u8 = @ptrFromInt(0);
     const result = c.LLVMVerifyModule(context.module, c.LLVMPrintMessageAction, &err);
     defer c.LLVMDisposeMessage(err);
     if (result != 0) {
-        std.debug.print("{s}\n", .{err});
+        std.log.err("codegen: failed to verify module: {s}", .{err});
         return Error.VerificationError;
     }
 }

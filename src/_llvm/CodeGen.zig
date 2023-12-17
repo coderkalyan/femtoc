@@ -37,7 +37,8 @@ fn resolveInst(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
         if (codegen.map.get(inst)) |ref| {
             return ref;
         } else {
-            std.log.emerg("codegen: unable to resolve instruction %{}\n", .{inst});
+            std.log.err("codegen: unable to resolve instruction %{}\n", .{inst});
+            unreachable;
         }
     }
 }
@@ -111,8 +112,9 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
                 continue;
             },
             .block => try codegen.block(inst),
+            .none => continue,
             else => {
-                std.log.crit("codegen: unexpected inst: {}\n", .{hir.insts.items(.tag)[inst]});
+                std.log.err("codegen: unexpected inst: {}", .{hir.insts.items(.tag)[inst]});
                 continue;
             },
         };
