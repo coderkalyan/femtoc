@@ -868,7 +868,6 @@ const Parser = struct {
             if (attributes.len > 0) {
                 // const with attributes
                 const attrs_start: u32 = @intCast(p.extra.items.len);
-                std.debug.print("p3 {any}, {}\n", .{ attributes, attributes.len });
                 try p.extra.appendSlice(p.gpa, attributes);
                 const attrs_end: u32 = @intCast(p.extra.items.len);
 

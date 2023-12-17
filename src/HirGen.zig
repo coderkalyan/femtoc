@@ -511,7 +511,11 @@ fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             const inner = try valExpr(b, scope, unary_expr);
             const bool_type = try b.add(.ty, .{ .ty = Type.Common.u1_type });
             const operand = try coerce(b, scope, inner, bool_type, node);
-            const other = try b.addValue(Value.Common.zero);
+            const other = try b.add(.constant, .{
+                .ty = bool_type,
+                .val = try b.addValue(Value.Common.zero),
+                .node = node,
+            });
             return b.add(.cmp_eq, .{ .node = node, .lref = operand, .rref = other });
         },
         .tilde => {

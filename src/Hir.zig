@@ -756,9 +756,12 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .global_set_mutable,
         .global_set_init,
         .global_set_type,
-        .global_handle, // TODO
+        .global_handle,
         .global_set_linkage_external,
-        => unreachable,
+        => |tag| {
+            std.log.err("hir: encountered illegal instruction {} while resolving type\n", .{tag});
+            unreachable;
+        },
         // untyped instructions should be replaced before they're referred to
         .int,
         .float,
@@ -775,7 +778,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .param_type_of,
         .create_function_type,
         => |tag| {
-            std.debug.print("%{}: {}\n", .{ index, tag });
+            std.log.err("hir: encountered illegal instruction {} while resolving type\n", .{tag});
             const out = std.io.getStdOut();
             var buffered_out = std.io.bufferedWriter(out.writer());
             var writer = buffered_out.writer();

@@ -53,7 +53,6 @@ fn uint(self: *Coercion) !Hir.Index {
         // can coerce only if the destination uint is larger (same size would be caught earlier)
         .uint => {
             if (self.dest_type.basic.width < self.src_type.basic.width) {
-                std.debug.print("src: %{} = {}, dest: {} (coerce inst = %{?})\n", .{ self.src, self.src_type.basic.width, self.dest_type.basic.width, self.coerce_inst });
                 return error.Truncated;
             }
             const zext = try b.add(.zext, .{
