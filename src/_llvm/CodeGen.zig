@@ -34,9 +34,11 @@ fn resolveInst(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
         // via the name
         return codegen.global_map.get(data.operand).?;
     } else {
-        if (codegen.map.get(inst) == null)
-            std.debug.print("resolving %{}\n", .{inst});
-        return codegen.map.get(inst).?;
+        if (codegen.map.get(inst)) |ref| {
+            return ref;
+        } else {
+            std.log.emerg("codegen: unable to resolve instruction %{}\n", .{inst});
+        }
     }
 }
 
@@ -85,6 +87,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .cmp_lt,
             .cmp_gt,
             => unreachable,
+            .push => unreachable,
             .zext => try codegen.zext(inst),
             .sext => try codegen.sext(inst),
             .fpext => try codegen.fpext(inst),
@@ -98,7 +101,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
                 try codegen.branchDouble(inst);
                 continue;
             },
-            .ty => continue,
+            .ty, .load_global => continue,
             inline .yield_implicit, .yield_node => |tag| {
                 yield_val = codegen.yield(inst, tag);
                 break;
@@ -109,7 +112,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             },
             .block => try codegen.block(inst),
             else => {
-                std.debug.print("{}\n", .{hir.insts.items(.tag)[inst]});
+                std.log.crit("codegen: unexpected inst: {}\n", .{hir.insts.items(.tag)[inst]});
                 continue;
             },
         };

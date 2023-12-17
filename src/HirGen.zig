@@ -499,6 +499,7 @@ fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             }
         },
         // nop - +x is just x
+        // TODO: consider removing this syntax entirely
         .plus => return node,
         .minus => {
             const operand = try valExpr(b, scope, unary_expr);
@@ -518,7 +519,7 @@ fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             return b.add(.bit_not, .{ .node = node, .operand = operand });
         },
         else => {
-            std.debug.print("{}\n", .{hg.tree.tokenTag(operator_token)});
+            std.log.crit("unary: unexpected token: {}\n", .{hg.tree.tokenTag(operator_token)});
             return Error.UnexpectedToken;
         },
     }
@@ -590,7 +591,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .unary_expr => try unary(b, scope, ri, node),
             .fn_decl => try fnDecl(b, scope, node),
             else => {
-                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                std.log.crit("expr (val semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
@@ -603,7 +604,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .binary_expr => try binary(b, scope, node),
             .unary_expr => try unary(b, scope, ri, node),
             else => {
-                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                std.log.crit("expr (ref semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
@@ -613,7 +614,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .pointer_ty => try pointerTy(b, scope, node),
             .fn_type => try fnType(b, scope, node),
             else => {
-                std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+                std.log.crit("expr (type semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
@@ -676,7 +677,7 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         .loop_break => loopBreak(b, scope, node),
         .call_expr => call(b, scope, node),
         else => {
-            std.debug.print("Unexpected node: {}\n", .{b.hg.tree.data(node)});
+            std.log.crit("statement: unexpected node: {}\n", .{b.hg.tree.data(node)});
             return GenError.NotImplemented;
         },
     };
@@ -684,13 +685,12 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 
 fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const data = hg.tree.data(node);
-    std.debug.print("global statement: {}\n", .{data});
     return try switch (data) {
         .const_decl => globalConst(hg, scope, node),
         .const_decl_attr => globalConstAttr(hg, scope, node),
         .var_decl => globalVar(hg, scope, node),
         else => {
-            std.debug.print("Unexpected node: {}\n", .{hg.tree.data(node)});
+            std.log.crit("global statement: unexpected node: {}\n", .{hg.tree.data(node)});
             return GenError.NotImplemented;
         },
     };
@@ -924,7 +924,6 @@ fn globalConstAttr(hg: *HirGen, s: *Scope, node: Node.Index) !Hir.Index {
         std.debug.assert(const_decl.val != 0);
         rvalue = try valExpr(b, scope, const_decl.val);
     } else {
-        std.debug.print("{}\n", .{const_decl.val});
         std.debug.assert(const_decl.val == 0);
         std.debug.assert(metadata.ty != 0); // this should be a handled user error
     }
@@ -1251,7 +1250,7 @@ fn module(hg: *HirGen, node: Node.Index) !Hir.Index {
                 try hg.untyped_decls.put(hg.gpa, id, inst);
             },
             else => {
-                std.debug.print("Unexpected node: {}\n", .{hg.tree.data(node)});
+                std.log.crit("module: unexpected node: {}\n", .{hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         }
