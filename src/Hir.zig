@@ -46,7 +46,12 @@ pub const Inst = struct {
         // data.operand = type to take a pointer to
         create_pointer_type,
         create_function_type,
+        // fetches the return type of the current function body
+        // undefined for toplevel block_inlines
+        ret_type,
         param_type_of,
+        // fetches the type of a instruction
+        // data.operand = instruction value to get the type of
         type_of,
         // declare a new typed immediate constant
         // data.pl_node.pl = Inst.Constant
@@ -358,7 +363,7 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .loop_break,
         => .placeholder,
         .ty => .ty,
-        .global_handle => .node,
+        .global_handle, .ret_type => .node,
         .constant,
         .add,
         .sub,
@@ -777,6 +782,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .create_pointer_type,
         .param_type_of,
         .create_function_type,
+        .ret_type,
         => |tag| {
             std.log.err("hir: encountered illegal instruction {} while resolving type\n", .{tag});
             const out = std.io.getStdOut();

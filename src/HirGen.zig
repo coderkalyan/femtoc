@@ -1115,10 +1115,11 @@ fn ifChain(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 
 fn returnStmt(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const return_val = b.hg.tree.data(node).return_val;
+    const return_type = try b.add(.ret_type, .{ .node = node });
     const operand = if (return_val.val == 0) try b.add(.none, .{}) else op: {
         const ref = try valExpr(b, scope, return_val.val);
-        const bl = scope.resolveBlock().?;
-        break :op try coerce(b, scope, ref, bl.return_ty, node);
+        // const bl = scope.resolveBlock().?;
+        break :op try coerce(b, scope, ref, return_type, node);
     };
 
     return b.add(.ret_node, .{ .operand = operand, .node = node });

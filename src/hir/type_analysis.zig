@@ -24,6 +24,7 @@ const BlockAnalysis = struct {
     // where all new instructions go (replaced or copied)
     b: *BlockEditor,
     block_index: Hir.Index,
+    return_type: ?Type,
 };
 
 const Error = error{
@@ -44,7 +45,7 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
     while (extra_index < module.len * 2) : (extra_index += 2) {
         const base = module.pl + 1;
         const inst = hg.extra.items[base + extra_index + 1];
-        try analyze(hg, false, inst);
+        try analyze(hg, false, null, inst);
     }
 
     // second pass
@@ -53,15 +54,17 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
         const base = module.pl + 1;
         const inst = hg.extra.items[base + extra_index + 1];
 
-        const block_data = hg.get(inst, .block);
-        const slice = hg.block_slices.items[block_data.head];
-        for (slice) |block_inst| {
-            try hg.explore(block_inst, analyze, .{ hg, true });
-        }
+        // try hg.explore(inst, analyze, .{ hg, true, null });
+        try analyze(hg, true, null, inst);
+        // const block_data = hg.get(inst, .block);
+        // const slice = hg.block_slices.items[block_data.head];
+        // for (slice) |block_inst| {
+        //     try hg.explore(block_inst, analyze, .{ hg, true, null });
+        // }
     }
 }
 
-fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
+fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: Hir.Index) Error!void {
     const block_data = hg.get(block, .block);
     const slice = hg.block_slices.items[block_data.head];
     var src_block = try BlockEditor.clone(hg, slice);
@@ -71,6 +74,7 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
         .src_block = &src_block,
         .b = &b,
         .block_index = block,
+        .return_type = if (parent) |p| p.return_type else null,
     };
 
     for (slice, 0..) |inst, i| {
@@ -97,6 +101,7 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
             .create_pointer_type => try createPointerType(&analysis, inst),
             .param_type_of => try paramTypeOf(&analysis, inst),
             .type_of => try typeOf(&analysis, inst),
+            .ret_type => try retType(&analysis, inst),
             .cmp_eq,
             .cmp_ne,
             .cmp_gt,
@@ -117,7 +122,15 @@ fn analyze(hg: *HirGen, comptime explore: bool, block: Hir.Index) Error!void {
             else => try b.linkInst(inst),
         }
 
-        if (explore) try hg.explore(inst, analyze, .{ hg, explore });
+        if (hg.insts.items(.tag)[inst] == .constant) {
+            const data = hg.get(inst, .constant);
+            const ty = try hg.resolveType(data.ty);
+            if (ty.kind() == .function) {
+                const function_type = ty.extended.cast(Type.Function).?;
+                analysis.return_type = function_type.return_type;
+            }
+        }
+        if (explore) try hg.explore(inst, analyze, .{ hg, explore, &analysis });
     }
 
     try BlockEditor.updateBlock(hg, analysis.b, block);
@@ -698,5 +711,11 @@ fn typeOf(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const type_of = try hg.resolveType(data.operand);
 
     const new_type = try b.add(.ty, .{ .ty = type_of });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
+fn retType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const b = analysis.b;
+    const new_type = try b.add(.ty, .{ .ty = analysis.return_type.? });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
