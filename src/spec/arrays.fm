@@ -2,43 +2,135 @@ let main = fn() void {
     // arrays store a contigious list of the same type
     // the array type is defined by listing the element type
     // followed by the size in brackets
+    // like all other stack allocated data, arrays need to be initialized during declaration
     // array initializers use brackets + each element expression
+    // array sizes must be known at compile time, VLAs are not supported
     let numbers: u32[4] = [1, 2, 3, 4];
+    // when the array initializer explicitly (we will see implicit initialization in a bit)
+    // the length can be inferred by replacing the length with a `_`
+    // leaving the length blank means something different (we will get to slices next)
+    let numbers: u32[_] = [1, 2, 3, 4];
 
     // array elements can be retrieved by *indexing* the array, starting with 0
     let first = numbers[0];
     let second = numbers[1];
     let third = numbers[2];
     let fourth = numbers[3];
-    // arrays always know their length at compile time
+    // arrays always know their length at compile time, so the following is available
+    // at zero runtime storage/search cost
     let count = numbers.len;
-    // let fifth = numbers[4]; // error - out of bounds
+    // arrays don't check bounds (this may change in the future with formal verification)
+    // so the following will seg fault
+    // let fifth = numbers[4]; 
 
-    // the length of an array can be inferred using _ (NOT leaving the length blank)
-    let mut source: u8[_] = [1, 2, 3, 4];
-    // similar to modifying variables, array elements can be modified
-    source[0] = 0; // source => [0, 2, 3, 4]
+    // marking the array as mutable allows us to modify its elements
+    let mut source: u32[_] = [1, 2, 3, 4, 5];
+    source[0] = 0; // source => [0, 2, 3, 4, 5]
     // unlike some other languages, arrays have *value* semantics
-    // that is, assigning an array to another performs a deep copy
+    // that is, arrays "own" their data, and assigning an array to another
+    // performs a deep copy
     let mut dest = source;
-    let truth = dest == source;
-    dest[0] = 5; // dest => [5, 2, 3, 4], source => [0, 2, 3, 4]
-    // to reference the underlying memory, get a reference 
+    // comparing an array compares element wise values, so two memory segments
+    // with the same data will be equal
+    assert(dest == source);
+    dest[0] = 5; // dest => [5, 2, 3, 4, 5], source => [0, 2, 3, 4, 5]
+
+    // of course, this isn't always what you want, so you can reference
+    // the array to get a pointer to the underlying memory just like with
+    // any other variable
+    // note that this creates a pointer to a *4* long u32 array, not an
+    // *n* long u32 array. To point to runtime known lengths, we will discuss
+    // slices next
     let mut ref: u32[4]* = &source;
-    let truth = *ref == source;
-    let truth = ref == &source;
-    dest[0] = 1;
+    assert(*ref == source);
+    assert(ref == &source);
+
+    // array pointers automatically deference
     source[0] = 1;
-    let truth = dest == source;
-    let truth = &dest != &source;
+    dest[0] = 1;
+    assert(dest == source);     // the contents are the same
+    assert(&dest != &source);   // but the two arrays take up distinct memory locations
 
+    // it can be tedious to fill in large arrays with explicit initialization
     // use ... to fill in the remaining elements with the last value specified
-    let mut buf: u8[128] = [0...];
-    let slice: u8[] = buf[0..func()];
-    let truth = slice.len == 2;
+    // implicitly initialized arrays cannot have inferred lengths
+    let mut buffer: u8[128] = [0...];
 
-    // slices 
-    // let memory: void[*];
-    let hello: u8[] = "Hello";
+    // slices allow us to refer to arrays that can only be known at runtime
+    let slice: u8[] = buffer[0..64]; // exclusive upper bound
+    // slices don't own memory; think of them as a struct containing a pointer
+    // and a length. these two elements are stored at runtime, so a slice has a
+    // memory footprint of 2 * usize
+    
+    // querying the length is a constant time operation, but DOES require a memory
+    // read (not comptime known)
+    assert(slice.len == 64);
+    assert(slice[0] == 0);
+    assert(slice[63] == 0);
+    // slice[64] is out of bounds - even though slices have len fields, they don't
+    // check this on each access, since this would cause a very costly (and hidden)
+    // branch, which goes against femto's design principles
+    // when in doubt, it is the programmer's job to check bounds
+
+    // the previous slice was read only, but we can create mutable slices as well
+    // this doesn't mean the variable holding the slice can change slices - although
+    // you can do this as well - but rather that the slice is backed by mutable data
+    let ring: u8 mut[] = buffer[64..]; // excluding a bound will implicitly mean 0 or array.len
+    // ring now points to the second half of buffer, so ring[0] is the same data as buffer[64]
+    ring[0] = 1; // buffer => [0] * 64 + [1] + [0] * 63
+    assert(buffer[64] == ring[0]);
+    assert(buffer[65] == ring[1]);
+    assert(ring.len == 64);
+
+    // array pointers coerce to slices, since a comptime known length can be used
+    // to generate a runtime slice object. the reverse is *not* true
+    let slice: u8 mut[] = &buffer; // u8 mut[128]* coerces to u8 mut[]
+    assert(slice.ptr == buffer.ptr);
+    assert(slice.len == buffer.len);
+    assert(slice.len == 128);
+
+    // it's important to be clear about how mutables, arrays, and pointers work
+    let numbers: u32[_] = [1, 2, 3, 4];     // completely immutable data, owned
+    let mut numbers: u32[_] = [1, 2, 3, 4]; // mutable array, owned
+    let slice: u32[] = &numbers;            // points to immutable array, slice is also immutable
+    let slice: u32 mut[] = &numbers;        // slice itself is immutable, points to mutable array
+    let mut slice: u32[] = &numbers;        // can change what slice points to, but immutable data
+    let mut slice: u32 mut[] = &numbers;    // mutable slice to mutable data
+    let ptr: u32[]* = &number;              // read only pointer to array
+    let ptr: u32[] mut* = &numbers;         // writable pointer to array
+    let mut ptr: u32[]* = &numbers;         // can change to point to another array, but read only
+    let mut ptr: u32[] mut* = &numbers;     // pointer to mutable numbers array, can change
+
+    // when interoperating with C or in very tightly optimized code, we may want to
+    // have an indexable slice that doesn't have a length, and is "infinitely"
+    // indexable. the underlying memory of course has a finite length so be careful
+    let raw: u8 mut[?] = buffer.ptr;
+    // raw doesn't have a len, but is indexable
+    raw[64] += 1;
+
+    // "strings" are just character arrays/slices
+    // when we put in a string literal, the actual data is stored in a read only section
+    // and a slice is returned
+    // this slice is null-terminated to be backwards compatible with c-style strings
+    // the :0 marks this fact
+    // the slice's `len` excludes the null terminator, so this is compatible
+    // with c++-style strings too (which are also recommended usage in femto)
+    let hello: u8[:0] = "hello";
+    assert(hello.len == 5);
+    assert(hello[0] == 'h');
+    assert(hello[5] == 0); // works for null terminated slices, UB for normal slices
+
+    // to get a pure c-style string with runtime null termination, we can do the following
     let world: u8[:0] = "world";
+    let world: u8[?:0] = world.ptr;
+    // this represents the fact that the slice doesn't store a bound in memory, but it
+    // is guaranteed to be null terminated
+    assert(world.len() == 5); // performed at runtime, O(N) complexity
+    assert(world[0] == 'w');
+    assert(world[5] == 0);
+
+    // string literals are const slices, since they can be stored in read only memory
+    // either due to hardware constraints/optimization like ROM backed data/program
+    // or security measures on modern memory mapped files on desktop platforms
+    // mutable null-terminated slices can be created on the heap or stack - TODO
 };

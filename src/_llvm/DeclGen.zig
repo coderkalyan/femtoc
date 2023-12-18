@@ -37,7 +37,7 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
         .void,
         .comptime_array,
         => unreachable,
-        .uint, .sint, .float, .pointer => decl: {
+        .uint, .sint, .float, .pointer, .unsafe_pointer => decl: {
             const global = dg.context.addGlobal(name, llvm_type);
             const is_constant = @intFromBool(!info.mutable);
             c.LLVMSetGlobalConstant(global, is_constant);
@@ -69,6 +69,11 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
         .array => {
             // TODO
             std.log.err("codegen: arrays not implemented\n", .{});
+            unreachable;
+        },
+        .slice => {
+            // TODO
+            std.log.err("codegen: slices not implemented\n", .{});
             unreachable;
         },
         .structure => {

@@ -87,11 +87,17 @@ pub fn convertType(context: *Context, ty: Type) !c.LLVMTypeRef {
             const return_type = try context.convertType(function.return_type);
             return c.LLVMFunctionType(return_type, params.ptr, @intCast(params.len), 0);
         },
-        .pointer => return c.LLVMPointerTypeInContext(context.context, 0),
+        .pointer, .unsafe_pointer => return c.LLVMPointerTypeInContext(context.context, 0),
         .array => {
             const array = ty.extended.cast(Type.Array).?;
             const element_type = try context.convertType(array.element);
             return c.LLVMArrayType(element_type, array.count);
+        },
+        .slice => {
+            var elements: [2]c.LLVMTypeRef = [1]c.LLVMTypeRef{undefined} ** 2;
+            elements[0] = c.LLVMPointerTypeInContext(context.context, 0);
+            elements[1] = c.LLVMInt64TypeInContext(context.context);
+            return c.LLVMStructTypeInContext(context.context, &elements, elements.len, 0);
         },
         .structure => unreachable,
     };
@@ -107,6 +113,14 @@ pub fn getNamedFunction(context: *Context, name: [:0]const u8) c.LLVMValueRef {
 
 pub fn addGlobal(context: *Context, name: [:0]const u8, ty: c.LLVMTypeRef) c.LLVMValueRef {
     return c.LLVMAddGlobal(context.module, ty, name.ptr);
+}
+
+pub fn addConstString(context: *Context, string: []const u8) !c.LLVMValueRef {
+    return c.LLVMConstStringInContext(context.context, string.ptr, @intCast(string.len), 0);
+}
+
+pub fn addConstStruct(context: *Context, vals: []c.LLVMValueRef) !c.LLVMValueRef {
+    return c.LLVMConstStructInContext(context.context, vals.ptr, @intCast(vals.len), 0);
 }
 
 pub const Builder = struct {

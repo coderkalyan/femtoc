@@ -505,6 +505,20 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     _ = try std.fmt.bufPrint(buf, "array({s}, {})", .{ array_buf, array.count });
                     return;
                 },
+                .unsafe_pointer => {
+                    const pointer = ty.extended.cast(Type.UnsafePointer).?;
+                    var pointee_buf: [128]u8 = [_]u8{0} ** 128;
+                    try self.formatType(pointer.pointee, &pointee_buf);
+                    _ = try std.fmt.bufPrint(buf, "unsafe_pointer({s})", .{pointee_buf});
+                    return;
+                },
+                .slice => {
+                    const slice = ty.extended.cast(Type.Slice).?;
+                    var element_buf: [128]u8 = [_]u8{0} ** 128;
+                    try self.formatType(slice.element, &element_buf);
+                    _ = try std.fmt.bufPrint(buf, "slice({s})", .{element_buf});
+                    return;
+                },
                 .comptime_array => {
                     const array = ty.extended.cast(Type.ComptimeArray).?;
                     _ = try std.fmt.bufPrint(buf, "comptime_array({})", .{array.count});

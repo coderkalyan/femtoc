@@ -25,6 +25,8 @@ pub const Type = extern union {
         function,
         comptime_array,
         array,
+        unsafe_pointer,
+        slice,
         structure,
     };
 
@@ -104,6 +106,26 @@ pub const Type = extern union {
         }
     };
 
+    pub const UnsafePointer = struct {
+        const base_kind: Kind = .unsafe_pointer;
+        base: Extended = .{ .kind = base_kind },
+        pointee: Type,
+
+        pub fn init(pointee: Type) UnsafePointer {
+            return .{ .pointee = pointee };
+        }
+    };
+
+    pub const Slice = struct {
+        const base_kind: Kind = .slice;
+        base: Extended = .{ .kind = base_kind },
+        element: Type,
+
+        pub fn init(element: Type) Slice {
+            return .{ .element = element };
+        }
+    };
+
     pub const Structure = struct {
         const base_kind: Kind = .structure;
         base: Extended = .{ .kind = base_kind },
@@ -161,6 +183,18 @@ pub const Type = extern union {
                 const self_ptr = self.extended.cast(Type.Pointer).?;
                 const other_ptr = other.extended.cast(Type.Pointer).?;
                 return self_ptr.pointee.eql(other_ptr.pointee);
+            },
+            .unsafe_pointer => {
+                if (other_kind != .unsafe_pointer) return false;
+                const self_ptr = self.extended.cast(Type.UnsafePointer).?;
+                const other_ptr = other.extended.cast(Type.UnsafePointer).?;
+                return self_ptr.pointee.eql(other_ptr.pointee);
+            },
+            .slice => {
+                if (other_kind != .slice) return false;
+                const self_slice = self.extended.cast(Type.Slice).?;
+                const other_slice = other.extended.cast(Type.Slice).?;
+                return self_slice.element.eql(other_slice.element);
             },
             .array => {
                 if (other_kind != .array) return false;

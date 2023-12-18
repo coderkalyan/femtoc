@@ -99,11 +99,14 @@ fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: 
             // just re-link these
             => try b.linkInst(inst),
             .create_pointer_type => try createPointerType(&analysis, inst),
+            .create_unsafe_pointer_type => try createUnsafePointerType(&analysis, inst),
+            .create_slice_type => try createSliceType(&analysis, inst),
             .create_array_type => try createArrayType(&analysis, inst),
             .param_type_of => try paramTypeOf(&analysis, inst),
             .type_of => try typeOf(&analysis, inst),
             .ret_type => try retType(&analysis, inst),
             .array_initializer => try arrayInitializer(&analysis, inst),
+            .field_access => try fieldAccess(&analysis, inst),
             .cmp_eq,
             .cmp_ne,
             .cmp_gt,
@@ -689,6 +692,38 @@ fn createArrayType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
+// replaces a create_unsafe_pointer_type instruction with an inline ty instruction
+// by constructing a pointer to the operand type
+fn createUnsafePointerType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .create_unsafe_pointer_type);
+    const pointee = try hg.resolveType(data.operand);
+
+    const inner = try hg.gpa.create(Type.UnsafePointer);
+    inner.* = .{ .pointee = pointee };
+    const pointer: Type = .{ .extended = &inner.base };
+
+    const new_type = try b.add(.ty, .{ .ty = pointer });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
+// replaces a create_slice_type instruction with an inline ty instruction
+// by constructing a slice to the operand type
+fn createSliceType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .create_slice_type);
+    const element = try hg.resolveType(data.operand);
+
+    const inner = try hg.gpa.create(Type.Slice);
+    inner.* = .{ .element = element };
+    const slice: Type = .{ .extended = &inner.base };
+
+    const new_type = try b.add(.ty, .{ .ty = slice });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
 fn createFunctionType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
@@ -763,4 +798,33 @@ fn arrayInitializer(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     });
     std.debug.print("init: elements = {any} {}\n", .{ elements, hg.get(constant, .constant).val });
     try analysis.src_block.replaceAllUsesWith(inst, constant);
+}
+
+fn fieldAccess(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .field_access);
+    // TODO: use interner value instead
+    const field_token = hg.tree.mainToken(data.node) + 1;
+    const field_string = hg.tree.tokenString(field_token);
+
+    const pointer_type = (try hg.resolveType(data.operand)).extended.cast(Type.Pointer).?;
+    const src_type = pointer_type.pointee;
+    switch (src_type.kind()) {
+        .slice => {
+            if (std.mem.eql(u8, field_string, "ptr")) {
+                std.debug.print("adding slice ptr\n", .{});
+                const access = try b.add(.slice_ptr, .{ .operand = data.operand, .node = data.node });
+                try analysis.src_block.replaceAllUsesWith(inst, access);
+            } else if (std.mem.eql(u8, field_string, "len")) {
+                const access = try b.add(.slice_len, .{ .operand = data.operand, .node = data.node });
+                try analysis.src_block.replaceAllUsesWith(inst, access);
+            } else {
+                std.log.err("field access: no such field {s} for type slice", .{field_string});
+                unreachable;
+            }
+        },
+        .array, .structure => unreachable, // unimplemented
+        else => unreachable,
+    }
 }

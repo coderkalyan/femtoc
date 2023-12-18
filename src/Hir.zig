@@ -50,6 +50,8 @@ pub const Inst = struct {
         create_pointer_type,
         create_function_type,
         create_array_type,
+        create_unsafe_pointer_type,
+        create_slice_type,
         // fetches the return type of the current function body
         // undefined for toplevel block_inlines
         ret_type,
@@ -112,6 +114,9 @@ pub const Inst = struct {
         // TODO: phase this out in codegen (turn it into a cmp)
         bit_not,
         array_access,
+        field_access,
+        slice_ptr,
+        slice_len,
 
         // user requested implicit type coercion
         // i.e. type annotation
@@ -448,7 +453,12 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .yield_inline,
         .load_global,
         .create_pointer_type,
+        .create_unsafe_pointer_type,
+        .create_slice_type,
         .type_of,
+        .field_access,
+        .slice_ptr,
+        .slice_len,
         => .un_node,
         .ret_implicit,
         .yield_implicit,
@@ -724,6 +734,10 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
                     const inner = pointer.extended.cast(Type.Pointer).?;
                     break :ty inner.pointee;
                 },
+                .unsafe_pointer => {
+                    const inner = pointer.extended.cast(Type.UnsafePointer).?;
+                    break :ty inner.pointee;
+                },
                 .array => {
                     const inner = pointer.extended.cast(Type.Array).?;
                     break :ty inner.element;
@@ -754,6 +768,25 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
 
             const inner = try gpa.create(Type.Pointer);
             inner.* = .{ .pointee = array_type.element };
+            break :ty .{ .extended = &inner.base };
+        },
+        .slice_ptr => ty: {
+            const slice_ptr = hir.get(index, .slice_ptr);
+            const ty = try hir.resolveType(gpa, slice_ptr.operand);
+            const pointer_type = ty.extended.cast(Type.Pointer).?;
+            const slice_type = pointer_type.pointee.extended.cast(Type.Slice).?;
+
+            const ptr_inner = try gpa.create(Type.UnsafePointer);
+            ptr_inner.* = .{ .pointee = slice_type.element };
+            const ptr = Type{ .extended = &ptr_inner.base };
+
+            const inner = try gpa.create(Type.Pointer);
+            inner.* = .{ .pointee = ptr };
+            break :ty .{ .extended = &inner.base };
+        },
+        .slice_len => ty: {
+            const inner = try gpa.create(Type.Pointer);
+            inner.* = .{ .pointee = Type.Common.u64_type };
             break :ty .{ .extended = &inner.base };
         },
         // resolve the type being extended to
@@ -832,7 +865,10 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .param_type_of,
         .create_function_type,
         .create_array_type,
+        .create_unsafe_pointer_type,
+        .create_slice_type,
         .ret_type,
+        .field_access,
         => |tag| {
             std.log.err("hir: encountered illegal instruction {} while resolving type\n", .{tag});
             const out = std.io.getStdOut();

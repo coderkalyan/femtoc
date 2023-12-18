@@ -21,6 +21,8 @@ pub const Value = extern union {
         function,
         reference,
         array,
+        string,
+        slice,
     };
 
     pub const Basic = packed struct {
@@ -70,6 +72,17 @@ pub const Value = extern union {
     pub const Array = struct {
         base: Extended = .{ .kind = .array },
         elements: []u32,
+    };
+
+    pub const String = struct {
+        base: Extended = .{ .kind = .string },
+        literal: u32,
+    };
+
+    pub const Slice = struct {
+        base: Extended = .{ .kind = .slice },
+        ptr: Hir.Index,
+        len: u64,
     };
 
     pub inline fn isBasic(val: Value) bool {

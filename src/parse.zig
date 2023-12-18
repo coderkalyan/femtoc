@@ -302,10 +302,10 @@ const Parser = struct {
             .k_fn => p.expectFnDecl(),
             else => {
                 const left_node = try p.parsePrimaryExpr();
-                if (p.token_tags[p.index] == .l_bracket) {
-                    return p.expectArrayAccess(left_node);
-                } else {
-                    return p.parseBinRExpr(left_node, 0);
+                switch (p.token_tags[p.index]) {
+                    .l_bracket => return p.expectArrayAccess(left_node),
+                    .period => return p.expectFieldAccess(left_node),
+                    else => return p.parseBinRExpr(left_node, 0),
                 }
             },
         };
@@ -356,6 +356,10 @@ const Parser = struct {
             .char_lit => p.addNode(.{
                 .main_token = p.eatCurrentToken(),
                 .data = .{ .char_literal = {} },
+            }),
+            .str_lit => p.addNode(.{
+                .main_token = p.eatCurrentToken(),
+                .data = .{ .string_literal = {} },
             }),
             .l_bracket => p.expectArrayInitializer(),
             .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
@@ -442,6 +446,16 @@ const Parser = struct {
         });
     }
 
+    fn expectFieldAccess(p: *Parser, aggregate: Node.Index) Error!Node.Index {
+        const dot_token = try p.expectToken(.period);
+        _ = try p.expectToken(.ident);
+
+        return p.addNode(.{
+            .main_token = dot_token,
+            .data = .{ .field_access = aggregate },
+        });
+    }
+
     fn expectArgList(p: *Parser) !Node.ExtraRange {
         _ = try p.expectToken(.l_paren);
 
@@ -515,11 +529,31 @@ const Parser = struct {
                 },
                 .l_bracket => node: {
                     const l_bracket_token = p.eatCurrentToken();
-                    const count_expr = try p.expectExpr();
-                    _ = try p.expectToken(.r_bracket);
-                    break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
-                        .array_type = .{ .element_type = inner, .count_expr = count_expr },
-                    } });
+                    switch (p.token_tags[p.index]) {
+                        .r_bracket => {
+                            // slice
+                            _ = p.eatCurrentToken();
+                            break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
+                                .slice_type = inner,
+                            } });
+                        },
+                        .asterisk => {
+                            // unsafe pointer
+                            _ = p.eatCurrentToken();
+                            _ = try p.expectToken(.r_bracket);
+                            break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
+                                .unsafe_pointer_type = inner,
+                            } });
+                        },
+                        else => {
+                            // array
+                            const count_expr = try p.expectExpr();
+                            _ = try p.expectToken(.r_bracket);
+                            break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
+                                .array_type = .{ .element_type = inner, .count_expr = count_expr },
+                            } });
+                        },
+                    }
                 },
                 else => return inner,
             };

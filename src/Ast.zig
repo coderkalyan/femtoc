@@ -71,6 +71,8 @@ pub const Node = struct {
             element_type: Index,
             count_expr: Index,
         },
+        slice_type: Index,
+        unsafe_pointer_type: Index,
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
         // proto = FnSignature {} 'fn (params...) ret'
@@ -97,6 +99,7 @@ pub const Node = struct {
         float_literal: void,
         bool_literal: void,
         char_literal: void,
+        string_literal,
         array_initializer: struct {
             elements_start: ExtraIndex,
             elements_end: ExtraIndex,
@@ -129,6 +132,7 @@ pub const Node = struct {
             array: Index,
             index: Index,
         },
+        field_access: Index,
         // string literal '"Hello, world!"'
         // main_token = string literal
         // str_literal = void,
