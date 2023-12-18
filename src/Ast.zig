@@ -67,6 +67,10 @@ pub const Node = struct {
         named_ty: void,
         pointer_ty: Index,
         fn_type: Index,
+        array_type: struct {
+            element_type: Index,
+            count_expr: Index,
+        },
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
         // proto = FnSignature {} 'fn (params...) ret'
@@ -93,6 +97,10 @@ pub const Node = struct {
         float_literal: void,
         bool_literal: void,
         char_literal: void,
+        array_initializer: struct {
+            elements_start: ExtraIndex,
+            elements_end: ExtraIndex,
+        },
         // binary expression 'a [+-*/...] b'
         // main_token = operator token
         // left = left side expression node
@@ -110,10 +118,16 @@ pub const Node = struct {
         // main_token = function name
         // args_start = start of argument array
         // args_end = end of argument array
+        // TODO: this is very bad, increases union size
+        // move to extra data
         call_expr: struct {
             ptr: Index,
             args_start: ExtraIndex,
             args_end: ExtraIndex,
+        },
+        array_access: struct {
+            array: Index,
+            index: Index,
         },
         // string literal '"Hello, world!"'
         // main_token = string literal

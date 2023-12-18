@@ -94,6 +94,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .fpext => try codegen.fpext(inst),
             .param => try codegen.param(inst, @intCast(i)),
             .call => try codegen.call(inst),
+            .array_access => try codegen.arrayAccess(inst),
             .branch_single => {
                 try codegen.branchSingle(inst);
                 continue;
@@ -139,11 +140,26 @@ fn constant(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
 
     var builder = codegen.builder;
     switch (ty.kind()) {
-        .comptime_uint, .comptime_sint, .comptime_float => return null,
+        .comptime_uint,
+        .comptime_sint,
+        .comptime_float,
+        .comptime_array,
+        => return null,
 
         .uint => return builder.addUint(ty, hir.instToInt(inst)),
         .sint => return builder.addSint(ty, hir.instToInt(inst)),
         .float => return builder.addFloat(ty, hir.instToFloat(inst)),
+        .array => {
+            const array_type = ty.extended.cast(Type.Array).?;
+            const array = hir.values[data.val].extended.cast(Value.Array).?;
+            const vals = try codegen.arena.alloc(c.LLVMValueRef, array.elements.len);
+            defer codegen.arena.free(vals);
+            for (array.elements, 0..) |element, i| {
+                vals[i] = codegen.resolveInst(element);
+            }
+
+            return builder.addConstArray(array_type.element, vals);
+        },
         else => unreachable,
     }
 }
@@ -358,4 +374,19 @@ fn ret(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) c.LLVMVal
     const is_none = hir.insts.items(.tag)[data.operand] == .none;
     const ref = if (is_none) null else codegen.resolveInst(data.operand);
     return codegen.builder.addReturn(ref);
+}
+
+fn arrayAccess(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
+    const hir = codegen.hir;
+    const data = hir.get(inst, .array_access);
+
+    const ty = try hir.resolveType(codegen.arena, data.array);
+    const pointer_type = ty.extended.cast(Type.Pointer).?;
+    const array_type = pointer_type.pointee;
+    const array = codegen.resolveInst(data.array);
+    const access_index = codegen.resolveInst(data.index);
+    var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
+    indices[0] = try codegen.builder.addUint(Type.Common.u64_type, 0);
+    indices[1] = access_index;
+    return try codegen.builder.addGetElementPtr(array_type, array, &indices);
 }

@@ -582,6 +582,25 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     return b.addFnDecl(hir_params, return_type, body, hash, node);
 }
 
+fn arrayInitializer(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const arena = hg.arena;
+    const array_initializer = hg.tree.data(node).array_initializer;
+
+    const scratch_top = b.scratch.items.len;
+    defer b.scratch.shrinkRetainingCapacity(scratch_top);
+
+    const elements = hg.tree.extra_data[array_initializer.elements_start..array_initializer.elements_end];
+    try b.scratch.ensureUnusedCapacity(arena, elements.len);
+    for (elements) |element| {
+        const element_index = try valExpr(b, scope, element);
+        b.scratch.appendAssumeCapacity(element_index);
+    }
+
+    const hir_elements = b.scratch.items[scratch_top..];
+    return b.addArrayInitializer(hir_elements, node);
+}
+
 fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.Index {
     return switch (ri.semantics) {
         .val => switch (b.hg.tree.data(node)) {
@@ -594,6 +613,8 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .binary_expr => try binary(b, scope, node),
             .unary_expr => try unary(b, scope, ri, node),
             .fn_decl => try fnDecl(b, scope, node),
+            .array_initializer => try arrayInitializer(b, scope, node),
+            .array_access => try arrayAccess(b, scope, ri, node),
             else => {
                 std.log.err("expr (val semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -607,6 +628,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .call_expr => try call(b, scope, node),
             .binary_expr => try binary(b, scope, node),
             .unary_expr => try unary(b, scope, ri, node),
+            .array_access => try arrayAccess(b, scope, ri, node),
             else => {
                 std.log.err("expr (ref semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -617,6 +639,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .unary_expr => try unary(b, scope, ri, node),
             .pointer_ty => try pointerTy(b, scope, node),
             .fn_type => try fnType(b, scope, node),
+            .array_type => try arrayType(b, scope, node),
             else => {
                 std.log.err("expr (type semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -662,6 +685,37 @@ fn fnType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const return_type = try typeExpr(b, scope, signature.return_ty);
 
     return b.addFunctionType(return_type, param_types, node);
+}
+
+fn arrayType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const array_type = hg.tree.data(node).array_type;
+    const element_type = try typeExpr(b, scope, array_type.element_type);
+    const count = try valExpr(b, scope, array_type.count_expr);
+    // TODO: make sure count is actually a comptime_int
+    return b.add(.create_array_type, .{ .element_type = element_type, .count = count, .node = node });
+}
+
+fn arrayAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const array_access = hg.tree.data(node).array_access;
+    const array = try refExpr(b, scope, array_access.array);
+    const inner = try valExpr(b, scope, array_access.index);
+    // TODO: actual variable length usize
+    const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
+    const access_index = try b.add(.coerce, .{
+        .ty = usize_type,
+        .val = inner,
+        .node = array_access.index,
+    });
+    const ptr = try b.add(.array_access, .{ .array = array, .index = access_index, .node = node });
+    std.debug.print("ri: {}\n", .{ri.semantics});
+
+    switch (ri.semantics) {
+        .val => return b.add(.load, .{ .operand = ptr, .node = node }),
+        .ref => return ptr,
+        .ty => unreachable,
+    }
 }
 
 fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {

@@ -38,6 +38,9 @@ pub const Inst = struct {
         // load a void literal (immediate)
         // data.placeholder = no data
         none,
+        // initialize an array from a set of elements
+        // data.pl_node.pl = Inst.ArrayInitializer
+        array_initializer,
         // declare a new type to be used
         // data.ty = type (stored directly)
         // TODO: why do we need this instead of types[]?
@@ -46,6 +49,7 @@ pub const Inst = struct {
         // data.operand = type to take a pointer to
         create_pointer_type,
         create_function_type,
+        create_array_type,
         // fetches the return type of the current function body
         // undefined for toplevel block_inlines
         ret_type,
@@ -107,6 +111,7 @@ pub const Inst = struct {
         neg,
         // TODO: phase this out in codegen (turn it into a cmp)
         bit_not,
+        array_access,
 
         // user requested implicit type coercion
         // i.e. type annotation
@@ -345,6 +350,21 @@ pub const Inst = struct {
         params_start: ExtraIndex,
         params_end: ExtraIndex,
     };
+
+    pub const ArrayInitializer = struct {
+        elements_start: ExtraIndex,
+        elements_end: ExtraIndex,
+    };
+
+    pub const ArrayType = struct {
+        element_type: Index,
+        count: Index,
+    };
+
+    pub const ArrayAccess = struct {
+        array: Index,
+        index: Index,
+    };
     // pub const DebugValue = struct {
     //     name: u32,
     //     value: Ref,
@@ -412,6 +432,9 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .global_set_init,
         .global_set_type,
         .create_function_type,
+        .array_initializer,
+        .create_array_type,
+        .array_access,
         => .pl_node,
         .neg,
         .bit_not,
@@ -487,6 +510,9 @@ pub fn payloadType(comptime tag: Inst.Tag) type {
         .global_set_type,
         => Inst.GlobalOperand,
         .create_function_type => Inst.FunctionType,
+        .array_initializer => Inst.ArrayInitializer,
+        .create_array_type => Inst.ArrayType,
+        .array_access => Inst.ArrayAccess,
         else => {
             @compileLog(tag);
             unreachable;
@@ -693,8 +719,20 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         // resolve the type of the alloca/push being loaded
         .load => ty: {
             const pointer = try hir.resolveType(gpa, data.un_node.operand);
-            const inner = pointer.extended.cast(Type.Pointer).?;
-            break :ty inner.pointee;
+            switch (pointer.kind()) {
+                .pointer => {
+                    const inner = pointer.extended.cast(Type.Pointer).?;
+                    break :ty inner.pointee;
+                },
+                .array => {
+                    const inner = pointer.extended.cast(Type.Array).?;
+                    break :ty inner.element;
+                },
+                else => |kind| {
+                    std.log.err("tried to load invalid type {}\n", .{kind});
+                    unreachable;
+                },
+            }
         },
         // parameters reference their type
         .param => ty: {
@@ -707,6 +745,16 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             const call_ty = try hir.resolveType(gpa, call_data.ptr);
             const fn_type = call_ty.extended.cast(Type.Function).?;
             break :ty fn_type.return_type;
+        },
+        .array_access => ty: {
+            const array_access = hir.get(index, .array_access);
+            const ty = try hir.resolveType(gpa, array_access.array);
+            const pointer_type = ty.extended.cast(Type.Pointer).?;
+            const array_type = pointer_type.pointee.extended.cast(Type.Array).?;
+
+            const inner = try gpa.create(Type.Pointer);
+            inner.* = .{ .pointee = array_type.element };
+            break :ty .{ .extended = &inner.base };
         },
         // resolve the type being extended to
         .zext,
@@ -770,6 +818,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         // untyped instructions should be replaced before they're referred to
         .int,
         .float,
+        .array_initializer,
         .cmp_eq,
         .cmp_ne,
         .cmp_gt,
@@ -782,6 +831,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .create_pointer_type,
         .param_type_of,
         .create_function_type,
+        .create_array_type,
         .ret_type,
         => |tag| {
             std.log.err("hir: encountered illegal instruction {} while resolving type\n", .{tag});

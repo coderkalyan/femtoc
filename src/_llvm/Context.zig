@@ -64,7 +64,11 @@ pub fn verify(context: *Context) void {
 pub fn convertType(context: *Context, ty: Type) !c.LLVMTypeRef {
     return switch (ty.kind()) {
         .void => c.LLVMVoidTypeInContext(context.context),
-        .comptime_uint, .comptime_sint, .comptime_float => unreachable,
+        .comptime_uint,
+        .comptime_sint,
+        .comptime_float,
+        .comptime_array,
+        => unreachable,
         .uint, .sint => c.LLVMIntTypeInContext(context.context, ty.basic.width),
         .float => switch (ty.basic.width) {
             32 => c.LLVMFloatTypeInContext(context.context),
@@ -84,6 +88,11 @@ pub fn convertType(context: *Context, ty: Type) !c.LLVMTypeRef {
             return c.LLVMFunctionType(return_type, params.ptr, @intCast(params.len), 0);
         },
         .pointer => return c.LLVMPointerTypeInContext(context.context, 0),
+        .array => {
+            const array = ty.extended.cast(Type.Array).?;
+            const element_type = try context.convertType(array.element);
+            return c.LLVMArrayType(element_type, array.count);
+        },
         .structure => unreachable,
     };
 }
@@ -148,6 +157,11 @@ pub const Builder = struct {
     pub fn addFloat(builder: *Builder, ty: Type, val: f64) !c.LLVMValueRef {
         const llvm_type = try builder.convertType(ty);
         return c.LLVMConstReal(llvm_type, val);
+    }
+
+    pub fn addConstArray(builder: *Builder, ty: Type, vals: []c.LLVMValueRef) !c.LLVMValueRef {
+        const llvm_type = try builder.convertType(ty);
+        return c.LLVMConstArray(llvm_type, vals.ptr, @intCast(vals.len));
     }
 
     // memory
@@ -259,6 +273,10 @@ pub const Builder = struct {
         return c.LLVMBuildFPExt(builder.builder, val, llvm_type, "");
     }
 
+    pub fn addGetElementPtr(builder: *Builder, ty: Type, ptr: c.LLVMValueRef, indices: []c.LLVMValueRef) !c.LLVMValueRef {
+        const llvm_type = try builder.convertType(ty);
+        return c.LLVMBuildGEP2(builder.builder, llvm_type, ptr, indices.ptr, @intCast(indices.len), "");
+    }
     // basic types are guaranteed not to allocate, so they won't throw errors
     // pub fn getBasicType(builder: *Builder, ty: Type) c.LLVMTypeRef {
     //     return llvm.getBasicType(builder.context, ty);

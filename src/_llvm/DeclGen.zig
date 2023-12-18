@@ -31,7 +31,12 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
     const llvm_type = try dg.context.convertType(info.ty.?);
     const decl = switch (info.ty.?.kind()) {
         // these should be taken care of by the frontend (type_analysis)
-        .comptime_uint, .comptime_sint, .comptime_float, .void => unreachable,
+        .comptime_uint,
+        .comptime_sint,
+        .comptime_float,
+        .void,
+        .comptime_array,
+        => unreachable,
         .uint, .sint, .float, .pointer => decl: {
             const global = dg.context.addGlobal(name, llvm_type);
             const is_constant = @intFromBool(!info.mutable);
@@ -60,6 +65,11 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
             }
 
             break :decl func;
+        },
+        .array => {
+            // TODO
+            std.log.err("codegen: arrays not implemented\n", .{});
+            unreachable;
         },
         .structure => {
             // TODO

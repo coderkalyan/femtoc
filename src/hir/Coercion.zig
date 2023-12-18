@@ -1,12 +1,15 @@
 const std = @import("std");
 const Type = @import("type.zig").Type;
 const Hir = @import("../Hir.zig");
+const Value = @import("../value.zig").Value;
 const BlockEditor = @import("BlockEditor.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Error = error{
     InvalidCoercion,
     Truncated,
+    OutOfMemory,
+    NotImplemented,
 };
 
 const Coercion = @This();
@@ -24,7 +27,11 @@ pub fn coerce(self: *Coercion) !Hir.Index {
         .uint => self.uint(),
         .sint => self.sint(),
         .float => self.float(),
-        else => error.NotImplemented,
+        .array => self.array(),
+        else => {
+            std.log.err("coercion from {} to {} unimplemented or not allowed", .{ self.src_type.kind(), self.dest_type.kind() });
+            return error.NotImplemented;
+        },
     };
 }
 
@@ -161,6 +168,59 @@ fn float(self: *Coercion) !Hir.Index {
             try self.maybeReplaceWith(fpext);
             return fpext;
         },
+        else => return error.InvalidCoercion,
+    }
+}
+
+fn array(self: *Coercion) Error!Hir.Index {
+    const b = self.b;
+    const hg = b.hg;
+
+    switch (self.src_type.kind()) {
+        // can coerce to a fixed float if the comptime value fits in bounds
+        // TODO: we don't check that right now
+        .comptime_array => {
+            const src_type = self.src_type.extended.cast(Type.ComptimeArray).?;
+            const dest_type = self.dest_type.extended.cast(Type.Array).?;
+
+            // first check that the lengths match
+            if (src_type.count != dest_type.count) {
+                return error.Truncated;
+            }
+
+            // now coerce every source element to the destination type
+            const data = hg.get(self.src, .constant);
+            const src = hg.values.items[data.val].extended.cast(Value.Array).?;
+
+            const dest_array = try hg.gpa.create(Value.Array);
+            dest_array.* = .{ .elements = try hg.gpa.alloc(u32, src.elements.len) };
+            const array_value: Value = .{ .extended = &dest_array.base };
+            const dest_element_type = try b.addType(dest_type.element);
+            std.debug.print("coercing array: elements = {any} {}\n", .{ src.elements, data.val });
+            for (src.elements, 0..) |element, i| {
+                const element_type = try hg.resolveType(element);
+                var coercion = Coercion{
+                    .src_block = self.src_block,
+                    .b = b,
+                    .gpa = b.hg.gpa,
+                    .coerce_inst = null,
+                    .src = element,
+                    .src_type = element_type,
+                    .dest_type_ref = dest_element_type,
+                    .dest_type = dest_type.element,
+                };
+                dest_array.elements[i] = try coercion.coerce();
+            }
+
+            const constant = try b.add(.constant, .{
+                .ty = self.dest_type_ref,
+                .val = try b.addValue(array_value),
+                .node = undefined, // TODO: node annotation
+            });
+            try self.maybeReplaceWith(constant);
+            return constant;
+        },
+        .array => unreachable, // TODO
         else => return error.InvalidCoercion,
     }
 }

@@ -99,9 +99,11 @@ fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: 
             // just re-link these
             => try b.linkInst(inst),
             .create_pointer_type => try createPointerType(&analysis, inst),
+            .create_array_type => try createArrayType(&analysis, inst),
             .param_type_of => try paramTypeOf(&analysis, inst),
             .type_of => try typeOf(&analysis, inst),
             .ret_type => try retType(&analysis, inst),
+            .array_initializer => try arrayInitializer(&analysis, inst),
             .cmp_eq,
             .cmp_ne,
             .cmp_gt,
@@ -670,6 +672,23 @@ fn createPointerType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
+// replaces a create_array_type instruction with an inline ty instruction
+// by constructing a array to the operand type with the correct count
+fn createArrayType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .create_array_type);
+    const element = try hg.resolveType(data.element_type);
+    const count = hg.instToInt(data.count);
+
+    const inner = try hg.gpa.create(Type.Array);
+    inner.* = .{ .element = element, .count = @intCast(count) };
+    const array: Type = .{ .extended = &inner.base };
+
+    const new_type = try b.add(.ty, .{ .ty = array });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
 fn createFunctionType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
@@ -718,4 +737,30 @@ fn retType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const b = analysis.b;
     const new_type = try b.add(.ty, .{ .ty = analysis.return_type.? });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
+fn arrayInitializer(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .array_initializer);
+    const elements = hg.extra.items[data.elements_start..data.elements_end];
+
+    const array_type_inner = try hg.gpa.create(Type.ComptimeArray);
+    array_type_inner.* = .{ .count = @intCast(elements.len) };
+    const array_type: Type = .{ .extended = &array_type_inner.base };
+
+    const heap_elements = try hg.gpa.alloc(u32, elements.len);
+    std.mem.copy(u32, heap_elements, elements);
+
+    const array = try hg.gpa.create(Value.Array);
+    array.* = .{ .elements = heap_elements };
+    const array_value: Value = .{ .extended = &array.base };
+
+    const constant = try b.add(.constant, .{
+        .ty = try b.add(.ty, .{ .ty = array_type }),
+        .val = try b.addValue(array_value),
+        .node = data.node,
+    });
+    std.debug.print("init: elements = {any} {}\n", .{ elements, hg.get(constant, .constant).val });
+    try analysis.src_block.replaceAllUsesWith(inst, constant);
 }

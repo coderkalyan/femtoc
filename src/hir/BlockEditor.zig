@@ -333,6 +333,9 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                 Inst.ParamType => .{"ptr"},
                 Inst.GlobalOperand => .{ "handle", "operand" },
                 Inst.FunctionType => .{"return_type"},
+                Inst.ArrayInitializer => .{},
+                Inst.ArrayType => .{ "element_type", "count" },
+                Inst.ArrayAccess => .{ "array", "index" },
                 else => unreachable,
             };
 
@@ -361,6 +364,15 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                     for (old_params, 0..) |old_param, i| {
                         if (old_param == old) {
                             old_params[i] = new;
+                        }
+                    }
+                },
+                .array_initializer => {
+                    data = hg.get(inst, .array_initializer);
+                    const elements = hg.extra.items[data.elements_start..data.elements_end];
+                    for (elements, 0..) |old_element, i| {
+                        if (old_element == old) {
+                            elements[i] = new;
                         }
                     }
                 },
@@ -421,6 +433,18 @@ pub fn addFunctionType(b: *BlockEditor, return_type: Hir.Index, params: []Hir.In
         .return_type = return_type,
         .params_start = params_start,
         .params_end = params_end,
+        .node = node,
+    });
+}
+
+pub fn addArrayInitializer(b: *BlockEditor, elements: []Hir.Index, node: Node.Index) !Hir.Index {
+    const elements_start: u32 = @intCast(b.hg.extra.items.len);
+    try b.hg.extra.appendSlice(b.hg.gpa, elements);
+    const elements_end: u32 = @intCast(b.hg.extra.items.len);
+
+    return b.add(.array_initializer, .{
+        .elements_start = elements_start,
+        .elements_end = elements_end,
         .node = node,
     });
 }

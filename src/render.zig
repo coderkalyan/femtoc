@@ -498,6 +498,18 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     _ = try std.fmt.bufPrint(buf, "pointer({s})", .{pointee_buf});
                     return;
                 },
+                .array => {
+                    const array = ty.extended.cast(Type.Array).?;
+                    var array_buf: [128]u8 = [_]u8{0} ** 128;
+                    try self.formatType(array.element, &array_buf);
+                    _ = try std.fmt.bufPrint(buf, "array({s}, {})", .{ array_buf, array.count });
+                    return;
+                },
+                .comptime_array => {
+                    const array = ty.extended.cast(Type.ComptimeArray).?;
+                    _ = try std.fmt.bufPrint(buf, "comptime_array({})", .{array.count});
+                    return;
+                },
                 else => unreachable, //return error.NotImplemented,
             }});
         }

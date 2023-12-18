@@ -292,7 +292,7 @@ const Parser = struct {
         });
     }
 
-    fn expectExpr(p: *Parser) !Node.Index {
+    fn expectExpr(p: *Parser) Error!Node.Index {
         // declarations that aren't part of logical or arithmetic expressions,
         // like string literals, function and aggregate declarations, etc,
         // are parsed and returned here directly
@@ -302,7 +302,11 @@ const Parser = struct {
             .k_fn => p.expectFnDecl(),
             else => {
                 const left_node = try p.parsePrimaryExpr();
-                return p.parseBinRExpr(left_node, 0);
+                if (p.token_tags[p.index] == .l_bracket) {
+                    return p.expectArrayAccess(left_node);
+                } else {
+                    return p.parseBinRExpr(left_node, 0);
+                }
             },
         };
     }
@@ -353,6 +357,7 @@ const Parser = struct {
                 .main_token = p.eatCurrentToken(),
                 .data = .{ .char_literal = {} },
             }),
+            .l_bracket => p.expectArrayInitializer(),
             .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
                 .data = .{ .unary_expr = try p.parsePrimaryExpr() },
@@ -397,6 +402,44 @@ const Parser = struct {
         return p.addNode(.{ .main_token = ident_token, .data = .{
             .var_expr = {},
         } });
+    }
+
+    fn expectArrayInitializer(p: *Parser) !Node.Index {
+        const l_bracket_token = try p.expectToken(.l_bracket);
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        while (true) {
+            if (p.eatToken(.r_bracket)) |_| break;
+            const element_node = try p.expectExpr();
+            try p.scratch.append(element_node);
+            switch (p.token_tags[p.index]) {
+                .comma => _ = p.eatToken(.comma),
+                .r_bracket => {},
+                else => return Error.UnexpectedToken,
+            }
+        }
+
+        const elements = p.scratch.items[scratch_top..];
+        const extra_top = p.extra.items.len;
+        try p.extra.appendSlice(p.gpa, elements);
+        return p.addNode(.{ .main_token = l_bracket_token, .data = .{
+            .array_initializer = .{
+                .elements_start = @intCast(extra_top),
+                .elements_end = @intCast(p.extra.items.len),
+            },
+        } });
+    }
+
+    fn expectArrayAccess(p: *Parser, array: Node.Index) Error!Node.Index {
+        const l_bracket_token = try p.expectToken(.l_bracket);
+        const array_index = try p.expectExpr();
+        _ = try p.expectToken(.r_bracket);
+
+        return p.addNode(.{
+            .main_token = l_bracket_token,
+            .data = .{ .array_access = .{ .array = array, .index = array_index } },
+        });
     }
 
     fn expectArgList(p: *Parser) !Node.ExtraRange {
@@ -469,6 +512,14 @@ const Parser = struct {
                         .main_token = asterisk_token,
                         .data = .{ .pointer_ty = inner },
                     });
+                },
+                .l_bracket => node: {
+                    const l_bracket_token = p.eatCurrentToken();
+                    const count_expr = try p.expectExpr();
+                    _ = try p.expectToken(.r_bracket);
+                    break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
+                        .array_type = .{ .element_type = inner, .count_expr = count_expr },
+                    } });
                 },
                 else => return inner,
             };

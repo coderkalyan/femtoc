@@ -23,6 +23,8 @@ pub const Type = extern union {
 
         pointer,
         function,
+        comptime_array,
+        array,
         structure,
     };
 
@@ -81,6 +83,27 @@ pub const Type = extern union {
         }
     };
 
+    pub const ComptimeArray = struct {
+        const base_kind: Kind = .comptime_array;
+        base: Extended = .{ .kind = base_kind },
+        count: u32,
+
+        pub fn init(element: Type) Array {
+            return .{ .element = element };
+        }
+    };
+
+    pub const Array = struct {
+        const base_kind: Kind = .array;
+        base: Extended = .{ .kind = base_kind },
+        element: Type,
+        count: u32,
+
+        pub fn init(element: Type, count: u32) Array {
+            return .{ .element = element, .count = count };
+        }
+    };
+
     pub const Structure = struct {
         const base_kind: Kind = .structure;
         base: Extended = .{ .kind = base_kind },
@@ -131,12 +154,21 @@ pub const Type = extern union {
             .comptime_uint,
             .comptime_sint,
             .comptime_float,
+            .comptime_array, // TODO
             => return false,
             .pointer => {
                 if (other_kind != .pointer) return false;
                 const self_ptr = self.extended.cast(Type.Pointer).?;
                 const other_ptr = other.extended.cast(Type.Pointer).?;
                 return self_ptr.pointee.eql(other_ptr.pointee);
+            },
+            .array => {
+                if (other_kind != .array) return false;
+                const self_array = self.extended.cast(Type.Array).?;
+                const other_array = other.extended.cast(Type.Array).?;
+                if (!self_array.element.eql(other_array.element)) return false;
+                if (self_array.count != other_array.count) return false;
+                return true;
             },
             else => unreachable,
         }
@@ -151,7 +183,7 @@ pub const Type = extern union {
                 else => unreachable,
             },
             .pointer => 8, // TODO: architecture dependent
-            .structure, .function => unreachable, // TODO
+            .structure, .function, .array => unreachable, // TODO
         };
     }
 
@@ -174,7 +206,7 @@ pub const Type = extern union {
             .uint, .sint, .float => (ty.basic.width + 7) / 8,
             .comptime_uint, .comptime_sint, .comptime_float => 8,
             .pointer => 8, // TODO: architecture dependent
-            .function => unreachable,
+            .function, .array => unreachable,
             .structure => {
                 var max: usize = 0;
                 const structure = ty.extended.cast(Type.Structure).?;
@@ -212,22 +244,6 @@ pub const Type = extern union {
         return ty.basic.kind == .sint or ty.basic.kind == .comptime_sint;
     }
 
-    // pub fn alignment(t: Type) !usize {
-    //     if (t.isTag()) {
-    //         return switch (t.tag) {
-    //             .void => 0,
-    //             .u1, .i8, .u8 => 1,
-    //             .i16, .u16 => 2,
-    //             .i32, .u32 => 4,
-    //             .i64, .u64 => 8,
-    //             .f32 => 4,
-    //             .f64 => 8,
-    //             else => Error.UnspecificType,
-    //         };
-    //     } else {
-    //         return t.payload.alignment();
-    //     }
-    // }
     pub const Common = .{
         .void_type = Type.initLiteral(.void, 0),
         .comptime_uint = Type.initLiteral(.comptime_uint, 64),
