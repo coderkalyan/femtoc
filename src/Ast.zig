@@ -27,6 +27,11 @@ errors: []const error_handler.SourceError,
 pub const TokenList = std.MultiArrayList(struct {
     tag: Token.Tag,
     start: ByteOffset,
+    // even though the lexer generates end offsets, storing them
+    // is a low return on investment because we don't need them
+    // for most tokens (only identifiers, strings, and literals)
+    // therefore, we instead re-lex a single token to get the
+    // end offset/length as necessary
 });
 
 // represents a node in the femto abstract syntax tree.
@@ -61,18 +66,26 @@ pub const Node = struct {
     // extra data indices represent only the "start" of the
     // unpacked extra data struct in the extra_data array
     pub const Data = union(enum) {
-        placeholder: void,
-        // types
+        placeholder,
+        // a single "named" thing like a variable, field, or type name
+        ident,
+        // parentheses around any exprssion
+        paren: Index,
 
-        named_ty: void,
-        pointer_ty: Index,
-        fn_type: Index,
-        array_type: struct {
+        // types
+        // pointer type * to an underlying type
+        pointer: Index,
+        // pointer type [*] to an underlying type
+        many_pointer: Index,
+        // slice type [] to an underlying type
+        slice: Index,
+        // array type [n] to an underlying type
+        array: struct {
             element_type: Index,
             count_expr: Index,
         },
-        slice_type: Index,
-        unsafe_pointer_type: Index,
+
+        fn_type: Index,
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
         // proto = FnSignature {} 'fn (params...) ret'
@@ -85,10 +98,7 @@ pub const Node = struct {
         // as opposed to *arguments* at the call site
         // 'argc: u32'
         // main_token = name
-        // ty = parameter type node
-        param: struct {
-            ty: Index,
-        },
+        param: Index,
 
         // expressions
         // integer literal '123_456'
@@ -100,7 +110,7 @@ pub const Node = struct {
         bool_literal: void,
         char_literal: void,
         string_literal,
-        array_initializer: struct {
+        array_init: struct {
             elements_start: ExtraIndex,
             elements_end: ExtraIndex,
         },
@@ -114,9 +124,6 @@ pub const Node = struct {
         },
         // unary expression '[+-!~]a'
         unary_expr: Index,
-        // variable value 'x'
-        // main_token = variable identifier
-        var_expr: void,
         // function call 'foo(1, 2, 3)'
         // main_token = function name
         // args_start = start of argument array
@@ -128,11 +135,13 @@ pub const Node = struct {
             args_start: ExtraIndex,
             args_end: ExtraIndex,
         },
-        array_access: struct {
-            array: Index,
+        index: struct {
+            operand: Index,
             index: Index,
         },
-        field_access: Index,
+        // accesses a field by name (identifier)
+        // main_token = '.'
+        field: Index,
         // string literal '"Hello, world!"'
         // main_token = string literal
         // str_literal = void,
@@ -140,10 +149,10 @@ pub const Node = struct {
         // declarations
         // type alias 'type Index = u32'
         // main_token = 'type'
-        // ty = type name node
-        ty_decl: struct {
-            ty: Index,
-        },
+        type_decl: Index,
+        // type alias 'distinct type Index = u32'
+        // main_token = 'distinct'
+        distinct_type_decl: Index,
 
         // statements
         // block '{...}'
@@ -172,7 +181,8 @@ pub const Node = struct {
             val: Index,
         },
 
-        attribute: struct {
+        attr_simple,
+        attr_args: struct {
             args_start: ExtraIndex,
             args_end: ExtraIndex,
         },
@@ -203,11 +213,7 @@ pub const Node = struct {
         // return_void: void,
         // return value 'return 5'
         // main_token = 'return'
-        // val = return value node
-        return_val: struct {
-            val: Index,
-        },
-        // return value 'return'
+        return_val: Index,
 
         // simple if statement 'if cond {body}'
         // main_token = 'if'
@@ -262,7 +268,7 @@ pub const Node = struct {
         },
 
         // "break" statement to exit a loop early
-        loop_break: void,
+        @"break",
 
         // body = body block node
         module: struct {

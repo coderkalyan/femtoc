@@ -1,0 +1,11 @@
+a + b => a + b
+a + b * c => a + (b * c)
+a + b * c / d => a + ((b * c) / d)
+a + b < c + d => (a + b) < (c + d)
+a + b == c + d => (a + b) == (c + d)
+a < b == c < d => (a < b) == (c < d)
+a < b or c < d => (a < b) or (c < d)
+a == b and c >= d => (a == b) and (c >= d)
+a or b and c or d => (a or (b and c)) or d
+!a or b => (!a) or b
+a or b == c or d => (a or (b == c) or d)

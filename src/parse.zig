@@ -107,6 +107,13 @@ const Parser = struct {
         return p.nodes.len - 1;
     }
 
+    // eats the current token (whatever it is) and returns the index
+    fn eatCurrentToken(p: *Parser) TokenIndex {
+        p.index += 1;
+        return p.index - 1;
+    }
+
+    // eats the current token if it matches a tag, and return null otherwise
     fn eatToken(p: *Parser, tag: Token.Tag) ?TokenIndex {
         if (p.token_tags[p.index] == tag) {
             return p.eatCurrentToken();
@@ -115,17 +122,13 @@ const Parser = struct {
         }
     }
 
+    // east the current token if it matches a tag, and errors otherwise
     fn expectToken(p: *Parser, tag: Token.Tag) Error!TokenIndex {
         if (p.eatToken(tag)) |token| {
             return token;
         } else {
-            return Error.UnexpectedToken;
+            return error.UnexpectedToken;
         }
-    }
-
-    fn eatCurrentToken(p: *Parser) TokenIndex {
-        p.index += 1;
-        return p.index - 1;
     }
 
     fn addExtra(p: *Parser, extra: anytype) Allocator.Error!Node.Index {
@@ -220,17 +223,23 @@ const Parser = struct {
         return switch (tag) {
             .k_or => 10,
             .k_and => 11,
-            .equal_equal => 12,
-            .bang_equal => 12,
-            .l_angle => 13,
-            .r_angle => 13,
-            .l_angle_equal => 13,
-            .r_angle_equal => 13,
-            .plus => 110,
-            .minus => 120,
-            .asterisk => 130,
-            .slash => 140,
-            .percent => 140,
+            .k_xor => 12,
+            .equal_equal => 13,
+            .bang_equal => 13,
+            .l_angle => 14,
+            .r_angle => 14,
+            .l_angle_equal => 14,
+            .r_angle_equal => 14,
+            .plus => 20,
+            .minus => 20,
+            .asterisk => 21,
+            .slash => 21,
+            .percent => 22,
+            .pipe => 30,
+            .ampersand => 31,
+            .caret => 32,
+            .r_angle_r_angle => 33,
+            .l_angle_l_angle => 33,
             else => -1,
         };
     }
@@ -303,8 +312,8 @@ const Parser = struct {
             else => {
                 const left_node = try p.parsePrimaryExpr();
                 switch (p.token_tags[p.index]) {
-                    .l_bracket => return p.expectArrayAccess(left_node),
-                    .period => return p.expectFieldAccess(left_node),
+                    .l_bracket => return p.expectIndex(left_node),
+                    .period => return p.expectField(left_node),
                     else => return p.parseBinRExpr(left_node, 0),
                 }
             },
@@ -313,21 +322,24 @@ const Parser = struct {
 
     fn parsePrimaryExpr(p: *Parser) Error!Node.Index {
         // parses an elementary expression such as a literal,
-        // variable value, function call, or parenthesis
+        // variable value, function call, or parentheses
         return switch (p.token_tags[p.index]) {
             .l_paren => node: {
-                // parentheses are used only for grouping in source code,
-                // and don't generate ast nodes since the ast nesting itself
-                // provides the correct grouping
-                _ = try p.expectToken(.l_paren);
-                const inner_node = p.expectExpr();
+                // even though parentheses aren't necessary due to the ast
+                // being nested, they are added to facilitate 1-1 mapping between
+                // source and ast for tooling and testing
+                const l_paren_token = try p.expectToken(.l_paren);
+                const inner_node = try p.expectExpr();
                 _ = try p.expectToken(.r_paren);
 
-                break :node inner_node;
+                break :node p.addNode(.{
+                    .main_token = l_paren_token,
+                    .data = .{ .paren = inner_node },
+                });
             },
             .ident => switch (p.token_tags[p.index + 1]) {
-                .l_paren => p.expectCall(try p.expectVarExpr()),
-                else => p.expectVarExpr(),
+                .l_paren => p.expectCall(try p.expectIdent()),
+                else => p.expectIdent(),
             },
             .int_lit => expr: {
                 const literal = p.addNode(.{
@@ -361,7 +373,7 @@ const Parser = struct {
                 .main_token = p.eatCurrentToken(),
                 .data = .{ .string_literal = {} },
             }),
-            .l_bracket => p.expectArrayInitializer(),
+            .l_bracket => p.expectArrayInit(),
             .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
                 .data = .{ .unary_expr = try p.parsePrimaryExpr() },
@@ -400,25 +412,29 @@ const Parser = struct {
         }
     }
 
-    fn expectVarExpr(p: *Parser) !Node.Index {
-        // parses variable identifier expressions (variable value)
+    // identifier used as an expression (like a variable or type name)
+    // expressions that need an identifier, like a decl or struct init,
+    // just use main_token
+    fn expectIdent(p: *Parser) !Node.Index {
         const ident_token = try p.expectToken(.ident);
-        return p.addNode(.{ .main_token = ident_token, .data = .{
-            .var_expr = {},
-        } });
+        return p.addNode(.{
+            .main_token = ident_token,
+            .data = .{ .ident = {} },
+        });
     }
 
-    fn expectArrayInitializer(p: *Parser) !Node.Index {
+    fn expectArrayInit(p: *Parser) !Node.Index {
         const l_bracket_token = try p.expectToken(.l_bracket);
+
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
-
         while (true) {
             if (p.eatToken(.r_bracket)) |_| break;
+
             const element_node = try p.expectExpr();
             try p.scratch.append(element_node);
             switch (p.token_tags[p.index]) {
-                .comma => _ = p.eatToken(.comma),
+                .comma => _ = p.eatToken(.comma), // we tolerate a trailing comma
                 .r_bracket => {},
                 else => return Error.UnexpectedToken,
             }
@@ -427,32 +443,33 @@ const Parser = struct {
         const elements = p.scratch.items[scratch_top..];
         const extra_top = p.extra.items.len;
         try p.extra.appendSlice(p.gpa, elements);
-        return p.addNode(.{ .main_token = l_bracket_token, .data = .{
-            .array_initializer = .{
+        return p.addNode(.{
+            .main_token = l_bracket_token,
+            .data = .{ .array_init = .{
                 .elements_start = @intCast(extra_top),
                 .elements_end = @intCast(p.extra.items.len),
-            },
-        } });
+            } },
+        });
     }
 
-    fn expectArrayAccess(p: *Parser, array: Node.Index) Error!Node.Index {
+    fn expectIndex(p: *Parser, operand: Node.Index) Error!Node.Index {
         const l_bracket_token = try p.expectToken(.l_bracket);
-        const array_index = try p.expectExpr();
+        const index = try p.expectExpr();
         _ = try p.expectToken(.r_bracket);
 
         return p.addNode(.{
             .main_token = l_bracket_token,
-            .data = .{ .array_access = .{ .array = array, .index = array_index } },
+            .data = .{ .index = .{ .operand = operand, .index = index } },
         });
     }
 
-    fn expectFieldAccess(p: *Parser, aggregate: Node.Index) Error!Node.Index {
+    fn expectField(p: *Parser, operand: Node.Index) Error!Node.Index {
         const dot_token = try p.expectToken(.period);
         _ = try p.expectToken(.ident);
 
         return p.addNode(.{
             .main_token = dot_token,
-            .data = .{ .field_access = aggregate },
+            .data = .{ .field = operand },
         });
     }
 
@@ -474,7 +491,7 @@ const Parser = struct {
             switch (p.token_tags[p.index]) {
                 .comma => _ = p.eatToken(.comma),
                 .r_paren => {},
-                else => return Error.UnexpectedToken,
+                else => return error.UnexpectedToken,
             }
         }
 
@@ -497,9 +514,7 @@ const Parser = struct {
                 const ident_token = try p.expectToken(.ident);
                 break :node try p.addNode(.{
                     .main_token = ident_token,
-                    .data = .{
-                        .named_ty = {},
-                    },
+                    .data = .{ .ident = {} },
                 });
             },
             .l_paren => node: {
@@ -524,7 +539,7 @@ const Parser = struct {
                     const asterisk_token = p.eatToken(.asterisk).?;
                     break :node try p.addNode(.{
                         .main_token = asterisk_token,
-                        .data = .{ .pointer_ty = inner },
+                        .data = .{ .pointer = inner },
                     });
                 },
                 .l_bracket => node: {
@@ -534,15 +549,15 @@ const Parser = struct {
                             // slice
                             _ = p.eatCurrentToken();
                             break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
-                                .slice_type = inner,
+                                .slice = inner,
                             } });
                         },
                         .asterisk => {
-                            // unsafe pointer
+                            // many pointer
                             _ = p.eatCurrentToken();
                             _ = try p.expectToken(.r_bracket);
                             break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
-                                .unsafe_pointer_type = inner,
+                                .many_pointer = inner,
                             } });
                         },
                         else => {
@@ -550,7 +565,7 @@ const Parser = struct {
                             const count_expr = try p.expectExpr();
                             _ = try p.expectToken(.r_bracket);
                             break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
-                                .array_type = .{ .element_type = inner, .count_expr = count_expr },
+                                .array = .{ .element_type = inner, .count_expr = count_expr },
                             } });
                         },
                     }
@@ -648,7 +663,7 @@ const Parser = struct {
                 }
             } else |err| {
                 switch (err) {
-                    Error.HandledUserError => {
+                    error.HandledUserError => {
                         // eat until we're just left with an closing parenthesis or another comma to try and parse that arg
                         while (true) {
                             switch (p.token_tags[p.index]) {
@@ -678,65 +693,35 @@ const Parser = struct {
     }
 
     fn expectParam(p: *Parser) !Node.Index {
-        // const ident_token = try p.expectToken(.ident);
+        var err = false;
+        const ident_token = p.expectToken(.ident) catch token: {
+            // We're missing an identifier flag it
+            try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
+            err = true;
+            break :token undefined;
+        };
 
-        if (p.expectToken(.ident)) |ident_token| {
-            // if (p.expectToken(.colon)) |_| {} else {
-            _ = p.expectToken(.colon) catch {
-                // We're missing a colon flag it
-                try p.errors.append(.{ .tag = .missing_colon, .token = p.index });
-            };
+        _ = p.expectToken(.colon) catch {
+            // We're missing a colon flag it
+            try p.errors.append(.{ .tag = .missing_colon, .token = p.index });
+            err = true;
+        };
+        const type_node = p.expectType() catch node: {
+            // We're missing a type annotation
+            try p.errors.append(.{ .tag = .missing_type_annotation, .token = p.index });
+            err = true;
+            break :node undefined;
+        };
 
-            if (p.expectType()) |type_node| {
-                return p.addNode(.{
-                    .main_token = ident_token,
-                    .data = .{
-                        .param = .{
-                            .ty = type_node,
-                        },
-                    },
-                });
-            } else |err| {
-                switch (err) {
-                    Error.UnexpectedToken => {
-                        // missing the type annotation which means we can't generate the node!
-                        try p.errors.append(.{ .tag = .missing_type_annotation, .token = p.index });
-                        return Error.HandledUserError;
-                    },
-                    else => {
-                        return err;
-                    },
-                }
-
-                return err;
-            }
-        } else |err| {
-            switch (err) {
-                Error.UnexpectedToken => {
-                    // We're missing an identifier flag it
-                    try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
-
-                    // if (p.expectToken(.colon)) |_| {} else {
-                    _ = p.expectToken(.colon) catch {
-                        // We're missing a colon flag it
-                        try p.errors.append(.{ .tag = .missing_colon, .token = p.index });
-                    };
-
-                    // if (p.expectType()) |_| {} else {
-                    _ = p.expectType() catch {
-                        // We're missing a type annotation
-                        try p.errors.append(.{ .tag = .missing_type_annotation, .token = p.index });
-                    };
-
-                    return Error.HandledUserError;
-                },
-                else => return err,
-            }
-        }
+        if (err) return error.HandledUserError;
+        return p.addNode(.{
+            .main_token = ident_token,
+            .data = .{ .param = type_node },
+        });
     }
 
-    fn parseTypeDecl(self: *Parser) !Node.Index {
-        // parses a type declaration (type Point = ...)
+    // parses a type declaration (type Point = ...)
+    fn expectTypeDecl(self: *Parser) !Node.Index {
         const type_token = try self.expectToken(.k_type);
         _ = try self.expectToken(.ident); // not stored, (main_token == type_token) + 1
         _ = try self.expectToken(.equal);
@@ -744,11 +729,21 @@ const Parser = struct {
 
         return self.addNode(.{
             .main_token = type_token,
-            .data = .{
-                .ty_decl = .{
-                    .ty = type_node,
-                },
-            },
+            .data = .{ .type_decl = type_node },
+        });
+    }
+
+    // parses a distinct type declaration (distinct type Point = ...)
+    fn expectDistinctTypeDecl(self: *Parser) !Node.Index {
+        const distinct_token = try self.expectToken(.k_distinct);
+        _ = try self.expectToken(.k_type);
+        _ = try self.expectToken(.ident); // not stored, (main_token == distinct_token) + 2
+        _ = try self.expectToken(.equal);
+        const type_node = try self.expectType();
+
+        return self.addNode(.{
+            .main_token = distinct_token,
+            .data = .{ .distinct_type_decl = type_node },
         });
     }
 
@@ -764,11 +759,10 @@ const Parser = struct {
 
         while (true) {
             if (p.eatToken(.r_brace)) |_| break;
-            // const stmt_node = try p.parseStatement();
             if (p.parseStatement()) |stmt_node| {
                 try p.scratch.append(stmt_node);
             } else |err| switch (err) {
-                Error.HandledUserError => continue,
+                error.HandledUserError => continue,
                 else => return err,
             }
         }
@@ -779,21 +773,21 @@ const Parser = struct {
 
         return p.addNode(.{
             .main_token = l_brace_token,
-            .data = .{
-                .block = .{
-                    .stmts_start = @intCast(extra_top),
-                    .stmts_end = @intCast(p.extra.items.len),
-                },
-            },
+            .data = .{ .block = .{
+                .stmts_start = @intCast(extra_top),
+                .stmts_end = @intCast(p.extra.items.len),
+            } },
         });
     }
 
     fn parseStatement(p: *Parser) Error!Node.Index {
         const node = switch (p.token_tags[p.index]) {
             .k_let => p.parseDecl(),
-            .k_return => p.expectReturnStmt(),
             .k_if => p.parseConditional(),
             .k_for => p.parseLoop(),
+            .k_type => p.expectTypeDecl(),
+            .k_distinct => p.expectDistinctTypeDecl(),
+            .k_return => p.expectReturn(),
             .k_break => p.expectBreak(),
             else => node: {
                 const expr = try p.expectExpr();
@@ -837,13 +831,11 @@ const Parser = struct {
 
         return p.addNode(.{
             .main_token = undefined,
-            .data = .{
-                .call_expr = .{
-                    .ptr = ptr,
-                    .args_start = args_range.start,
-                    .args_end = args_range.end,
-                },
-            },
+            .data = .{ .call_expr = .{
+                .ptr = ptr,
+                .args_start = args_range.start,
+                .args_end = args_range.end,
+            } },
         });
     }
 
@@ -888,15 +880,13 @@ const Parser = struct {
 
         while (true) {
             const attr = switch (p.token_tags[p.index]) {
-                .a_export => try p.parseExport(),
-                .a_import => try p.parseImport(),
+                inline .a_export,
+                .a_import,
+                => |tag| try p.parseAttr(tag),
                 else => break,
             };
-
             try p.scratch.append(attr);
         }
-
-        // std.debug.print("p1 {any}, {}\n", .{ attributes, attributes.len });
 
         const let_token = try p.expectToken(.k_let);
         var is_mut = false;
@@ -948,7 +938,6 @@ const Parser = struct {
             });
         } else {
             // const decl
-            // std.debug.print("p2 {any}, {}\n", .{ attributes, attributes.len });
             const attributes = p.scratch.items[scratch_top..];
             if (attributes.len > 0) {
                 // const with attributes
@@ -975,30 +964,13 @@ const Parser = struct {
         }
     }
 
-    fn expectReturnStmt(p: *Parser) !Node.Index {
+    fn expectReturn(p: *Parser) !Node.Index {
         const ret_token = try p.expectToken(.k_return);
-
-        if (p.token_tags[p.index] == .semi) {
-            // no return value, assumed void function (will verify in IR during type checking)
-            return p.addNode(.{
-                .main_token = ret_token,
-                .data = .{
-                    .return_val = .{
-                        .val = null_node,
-                    },
-                },
-            });
-        } else {
-            const expr_node = try p.expectExpr();
-            return p.addNode(.{
-                .main_token = ret_token,
-                .data = .{
-                    .return_val = .{
-                        .val = expr_node,
-                    },
-                },
-            });
-        }
+        const return_val = if (p.token_tags[p.index] == .semi) null_node else try p.expectExpr();
+        return p.addNode(.{
+            .main_token = ret_token,
+            .data = .{ .return_val = return_val },
+        });
     }
 
     fn parseConditional(p: *Parser) !Node.Index {
@@ -1032,10 +1004,13 @@ const Parser = struct {
                     .exec_true = exec_true,
                     .exec_false = exec_false,
                 });
-                return p.addNode(.{ .main_token = if_token, .data = .{ .if_else = .{
-                    .condition = condition,
-                    .exec = exec,
-                } } });
+                return p.addNode(.{
+                    .main_token = if_token,
+                    .data = .{ .if_else = .{
+                        .condition = condition,
+                        .exec = exec,
+                    } },
+                });
             }
         } else {
             // simple if
@@ -1087,10 +1062,13 @@ const Parser = struct {
             // assume this is the condition of a conditional loop
             const condition = try p.expectExpr();
             const body = try p.expectBlock();
-            return p.addNode(.{ .main_token = for_token, .data = .{ .loop_conditional = .{
-                .condition = condition,
-                .body = body,
-            } } });
+            return p.addNode(.{
+                .main_token = for_token,
+                .data = .{ .loop_conditional = .{
+                    .condition = condition,
+                    .body = body,
+                } },
+            });
         }
     }
 
@@ -1098,78 +1076,27 @@ const Parser = struct {
         const break_token = try p.expectToken(.k_break);
         return p.addNode(.{
             .main_token = break_token,
-            .data = .{ .loop_break = {} },
+            .data = .{ .@"break" = {} },
         });
     }
 
-    fn parseExport(p: *Parser) !Node.Index {
-        const export_token = try p.expectToken(.a_export);
-
-        const scratch_top = p.scratch.items.len;
-        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    fn parseAttr(p: *Parser, comptime tag: Token.Tag) !Node.Index {
+        const attr_token = try p.expectToken(tag);
         if (p.token_tags[p.index] == .l_paren) {
-            _ = try p.expectToken(.l_paren);
-            while (true) {
-                switch (p.token_tags[p.index]) {
-                    .r_paren => {
-                        _ = try p.expectToken(.r_paren);
-                        break;
-                    },
-                    else => {
-                        const arg = try p.expectExpr();
-                        try p.scratch.append(arg);
-                    },
-                }
-            }
+            const args = try p.expectArgList();
+            return p.addNode(.{
+                .main_token = attr_token,
+                .data = .{ .attr_args = .{
+                    .args_start = args.start,
+                    .args_end = args.end,
+                } },
+            });
+        } else {
+            return p.addNode(.{
+                .main_token = attr_token,
+                .data = .{ .attr_simple = {} },
+            });
         }
-        const args = p.scratch.items[scratch_top..];
-        const args_start: u32 = @intCast(p.extra.items.len);
-        try p.extra.appendSlice(p.gpa, args);
-        const args_end: u32 = @intCast(p.extra.items.len);
-
-        const attribute = try p.addNode(.{ .main_token = export_token, .data = .{
-            .attribute = .{
-                .args_start = args_start,
-                .args_end = args_end,
-            },
-        } });
-        return attribute;
-        // try p.attributes.append(p.gpa, attribute);
-    }
-
-    fn parseImport(p: *Parser) !Node.Index {
-        const import_token = try p.expectToken(.a_import);
-
-        const scratch_top = p.scratch.items.len;
-        defer p.scratch.shrinkRetainingCapacity(scratch_top);
-        if (p.token_tags[p.index] == .l_paren) {
-            _ = try p.expectToken(.l_paren);
-            while (true) {
-                switch (p.token_tags[p.index]) {
-                    .r_paren => {
-                        _ = try p.expectToken(.r_paren);
-                        break;
-                    },
-                    else => {
-                        const arg = try p.expectExpr();
-                        try p.scratch.append(arg);
-                    },
-                }
-            }
-        }
-        const args = p.scratch.items[scratch_top..];
-        const args_start: u32 = @intCast(p.extra.items.len);
-        try p.extra.appendSlice(p.gpa, args);
-        const args_end: u32 = @intCast(p.extra.items.len);
-
-        const attribute = try p.addNode(.{ .main_token = import_token, .data = .{
-            .attribute = .{
-                .args_start = args_start,
-                .args_end = args_end,
-            },
-        } });
-        return attribute;
-        // try p.attributes.append(p.gpa, attribute);
     }
 };
 

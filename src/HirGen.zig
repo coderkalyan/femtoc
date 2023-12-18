@@ -442,22 +442,22 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
 
 fn binaryInner(b: *BlockEditor, node: Node.Index, op: Ast.TokenIndex, lref: Hir.Index, rref: Hir.Index) Error!Hir.Index {
     const tag: Inst.Tag = switch (b.hg.tree.tokenTag(op)) {
-        .plus => .add,
-        .plus_equal => .add,
-        .minus => .sub,
-        .minus_equal => .sub,
-        .asterisk => .mul,
-        .asterisk_equal => .mul,
-        .slash => .div,
-        .slash_equal => .div,
-        .percent => .mod,
-        .percent_equal => .mod,
+        .plus, .plus_equal => .add,
+        .minus, .minus_equal => .sub,
+        .asterisk, .asterisk_equal => .mul,
+        .slash, .slash_equal => .div,
+        .percent, .percent_equal => .mod,
+        .pipe, .pipe_equal => .bitwise_or,
+        .ampersand, .ampersand_equal => .bitwise_and,
+        .caret, .caret_equal => .bitwise_xor,
         .equal_equal => .cmp_eq,
         .bang_equal => .cmp_ne,
-        .l_angle_equal => .cmp_le,
-        .r_angle_equal => .cmp_ge,
-        .l_angle => .cmp_lt,
         .r_angle => .cmp_gt,
+        .l_angle => .cmp_lt,
+        .r_angle_equal => .cmp_ge,
+        .l_angle_equal => .cmp_le,
+        .r_angle_r_angle, .r_angle_r_angle_equal => .sr,
+        .l_angle_l_angle, .l_angle_l_angle_equal => .sl,
         else => return Error.UnexpectedToken,
     };
 
@@ -467,11 +467,14 @@ fn binaryInner(b: *BlockEditor, node: Node.Index, op: Ast.TokenIndex, lref: Hir.
         .mul,
         .div,
         .mod,
+        .bitwise_or,
+        .bitwise_and,
+        .bitwise_xor,
         .cmp_eq,
         .cmp_ne,
         .cmp_gt,
-        .cmp_ge,
         .cmp_lt,
+        .cmp_ge,
         .cmp_le,
         => |t| return b.add(t, .{ .lref = lref, .rref = rref, .node = node }),
         else => unreachable,
@@ -579,7 +582,7 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const param_str = hg.tree.tokenString(param_token);
         const param_id = try hg.interner.intern(param_str);
 
-        const ty_ref = try typeExpr(b, scope, data.ty);
+        const ty_ref = try typeExpr(b, scope, data);
         const param_index = try b.addParam(param_id, ty_ref, param);
         b.scratch.appendAssumeCapacity(param_index);
 
@@ -617,7 +620,7 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 fn arrayInitializer(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const arena = hg.arena;
-    const array_initializer = hg.tree.data(node).array_initializer;
+    const array_initializer = hg.tree.data(node).array_init;
 
     const scratch_top = b.scratch.items.len;
     defer b.scratch.shrinkRetainingCapacity(scratch_top);
@@ -641,14 +644,14 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .bool_literal => boolLiteral(b, node),
             .char_literal => charLiteral(b, node),
             .string_literal => stringLiteral(b, node),
-            .var_expr => identExpr(b, scope, ri, node),
+            .ident => identExpr(b, scope, ri, node),
             .call_expr => try call(b, scope, node),
             .binary_expr => try binary(b, scope, node),
             .unary_expr => try unary(b, scope, ri, node),
             .fn_decl => try fnDecl(b, scope, node),
-            .array_initializer => try arrayInitializer(b, scope, node),
-            .array_access => try arrayAccess(b, scope, ri, node),
-            .field_access => try fieldAccess(b, scope, ri, node),
+            .array_init => try arrayInitializer(b, scope, node),
+            .index => try indexAccess(b, scope, ri, node),
+            .field => try fieldAccess(b, scope, ri, node),
             else => {
                 std.log.err("expr (val semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -658,24 +661,24 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .integer_literal => integerLiteral(b, node),
             .float_literal => floatLiteral(b, node),
             .bool_literal => boolLiteral(b, node),
-            .var_expr => identExpr(b, scope, ri, node),
+            .ident => identExpr(b, scope, ri, node),
             .call_expr => try call(b, scope, node),
             .binary_expr => try binary(b, scope, node),
             .unary_expr => try unary(b, scope, ri, node),
-            .array_access => try arrayAccess(b, scope, ri, node),
-            .field_access => try fieldAccess(b, scope, ri, node),
+            .index => try indexAccess(b, scope, ri, node),
+            .field => try fieldAccess(b, scope, ri, node),
             else => {
                 std.log.err("expr (ref semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
         .ty => switch (b.hg.tree.data(node)) {
-            .named_ty => identExpr(b, scope, ri, node),
+            .ident => identExpr(b, scope, ri, node),
             .unary_expr => try unary(b, scope, ri, node),
-            .pointer_ty => try pointerTy(b, scope, node),
+            .pointer => try pointerType(b, scope, node),
             .fn_type => try fnType(b, scope, node),
-            .array_type => try arrayType(b, scope, node),
-            .unsafe_pointer_type => try unsafePointerType(b, scope, node),
+            .array => try arrayType(b, scope, node),
+            .many_pointer => try manyPointerType(b, scope, node),
             else => {
                 std.log.err("expr (type semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -699,23 +702,23 @@ inline fn typeExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index 
     return expr(b, scope, ri, node);
 }
 
-fn pointerTy(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn pointerType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const pointee = hg.tree.data(node).pointer_ty;
+    const pointee = hg.tree.data(node).pointer;
     const inner = try typeExpr(b, scope, pointee);
     return b.add(.create_pointer_type, .{ .operand = inner, .node = node });
 }
 
-fn unsafePointerType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+fn manyPointerType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const pointee = hg.tree.data(node).unsafe_pointer_type;
+    const pointee = hg.tree.data(node).many_pointer;
     const inner = try typeExpr(b, scope, pointee);
     return b.add(.create_unsafe_pointer_type, .{ .operand = inner, .node = node });
 }
 
 fn sliceType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const element_type = hg.tree.data(node).slice_type;
+    const element_type = hg.tree.data(node).slice;
     const inner = try typeExpr(b, scope, element_type);
     return b.add(.create_slice_type, .{ .operand = inner, .node = node });
 }
@@ -730,7 +733,7 @@ fn fnType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     defer hg.arena.free(param_types);
     for (params, 0..) |param, i| {
         const data = hg.tree.data(param).param;
-        param_types[i] = try typeExpr(b, scope, data.ty);
+        param_types[i] = try typeExpr(b, scope, data);
     }
     const return_type = try typeExpr(b, scope, signature.return_ty);
 
@@ -739,24 +742,24 @@ fn fnType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 
 fn arrayType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const array_type = hg.tree.data(node).array_type;
+    const array_type = hg.tree.data(node).array;
     const element_type = try typeExpr(b, scope, array_type.element_type);
     const count = try valExpr(b, scope, array_type.count_expr);
     // TODO: make sure count is actually a comptime_int
     return b.add(.create_array_type, .{ .element_type = element_type, .count = count, .node = node });
 }
 
-fn arrayAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
+fn indexAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const array_access = hg.tree.data(node).array_access;
-    const array = try refExpr(b, scope, array_access.array);
-    const inner = try valExpr(b, scope, array_access.index);
+    const index_access = hg.tree.data(node).index;
+    const array = try refExpr(b, scope, index_access.operand);
+    const inner = try valExpr(b, scope, index_access.index);
     // TODO: actual variable length usize
     const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
     const access_index = try b.add(.coerce, .{
         .ty = usize_type,
         .val = inner,
-        .node = array_access.index,
+        .node = index_access.index,
     });
     const ptr = try b.add(.array_access, .{ .array = array, .index = access_index, .node = node });
 
@@ -769,7 +772,7 @@ fn arrayAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index)
 
 fn fieldAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const field_access = hg.tree.data(node).field_access;
+    const field_access = hg.tree.data(node).field;
     const operand = try refExpr(b, scope, field_access);
     const ptr = try b.add(.field_access, .{ .operand = operand, .node = node });
 
@@ -794,7 +797,7 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         .loop_forever => loopForever(b, scope, node),
         .loop_conditional => loopConditional(b, scope, node),
         .loop_range => loopRange(b, scope, node),
-        .loop_break => loopBreak(b, scope, node),
+        .@"break" => loopBreak(b, scope, node),
         .call_expr => call(b, scope, node),
         else => {
             std.log.err("statement: unexpected node: {}\n", .{b.hg.tree.data(node)});
@@ -1232,9 +1235,8 @@ fn ifChain(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 fn returnStmt(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const return_val = b.hg.tree.data(node).return_val;
     const return_type = try b.add(.ret_type, .{ .node = node });
-    const operand = if (return_val.val == 0) try b.add(.none, .{}) else op: {
-        const ref = try valExpr(b, scope, return_val.val);
-        // const bl = scope.resolveBlock().?;
+    const operand = if (return_val == 0) try b.add(.none, .{}) else op: {
+        const ref = try valExpr(b, scope, return_val);
         break :op try coerce(b, scope, ref, return_type, node);
     };
 

@@ -813,7 +813,6 @@ fn fieldAccess(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     switch (src_type.kind()) {
         .slice => {
             if (std.mem.eql(u8, field_string, "ptr")) {
-                std.debug.print("adding slice ptr\n", .{});
                 const access = try b.add(.slice_ptr, .{ .operand = data.operand, .node = data.node });
                 try analysis.src_block.replaceAllUsesWith(inst, access);
             } else if (std.mem.eql(u8, field_string, "len")) {
