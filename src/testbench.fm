@@ -3,14 +3,23 @@ let foo = fn (a: u32, b: u32) bool {
 };
 
 @export let main = fn () void {
-    let complex = {
+    let mut complex = {
         let bar = foo(10, 12);
         let mut value: u32 = 0;
         for let mut i: u32 = 1; i <= 10; i += 1 {
             value += i;
         }
 
-        yield value;
+        let const = value;
+        yield const + 1;
+    };
+
+    let mut ternary: u32 = if foo(10, 12) {
+        let val: u32 = 1;
+        yield val;
+    } else {
+        let val: u32 = 2;
+        yield val;
     };
     // let predicate = foo(10, 12);
 };

@@ -217,6 +217,7 @@ pub const Node = struct {
         // return value 'return 5'
         // main_token = 'return'
         return_val: Index,
+        yield_val: Index,
 
         // simple if statement 'if cond {body}'
         // main_token = 'if'

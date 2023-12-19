@@ -291,6 +291,11 @@ pub const Builder = struct {
         const llvm_type = try builder.convertType(ty);
         return c.LLVMBuildGEP2(builder.builder, llvm_type, ptr, indices.ptr, @intCast(indices.len), "");
     }
+
+    pub fn addPhi(builder: *Builder, ty: Type) !c.LLVMValueRef {
+        const llvm_type = try builder.convertType(ty);
+        return c.LLVMBuildPhi(builder.builder, llvm_type, "");
+    }
     // basic types are guaranteed not to allocate, so they won't throw errors
     // pub fn getBasicType(builder: *Builder, ty: Type) c.LLVMTypeRef {
     //     return llvm.getBasicType(builder.context, ty);

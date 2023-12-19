@@ -374,6 +374,8 @@ const Parser = struct {
                 .data = .{ .string_literal = {} },
             }),
             .l_bracket => p.expectArrayInit(),
+            .l_brace => p.expectBlock(),
+            .k_if => p.parseConditional(),
             .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
                 .data = .{ .unary = try p.parsePrimaryExpr() },
@@ -786,6 +788,7 @@ const Parser = struct {
             .k_type => p.expectTypeDecl(),
             .k_distinct => p.expectDistinctTypeDecl(),
             .k_return => p.expectReturn(),
+            .k_yield => p.expectYield(),
             .k_break => p.expectBreak(),
             else => node: {
                 const expr = try p.expectExpr();
@@ -968,6 +971,15 @@ const Parser = struct {
         return p.addNode(.{
             .main_token = ret_token,
             .data = .{ .return_val = return_val },
+        });
+    }
+
+    fn expectYield(p: *Parser) !Node.Index {
+        const yield_token = try p.expectToken(.k_yield);
+        const yield_val = try p.expectExpr();
+        return p.addNode(.{
+            .main_token = yield_token,
+            .data = .{ .yield_val = yield_val },
         });
     }
 

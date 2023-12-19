@@ -111,10 +111,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
                 try codegen.branchSingle(inst);
                 continue;
             },
-            .branch_double => {
-                try codegen.branchDouble(inst);
-                continue;
-            },
+            .branch_double => try codegen.branchDouble(inst),
             .ty, .load_global, .array => continue,
             .array_init => try codegen.arrayInit(inst),
             inline .yield_implicit, .yield_node => |tag| {
@@ -194,7 +191,7 @@ fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
                     const string = value.string;
                     const literal = try hir.interner.get(string);
                     const llvm_string = try builder.context.addConstString(literal);
-                    const llvm_type = try builder.convertType(ty);
+                    const llvm_type = c.LLVMTypeOf(llvm_string);
                     const global = builder.context.addGlobal(".str", llvm_type);
                     c.LLVMSetInitializer(global, llvm_string);
                     c.LLVMSetGlobalConstant(global, 1);
@@ -203,16 +200,9 @@ fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
                     return global;
                 },
                 .slice => {
-                    // const slice_type = ty.extended.cast(Type.Slice).?;
                     const slice = value.slice;
                     var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-                    // const ptr_type = ty: {
-                    //     const inner = try codegen.arena.create(Type.Pointer);
-                    //     inner.* = .{ .pointee = slice_type.element };
-                    //     break :ty .{ .extended = &inner.base };
-                    // };
                     const len_type = Type.Common.u64_type;
-                    // const ptr = hir.pool.getValue(slice.ptr);
                     const len = hir.pool.getValue(slice.len);
                     elements[0] = codegen.value_map.get(slice.ptr).?;
                     elements[1] = try codegen.constantInner(len_type, len);
@@ -348,7 +338,7 @@ fn branchSingle(codegen: *CodeGen, inst: Hir.Index) Error!void {
     builder.positionAtEnd(exit);
 }
 
-fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!void {
+fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!c.LLVMValueRef {
     const hir = codegen.hir;
     var builder = codegen.builder;
     const data = hir.get(inst, .branch_double);
@@ -359,14 +349,14 @@ fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!void {
     const prev = builder.getInsertBlock();
     const exec_true = builder.appendBlock("ifelse.true");
     builder.positionAtEnd(exec_true);
-    _ = try codegen.block(data.exec_true);
+    const yield_true = try codegen.block(data.exec_true);
 
     const false_prev = builder.getInsertBlock();
     const exec_false = builder.appendBlock("ifelse.false");
     builder.positionAtEnd(prev);
     builder.addCondBranch(condition, exec_true, exec_false);
     builder.positionAtEnd(exec_false);
-    _ = try codegen.block(data.exec_false);
+    const yield_false = try codegen.block(data.exec_false);
 
     const exit = builder.appendBlock("ifelse.exit");
     if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null)
@@ -377,6 +367,18 @@ fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!void {
     }
 
     builder.positionAtEnd(exit);
+    if ((yield_true == null) or (yield_false == null)) return null;
+
+    const phi_type = try hir.resolveType(codegen.arena, data.exec_true);
+    const phi = try builder.addPhi(phi_type);
+    var incoming_values: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
+    var incoming_blocks: [2]c.LLVMBasicBlockRef = [1]c.LLVMBasicBlockRef{undefined} ** 2;
+    incoming_values[0] = yield_true;
+    incoming_values[1] = yield_false;
+    incoming_blocks[0] = exec_true;
+    incoming_blocks[1] = exec_false;
+    c.LLVMAddIncoming(phi, (&incoming_values).ptr, (&incoming_blocks).ptr, incoming_values.len);
+    return phi;
 }
 
 fn param(codegen: *CodeGen, inst: Hir.Index, index: u32) !c.LLVMValueRef {

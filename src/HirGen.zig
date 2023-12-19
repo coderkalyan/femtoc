@@ -693,6 +693,14 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .array_init => try arrayInitializer(b, scope, node),
             .index => try indexAccess(b, scope, ri, node),
             .field => try fieldAccess(b, scope, ri, node),
+            .block => {
+                var block_scope = try Block.init(b, scope);
+                defer block_scope.deinit();
+                const bl = try block(&block_scope.editor, &block_scope.base, node, true);
+                try b.linkInst(bl);
+                return bl;
+            },
+            .if_else => try ifElse(b, scope, node),
             else => {
                 std.log.err("expr (val semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -835,6 +843,7 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         .if_else => ifElse(b, scope, node),
         .if_chain => ifChain(b, scope, node),
         .return_val => returnStmt(b, scope, node),
+        .yield_val => yield(b, scope, node),
         .loop_forever => loopForever(b, scope, node),
         .loop_conditional => loopConditional(b, scope, node),
         .loop_range => loopRange(b, scope, node),
@@ -1220,7 +1229,7 @@ fn ifSimple(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     return b.add(.branch_single, .{ .condition = condition, .exec_true = exec, .node = node });
 }
 
-fn ifElse(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
+fn ifElse(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const if_else = b.hg.tree.data(node).if_else;
 
     const condition = try conditionExpr(b, scope, if_else.condition);
@@ -1282,6 +1291,13 @@ fn returnStmt(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     };
 
     return b.add(.ret_node, .{ .operand = operand, .node = node });
+}
+
+fn yield(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
+    const yield_val = b.hg.tree.data(node).yield_val;
+    const operand = try valExpr(b, scope, yield_val);
+
+    return b.add(.yield_node, .{ .operand = operand, .node = node });
 }
 
 fn loopForever(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {

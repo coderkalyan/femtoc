@@ -881,8 +881,11 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             const slice_init = hir.extraData(data.pl_node.pl, Hir.Inst.SliceInit);
             break :ty hir.resolveType(gpa, slice_init.element_type);
         },
+        .branch_double => ty: {
+            const branch_double = hir.extraData(data.pl_node.pl, Hir.Inst.BranchDouble);
+            break :ty hir.resolveType(gpa, branch_double.exec_true);
+        },
         .branch_single,
-        .branch_double,
         .loop,
         .loop_break,
         => unreachable, // TODO: follow into the block
