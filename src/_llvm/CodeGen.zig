@@ -3,8 +3,10 @@ const Context = @import("Context.zig");
 const Value = @import("../value.zig").Value;
 const Hir = @import("../Hir.zig");
 const Type = @import("../hir/type.zig").Type;
+const InternPool = @import("../InternPool.zig");
 const Allocator = std.mem.Allocator;
 const c = Context.c;
+const ValueHandle = InternPool.ValueHandle;
 
 const CodeGen = @This();
 
@@ -15,6 +17,7 @@ func: *const Value.Function,
 // TODO: is LLVM thread safe?
 map: std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
 global_map: *std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
+value_map: std.AutoHashMapUnmanaged(ValueHandle, c.LLVMValueRef),
 
 const Error = Allocator.Error || @import("../interner.zig").Error || error{NotImplemented};
 
@@ -72,7 +75,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             inline .ret_node, .ret_implicit => |tag| codegen.ret(inst, tag),
             .alloca => try codegen.alloca(inst),
             .load => try codegen.load(inst),
-            .store => codegen.store(inst),
+            .store => try codegen.store(inst),
             inline .icmp_eq,
             .icmp_ne,
             .icmp_ugt,
@@ -112,7 +115,8 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
                 try codegen.branchDouble(inst);
                 continue;
             },
-            .ty, .load_global => continue,
+            .ty, .load_global, .array => continue,
+            .array_init => try codegen.arrayInit(inst),
             inline .yield_implicit, .yield_node => |tag| {
                 yield_val = codegen.yield(inst, tag);
                 break;
@@ -147,6 +151,13 @@ fn constant(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.extraData(pl, Hir.Inst.Constant);
     const ty = try hir.resolveType(codegen.arena, data.ty);
 
+    const ref = try codegen.constantInner(ty, hir.pool.getValue(data.val));
+    try codegen.value_map.put(codegen.arena, data.val, ref);
+    return ref;
+}
+
+fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
+    const hir = codegen.hir;
     var builder = codegen.builder;
     switch (ty.kind()) {
         .comptime_uint,
@@ -155,39 +166,66 @@ fn constant(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
         .comptime_array,
         => return null,
 
-        .uint => return builder.addUint(ty, hir.instToInt(inst)),
-        .sint => return builder.addSint(ty, hir.instToInt(inst)),
-        .float => return builder.addFloat(ty, hir.instToFloat(inst)),
+        .uint => return builder.addUint(ty, value.integer),
+        .sint => return builder.addSint(ty, value.integer),
+        .float => return builder.addFloat(ty, @bitCast(value.float)),
         .array => {
-            const array_type = ty.extended.cast(Type.Array).?;
-            const array = hir.values[data.val].extended.cast(Value.Array).?;
-            const vals = try codegen.arena.alloc(c.LLVMValueRef, array.elements.len);
-            defer codegen.arena.free(vals);
-            for (array.elements, 0..) |element, i| {
-                vals[i] = codegen.resolveInst(element);
+            const element_type = ty.extended.cast(Type.Array).?.element;
+            const src_elements = value.array.elements;
+            const dest_elements = try codegen.arena.alloc(c.LLVMValueRef, src_elements.len);
+            defer codegen.arena.free(dest_elements);
+            for (src_elements, 0..) |element, i| {
+                const element_value = hir.pool.getValue(element);
+                dest_elements[i] = try codegen.constantInner(element_type, element_value);
             }
 
-            return builder.addConstArray(array_type.element, vals);
+            const llvm_type = try builder.convertType(ty);
+            const llvm_array = try builder.addConstArray(ty, dest_elements);
+            const global = builder.context.addGlobal(".data", llvm_type);
+            c.LLVMSetInitializer(global, llvm_array);
+            c.LLVMSetGlobalConstant(global, 1);
+            c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+            c.LLVMSetUnnamedAddr(global, 1);
+            return global;
         },
         .slice => {
-            const value = hir.values[data.val];
-            if (value.kind() == .string) {
-                const string = value.extended.cast(Value.String).?;
-                const literal = try hir.interner.get(string.literal);
-                const llvm_string = try builder.context.addConstString(literal);
-                const global = builder.context.addGlobal(".str", c.LLVMArrayType(c.LLVMInt8TypeInContext(builder.context.context), @intCast(literal.len + 1)));
-                c.LLVMSetInitializer(global, llvm_string);
-                c.LLVMSetGlobalConstant(global, 1);
-                c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-                c.LLVMSetUnnamedAddr(global, 1);
-                return global;
-            } else {
-                const slice = value.extended.cast(Value.Slice).?;
-                var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-                // TODO: highly sus, we shouldn't have a slice constant for this
-                elements[0] = codegen.resolveInst(slice.ptr);
-                elements[1] = try builder.addUint(Type.Common.u64_type, slice.len);
-                return builder.context.addConstStruct(&elements);
+            switch (value) {
+                .string => {
+                    const string = value.string;
+                    const literal = try hir.interner.get(string);
+                    const llvm_string = try builder.context.addConstString(literal);
+                    const llvm_type = try builder.convertType(ty);
+                    const global = builder.context.addGlobal(".str", llvm_type);
+                    c.LLVMSetInitializer(global, llvm_string);
+                    c.LLVMSetGlobalConstant(global, 1);
+                    c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+                    c.LLVMSetUnnamedAddr(global, 1);
+                    return global;
+                },
+                .slice => {
+                    // const slice_type = ty.extended.cast(Type.Slice).?;
+                    const slice = value.slice;
+                    var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
+                    // const ptr_type = ty: {
+                    //     const inner = try codegen.arena.create(Type.Pointer);
+                    //     inner.* = .{ .pointee = slice_type.element };
+                    //     break :ty .{ .extended = &inner.base };
+                    // };
+                    const len_type = Type.Common.u64_type;
+                    // const ptr = hir.pool.getValue(slice.ptr);
+                    const len = hir.pool.getValue(slice.len);
+                    elements[0] = codegen.value_map.get(slice.ptr).?;
+                    elements[1] = try codegen.constantInner(len_type, len);
+                    const llvm_slice = try builder.context.addConstStruct(&elements);
+                    const llvm_type = try builder.convertType(ty);
+                    const global = builder.context.addGlobal(".slice", llvm_type);
+                    c.LLVMSetInitializer(global, llvm_slice);
+                    c.LLVMSetGlobalConstant(global, 1);
+                    c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+                    c.LLVMSetUnnamedAddr(global, 1);
+                    return global;
+                },
+                else => unreachable,
             }
         },
         else => unreachable,
@@ -261,11 +299,22 @@ fn load(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     return codegen.builder.addLoad(ptr, pointee_type);
 }
 
-fn store(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
+fn store(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, .store);
+    // TODO: better way to check for comptime data
     const addr = codegen.resolveInst(data.ptr);
-    const val = codegen.resolveInst(data.val);
+    var val = codegen.resolveInst(data.val);
+    const ty = try hir.resolveType(codegen.arena, data.val);
+    if (hir.insts.items(.tag)[data.val] == .constant) {
+        switch (ty.kind()) {
+            // TODO: better to generate memcpy than load
+            .array,
+            .slice,
+            => val = try codegen.builder.addLoad(val, ty),
+            else => {},
+        }
+    }
     return codegen.builder.addStore(addr, val);
 }
 
@@ -459,4 +508,42 @@ fn sliceLen(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
     indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 1);
     return try codegen.builder.addGetElementPtr(slice_type, slice, &indices);
+}
+
+fn arrayInit(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
+    const hir = codegen.hir;
+    const data = hir.get(inst, .array_init);
+
+    const ty = try hir.resolveType(codegen.arena, inst);
+    const elements = hir.extra_data[data.elements_start..data.elements_end];
+    const array_type = ty.extended.cast(Type.Array).?;
+    const vals = try codegen.arena.alloc(c.LLVMValueRef, elements.len);
+    defer codegen.arena.free(vals);
+
+    for (elements, 0..) |element, i| {
+        vals[i] = codegen.resolveInst(element);
+    }
+
+    return codegen.builder.addConstArray(array_type.element, vals);
+    // .slice => {
+    //     const value = hir.values[data.val];
+    //     if (value.kind() == .string) {
+    //         const string = value.extended.cast(Value.String).?;
+    //         const literal = try hir.interner.get(string.literal);
+    //         const llvm_string = try builder.context.addConstString(literal);
+    //         const global = builder.context.addGlobal(".str", c.LLVMArrayType(c.LLVMInt8TypeInContext(builder.context.context), @intCast(literal.len + 1)));
+    //         c.LLVMSetInitializer(global, llvm_string);
+    //         c.LLVMSetGlobalConstant(global, 1);
+    //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+    //         c.LLVMSetUnnamedAddr(global, 1);
+    //         return global;
+    //     } else {
+    //         const slice = value.extended.cast(Value.Slice).?;
+    //         var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
+    //         // TODO: highly sus, we shouldn't have a slice constant for this
+    //         elements[0] = codegen.resolveInst(slice.ptr);
+    //         elements[1] = try builder.addUint(Type.Common.u64_type, slice.len);
+    //         return builder.context.addConstStruct(&elements);
+    //     }
+    // },
 }

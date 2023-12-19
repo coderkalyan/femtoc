@@ -66,7 +66,9 @@ pub const Node = struct {
     // extra data indices represent only the "start" of the
     // unpacked extra data struct in the extra_data array
     pub const Data = union(enum) {
+        // used for the null node at the beginning
         placeholder,
+
         // a single "named" thing like a variable, field, or type name
         ident,
         // parentheses around any exprssion
@@ -84,8 +86,9 @@ pub const Node = struct {
             element_type: Index,
             count_expr: Index,
         },
+        // function type
+        function: ExtraIndex,
 
-        fn_type: Index,
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
         // proto = FnSignature {} 'fn (params...) ret'
@@ -100,41 +103,45 @@ pub const Node = struct {
         // main_token = name
         param: Index,
 
-        // expressions
-        // integer literal '123_456'
+        // literals
         // main_token = literal string
         integer_literal: u64,
-        // float literal '1.2345'
         // main_token = unparsed literal string
-        float_literal: void,
-        bool_literal: void,
-        char_literal: void,
+        float_literal,
+        // main_token = literal string (true or false)
+        bool_literal,
+        // main_token = literal string
+        char_literal,
         string_literal,
+
         array_init: struct {
             elements_start: ExtraIndex,
             elements_end: ExtraIndex,
         },
+
+        // complex expressions
         // binary expression 'a [+-*/...] b'
         // main_token = operator token
         // left = left side expression node
         // right = right side expression node
-        binary_expr: struct {
+        binary: struct {
             left: Index,
             right: Index,
         },
         // unary expression '[+-!~]a'
-        unary_expr: Index,
+        unary: Index,
         // function call 'foo(1, 2, 3)'
         // main_token = function name
         // args_start = start of argument array
         // args_end = end of argument array
         // TODO: this is very bad, increases union size
         // move to extra data
-        call_expr: struct {
+        call: struct {
             ptr: Index,
             args_start: ExtraIndex,
             args_end: ExtraIndex,
         },
+        // accesses an array/slice/many pointer element by index
         index: struct {
             operand: Index,
             index: Index,
@@ -142,11 +149,24 @@ pub const Node = struct {
         // accesses a field by name (identifier)
         // main_token = '.'
         field: Index,
-        // string literal '"Hello, world!"'
-        // main_token = string literal
-        // str_literal = void,
 
         // declarations
+        // constant declaration 'let x[: ty] = 1'
+        // main_token = 'let'
+        // ty = type node
+        // val = value node
+        const_decl: struct {
+            ty: Index,
+            val: Index,
+        },
+        // var declaration 'let mut x[: ty] = 1'
+        // main_token = 'let'
+        // ty = type node
+        // val = value node
+        var_decl: struct {
+            ty: Index,
+            val: Index,
+        },
         // type alias 'type Index = u32'
         // main_token = 'type'
         type_decl: Index,
@@ -163,29 +183,12 @@ pub const Node = struct {
             stmts_start: ExtraIndex,
             stmts_end: ExtraIndex,
         },
-        // constant declaration 'let x[: ty] = 1'
-        // main_token = 'let'
-        // ty = type node
-        // val = value node
-        const_decl: struct {
-            ty: Index,
-            val: Index,
-        },
 
-        // var declaration 'let mut x[: ty] = 1'
-        // main_token = 'let'
-        // ty = type node
-        // val = value node
-        var_decl: struct {
-            ty: Index,
-            val: Index,
-        },
-
+        // attribute without arguments
         attr_simple,
-        attr_args: struct {
-            args_start: ExtraIndex,
-            args_end: ExtraIndex,
-        },
+        // attribute with arguments
+        // range = argument indices
+        attr_args: ExtraRange,
 
         // constant declaration with attribute(s) '@export let x[: ty] = ...';
         const_decl_attr: struct {

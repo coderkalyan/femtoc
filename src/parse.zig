@@ -376,7 +376,7 @@ const Parser = struct {
             .l_bracket => p.expectArrayInit(),
             .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
-                .data = .{ .unary_expr = try p.parsePrimaryExpr() },
+                .data = .{ .unary = try p.parsePrimaryExpr() },
             }),
             else => return Error.UnexpectedToken,
         };
@@ -402,12 +402,10 @@ const Parser = struct {
 
             l_node = try p.addNode(.{
                 .main_token = op_token,
-                .data = .{
-                    .binary_expr = .{
-                        .left = l_node,
-                        .right = r_node,
-                    },
-                },
+                .data = .{ .binary = .{
+                    .left = l_node,
+                    .right = r_node,
+                } },
             });
         }
     }
@@ -582,7 +580,7 @@ const Parser = struct {
             return p.addNode(.{
                 .main_token = fn_token,
                 .data = .{
-                    .fn_type = try p.addExtra(Node.FnSignature{
+                    .function = try p.addExtra(Node.FnSignature{
                         .params_start = params.start,
                         .params_end = params.end,
                         .return_ty = return_ty,
@@ -805,7 +803,7 @@ const Parser = struct {
                     .r_angle_r_angle_equal,
                     => p.parseAssignment(expr),
                     else => {
-                        if (p.nodes.items(.data)[expr] == .call_expr) {
+                        if (p.nodes.items(.data)[expr] == .call) {
                             // function calls can exist on their own
                             // (implicit discard of return value)
                             break :node expr;
@@ -831,7 +829,7 @@ const Parser = struct {
 
         return p.addNode(.{
             .main_token = undefined,
-            .data = .{ .call_expr = .{
+            .data = .{ .call = .{
                 .ptr = ptr,
                 .args_start = args_range.start,
                 .args_end = args_range.end,
@@ -1087,8 +1085,8 @@ const Parser = struct {
             return p.addNode(.{
                 .main_token = attr_token,
                 .data = .{ .attr_args = .{
-                    .args_start = args.start,
-                    .args_end = args.end,
+                    .start = args.start,
+                    .end = args.end,
                 } },
             });
         } else {

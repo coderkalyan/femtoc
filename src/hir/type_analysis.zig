@@ -105,7 +105,8 @@ fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: 
             .param_type_of => try paramTypeOf(&analysis, inst),
             .type_of => try typeOf(&analysis, inst),
             .ret_type => try retType(&analysis, inst),
-            .array_initializer => try arrayInitializer(&analysis, inst),
+            // .array_initializer => try arrayInitializer(&analysis, inst),
+            // .array => try array(&analysis, inst),
             .field_access => try fieldAccess(&analysis, inst),
             .cmp_eq,
             .cmp_ne,
@@ -163,13 +164,15 @@ fn fnDecl(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     fn_type_inner.* = .{ .param_types = param_types, .return_type = return_type };
     const fn_type: Type = .{ .extended = &fn_type_inner.base };
 
-    const function = try hg.gpa.create(Value.Function);
-    function.* = .{ .params = params, .body = fn_decl.body };
-    const fn_value: Value = .{ .extended = &function.base };
+    const function_value = handle: {
+        const value = try Value.createFunction(hg.pool.arena, params, fn_decl.body);
+        break :handle try hg.pool.internValue(value);
+    };
 
+    std.debug.print("adding function: handle = {}\n", .{function_value});
     const constant = try b.add(.constant, .{
         .ty = try b.add(.ty, .{ .ty = fn_type }),
-        .val = try b.addValue(fn_value),
+        .val = function_value,
         .node = fn_decl.node,
     });
     try analysis.src_block.replaceAllUsesWith(inst, constant);
@@ -179,7 +182,7 @@ fn integer(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
     const data = hg.get(inst, .int);
-    const value = try b.addIntValue(Type.Common.comptime_uint, data.int);
+    const value = try hg.pool.internValue(.{ .integer = data.int });
     const ty = try b.add(.ty, .{ .ty = Type.Common.comptime_uint });
     // TODO: maybe try to store the node
     const constant = try b.add(.constant, .{ .ty = ty, .val = value, .node = undefined });
@@ -190,7 +193,7 @@ fn float(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
     const data = hg.get(inst, .float);
-    const value = try b.addFloatValue(data.float);
+    const value = try hg.pool.internValue(.{ .float = @bitCast(data.float) });
     const ty = try b.add(.ty, .{ .ty = Type.Common.comptime_float });
     // TODO: maybe try to store the node
     const constant = try b.add(.constant, .{ .ty = ty, .val = value, .node = undefined });
@@ -201,6 +204,7 @@ fn coerce(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
     const data = hg.get(inst, .coerce);
+    std.debug.print("coercing %{} (operand %{})\n", .{ inst, data.val });
     const src_type = try hg.resolveType(data.val);
     const dest_type = try hg.resolveType(data.ty);
     if (src_type.eql(dest_type)) {
@@ -774,31 +778,30 @@ fn retType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
-fn arrayInitializer(analysis: *BlockAnalysis, inst: Hir.Index) !void {
-    const hg = analysis.hg;
-    const b = analysis.b;
-    const data = hg.get(inst, .array_initializer);
-    const elements = hg.extra.items[data.elements_start..data.elements_end];
-
-    const array_type_inner = try hg.gpa.create(Type.ComptimeArray);
-    array_type_inner.* = .{ .count = @intCast(elements.len) };
-    const array_type: Type = .{ .extended = &array_type_inner.base };
-
-    const heap_elements = try hg.gpa.alloc(u32, elements.len);
-    std.mem.copy(u32, heap_elements, elements);
-
-    const array = try hg.gpa.create(Value.Array);
-    array.* = .{ .elements = heap_elements };
-    const array_value: Value = .{ .extended = &array.base };
-
-    const constant = try b.add(.constant, .{
-        .ty = try b.add(.ty, .{ .ty = array_type }),
-        .val = try b.addValue(array_value),
-        .node = data.node,
-    });
-    std.debug.print("init: elements = {any} {}\n", .{ elements, hg.get(constant, .constant).val });
-    try analysis.src_block.replaceAllUsesWith(inst, constant);
-}
+// fn arrayInitializer(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+//     const hg = analysis.hg;
+//     const b = analysis.b;
+//     const data = hg.get(inst, .array_initializer);
+//     const elements = hg.extra.items[data.elements_start..data.elements_end];
+//
+//     const array_type_inner = try hg.gpa.create(Type.ComptimeArray);
+//     array_type_inner.* = .{ .count = @intCast(elements.len) };
+//     const array_type: Type = .{ .extended = &array_type_inner.base };
+//
+//     const heap_elements = try hg.gpa.alloc(u32, elements.len);
+//     std.mem.copy(u32, heap_elements, elements);
+//
+//     const array = try hg.gpa.create(Value.Array);
+//     array.* = .{ .elements = heap_elements };
+//     const array_value: Value = .{ .extended = &array.base };
+//
+//     const constant = try b.add(.constant, .{
+//         .ty = try b.add(.ty, .{ .ty = array_type }),
+//         .val = try b.addValue(array_value),
+//         .node = data.node,
+//     });
+//     try analysis.src_block.replaceAllUsesWith(inst, constant);
+// }
 
 fn fieldAccess(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;

@@ -73,7 +73,7 @@ pub fn generate(hir: *const Hir, gpa: Allocator, inline_block: Hir.Index, name: 
                 const constant = hir.get(constant_inst, .constant);
 
                 const ty = try hir.resolveType(gpa, constant.ty);
-                const val = hir.values[constant.val];
+                const val = hir.pool.getValue(constant.val);
                 const tv = TypedValue{ .ty = ty, .val = val };
                 handle.initializer = tv;
             },

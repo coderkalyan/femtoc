@@ -52,7 +52,7 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
             if (info.initializer != null) {
                 const builder = try dg.gpa.create(Context.Builder);
                 builder.* = Context.Builder.init(dg.context, func);
-                const function = info.initializer.?.val.extended.cast(Value.Function).?;
+                const function = info.initializer.?.val.function;
                 var codegen = CodeGen{
                     .arena = dg.arena,
                     .builder = builder,
@@ -60,6 +60,7 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
                     .func = function,
                     .map = .{},
                     .global_map = dg.global_map,
+                    .value_map = .{},
                 };
                 try codegens.append(codegen);
             }
@@ -97,15 +98,15 @@ fn initializer(dg: *DeclGen, tv: TypedValue) !c.LLVMValueRef {
     const val = switch (tv.ty.kind()) {
         .comptime_uint, .comptime_sint, .comptime_float => unreachable,
         .uint => val: {
-            const val = tv.val.toInt();
+            const val = tv.val.integer;
             break :val c.LLVMConstInt(llvm_type, @intCast(val), 0);
         },
         .sint => val: {
-            const val = tv.val.toInt();
+            const val: i64 = @bitCast(tv.val.integer);
             break :val c.LLVMConstInt(llvm_type, @intCast(val), 1);
         },
         .float => val: {
-            const val = tv.val.toFloat();
+            const val: f64 = @bitCast(tv.val.float);
             break :val c.LLVMConstReal(llvm_type, val);
         },
         else => |kind| {

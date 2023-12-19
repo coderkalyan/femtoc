@@ -7,8 +7,10 @@ const Type = @import("hir/type.zig").Type;
 const error_handler = @import("error_handler.zig");
 const Allocator = std.mem.Allocator;
 const render = @import("render.zig");
+const InternPool = @import("InternPool.zig");
 
 const Node = Ast.Node;
+const ValueHandle = InternPool.ValueHandle;
 pub const Error = error{InvalidRef};
 pub const Hir = @This();
 
@@ -17,7 +19,7 @@ insts: std.MultiArrayList(Inst).Slice,
 module_index: Index,
 block_slices: [][]Hir.Index,
 extra_data: []const u32,
-values: []Value,
+pool: InternPool.Ptr,
 types: []Type,
 interner: Interner,
 untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
@@ -29,6 +31,7 @@ pub const Inst = struct {
     data: Data,
 
     pub const Tag = enum(u8) {
+        // literals
         // load an integer literal (immediate)
         // data.int = immediate value
         int,
@@ -40,7 +43,13 @@ pub const Inst = struct {
         none,
         // initialize an array from a set of elements
         // data.pl_node.pl = Inst.ArrayInitializer
-        array_initializer,
+        // load an array literal [a, b, c...] from a
+        // list of element instructions
+        // this is an untyped instruction
+        array,
+
+        array_init,
+        slice_init,
         // declare a new type to be used
         // data.ty = type (stored directly)
         // TODO: why do we need this instead of types[]?
@@ -315,7 +324,7 @@ pub const Inst = struct {
     };
 
     pub const Constant = struct {
-        val: u32,
+        val: ValueHandle,
         ty: Index,
     };
 
@@ -368,6 +377,12 @@ pub const Inst = struct {
     pub const ArrayType = struct {
         element_type: Index,
         count: Index,
+    };
+
+    pub const SliceInit = struct {
+        element_type: Index,
+        ptr: Index,
+        len: Index,
     };
 
     pub const ArrayAccess = struct {
@@ -446,7 +461,9 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .global_set_init,
         .global_set_type,
         .create_function_type,
-        .array_initializer,
+        .array_init,
+        .slice_init,
+        .array,
         .create_array_type,
         .array_access,
         => .pl_node,
@@ -534,7 +551,8 @@ pub fn payloadType(comptime tag: Inst.Tag) type {
         .global_set_type,
         => Inst.GlobalOperand,
         .create_function_type => Inst.FunctionType,
-        .array_initializer => Inst.ArrayInitializer,
+        .array_init, .array => Inst.ArrayInitializer,
+        .slice_init => Inst.SliceInit,
         .create_array_type => Inst.ArrayType,
         .array_access => Inst.ArrayAccess,
         else => {
@@ -841,6 +859,28 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             // uh oh, bad IR
             unreachable;
         },
+        .array_init => ty: {
+            const array_init = hir.extraData(data.pl_node.pl, Hir.Inst.ArrayInitializer);
+            const len = array_init.elements_end - array_init.elements_start;
+            const first_element = hir.extra_data[array_init.elements_start];
+            const element_type = try hir.resolveType(gpa, first_element);
+
+            const inner = try gpa.create(Type.Array);
+            inner.* = .{ .count = @intCast(len), .element = element_type };
+            break :ty .{ .extended = &inner.base };
+        },
+        .array => ty: {
+            const array_init = hir.extraData(data.pl_node.pl, Hir.Inst.ArrayInitializer);
+            const len = array_init.elements_end - array_init.elements_start;
+
+            const inner = try gpa.create(Type.ComptimeArray);
+            inner.* = .{ .count = @intCast(len) };
+            break :ty .{ .extended = &inner.base };
+        },
+        .slice_init => ty: {
+            const slice_init = hir.extraData(data.pl_node.pl, Hir.Inst.SliceInit);
+            break :ty hir.resolveType(gpa, slice_init.element_type);
+        },
         .branch_single,
         .branch_double,
         .loop,
@@ -868,7 +908,6 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         // untyped instructions should be replaced before they're referred to
         .int,
         .float,
-        .array_initializer,
         .cmp_eq,
         .cmp_ne,
         .cmp_gt,
@@ -904,34 +943,12 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
 pub fn instToInt(hir: *const Hir, index: Index) u64 {
     const pl = hir.insts.items(.data)[index].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Constant);
-    const val = hir.values[data.val];
-    switch (val.kind()) {
-        .zero => return 0,
-        .one => return 1,
-        .u32 => {
-            const payload = val.extended.cast(Value.U32).?;
-            const ty = hir.resolveType(undefined, data.ty) catch unreachable;
-            if (ty.intSign()) {
-                // interpret payload as i32, sign extend it to i64,
-                // then reinterpret as u64 to return
-                // TODO: probably more readable to implement and use alu.sext
-                return @bitCast(@as(i64, @intCast(@as(i32, @bitCast(payload.int)))));
-            } else {
-                return @intCast(payload.int);
-            }
-        },
-        .u64 => {
-            const payload = val.extended.cast(Value.U64).?;
-            return payload.int;
-        },
-        else => unreachable,
-    }
+    const val = hir.pool.getValue(data.val);
+    return val.integer;
 }
 
 pub fn instToFloat(hir: *const Hir, inst: Hir.Index) f64 {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Constant);
-    const val = hir.values[data.val];
-    const float = val.extended.cast(Value.F64).?;
-    return float.float;
+    return @bitCast(hir.pool.getValue(data.val).float);
 }

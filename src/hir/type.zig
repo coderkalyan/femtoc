@@ -200,6 +200,7 @@ pub const Type = extern union {
                 if (other_kind != .array) return false;
                 const self_array = self.extended.cast(Type.Array).?;
                 const other_array = other.extended.cast(Type.Array).?;
+                std.debug.print("eql array: {} {}\n", .{ self_array.element.basic, other_array.element.basic });
                 if (!self_array.element.eql(other_array.element)) return false;
                 if (self_array.count != other_array.count) return false;
                 return true;

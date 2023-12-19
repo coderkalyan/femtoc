@@ -6,8 +6,10 @@ const Ast = @import("../Ast.zig");
 const Node = Ast.Node;
 const Type = @import("type.zig").Type;
 const Value = @import("../value.zig").Value;
+const InternPool = @import("../InternPool.zig");
 
 const Inst = Hir.Inst;
+const ValueHandle = InternPool.ValueHandle;
 const BlockEditor = @This();
 
 hg: *HirGen,
@@ -129,13 +131,13 @@ pub fn put(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag),
     b.hg.insts.items(.data)[index] = inst.data;
 }
 
-pub fn addValue(b: *BlockEditor, val: Value) !u32 {
-    const hg = b.hg;
-    const len: u32 = @intCast(hg.values.items.len);
-    try hg.values.append(hg.gpa, val);
-
-    return len;
-}
+// pub fn addValue(b: *BlockEditor, val: Value) !u32 {
+//     const hg = b.hg;
+//     const len: u32 = @intCast(hg.values.items.len);
+//     try hg.values.append(hg.gpa, val);
+//
+//     return len;
+// }
 
 pub fn addType(b: *BlockEditor, _ty: Type) !Hir.Index {
     return b.addInst(.{
@@ -153,7 +155,7 @@ pub fn addPointerTy(b: *BlockEditor, pointee: Hir.Index, node: Node.Index) !Hir.
 
 pub fn addConstant(b: *BlockEditor, _ty: Type, val: Value, node: Node.Index) !Hir.Index {
     const pl = try b.hg.addExtra(Inst.Constant{
-        .val = try b.addValue(val),
+        .val = try b.hg.pool.internValue(val),
         .ty = try b.addType(_ty),
     });
 
@@ -165,65 +167,30 @@ pub fn addConstant(b: *BlockEditor, _ty: Type, val: Value, node: Node.Index) !Hi
 
 pub fn addIntConstant(b: *BlockEditor, ty: Type, int: u64, node: Node.Index) !u32 {
     std.debug.assert(ty.basic.width <= 64);
-    if (int == 0) return b.addConstant(ty, .{ .basic = .{ .kind = .zero } }, node);
-    if (int == 1) return b.addConstant(ty, .{ .basic = .{ .kind = .one } }, node);
-    if (ty.basic.kind == .comptime_uint or ty.basic.kind == .comptime_sint) {
-        if (int <= std.math.maxInt(u32)) {
-            var payload = try b.hg.gpa.create(Value.U32);
-            payload.* = .{ .int = @truncate(int) };
-            return b.addConstant(ty, .{ .extended = &payload.base }, node);
-        } else {
-            var payload = try b.hg.gpa.create(Value.U64);
-            payload.* = .{ .int = int };
-            return b.addConstant(ty, .{ .extended = &payload.base }, node);
-        }
-    } else if (ty.basic.width <= 32) {
-        var payload = try b.hg.gpa.create(Value.U32);
-        payload.* = .{ .int = @truncate(int) };
-        return b.addConstant(ty, .{ .extended = &payload.base }, node);
-    } else {
-        var payload = try b.hg.gpa.create(Value.U64);
-        payload.* = .{ .int = int };
-        return b.addConstant(ty, .{ .extended = &payload.base }, node);
-    }
+    return b.add(.constant, .{
+        .ty = try b.addType(ty),
+        .val = try b.addIntValue(ty, int),
+        .node = node,
+    });
 }
 
-pub fn addIntValue(b: *BlockEditor, ty: Type, int: u64) !u32 {
-    if (int == 0) return b.addValue(.{ .basic = .{ .kind = .zero } });
-    if (int == 1) return b.addValue(.{ .basic = .{ .kind = .one } });
-
+pub fn addIntValue(b: *BlockEditor, ty: Type, int: u64) !ValueHandle {
     const hg = b.hg;
-    if (ty.basic.kind == .comptime_uint or ty.basic.kind == .comptime_sint) {
-        if (int <= std.math.maxInt(u32)) {
-            var payload = try hg.gpa.create(Value.U32);
-            payload.* = .{ .int = @truncate(int) };
-            return b.addValue(.{ .extended = &payload.base });
-        } else {
-            var payload = try hg.gpa.create(Value.U64);
-            payload.* = .{ .int = int };
-            return b.addValue(.{ .extended = &payload.base });
-        }
-    } else if (ty.basic.width <= 32) {
-        var payload = try hg.gpa.create(Value.U32);
-        payload.* = .{ .int = @truncate(int) };
-        return b.addValue(.{ .extended = &payload.base });
-    } else {
-        var payload = try b.hg.gpa.create(Value.U64);
-        payload.* = .{ .int = int };
-        return b.addValue(.{ .extended = &payload.base });
-    }
+    _ = ty;
+    return hg.pool.internValue(.{ .integer = int });
 }
 
-pub fn addFloatConstant(b: *BlockEditor, ty: Type, f: f64, node: Node.Index) !u32 {
-    var payload = try b.hg.gpa.create(Value.F64);
-    payload.* = .{ .float = f };
-    return b.addConstant(ty, .{ .extended = &payload.base }, node);
+pub fn addFloatConstant(b: *BlockEditor, ty: Type, f: f64, node: Node.Index) !Hir.Index {
+    return b.add(.constant, .{
+        .ty = ty,
+        .val = b.addFloatValue(f),
+        .node = node,
+    });
 }
 
 pub fn addFloatValue(b: *BlockEditor, float: f64) !u32 {
-    var payload = try b.hg.gpa.create(Value.F64);
-    payload.* = .{ .float = float };
-    return b.addValue(.{ .extended = &payload.base });
+    const hg = b.hg;
+    return hg.pool.internValue(.{ .float = float });
 }
 
 pub fn addBlock(b: *BlockEditor, data_block: *BlockEditor, node: Node.Index) !Hir.Index {
@@ -336,6 +303,7 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                 Inst.ArrayInitializer => .{},
                 Inst.ArrayType => .{ "element_type", "count" },
                 Inst.ArrayAccess => .{ "array", "index" },
+                Inst.SliceInit => .{ "element_type", "ptr", "len" },
                 else => unreachable,
             };
 
@@ -367,8 +335,17 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                         }
                     }
                 },
-                .array_initializer => {
-                    data = hg.get(inst, .array_initializer);
+                .array_init => {
+                    data = hg.get(inst, .array_init);
+                    const elements = hg.extra.items[data.elements_start..data.elements_end];
+                    for (elements, 0..) |old_element, i| {
+                        if (old_element == old) {
+                            elements[i] = new;
+                        }
+                    }
+                },
+                .array => {
+                    data = hg.get(inst, .array);
                     const elements = hg.extra.items[data.elements_start..data.elements_end];
                     for (elements, 0..) |old_element, i| {
                         if (old_element == old) {
@@ -437,12 +414,24 @@ pub fn addFunctionType(b: *BlockEditor, return_type: Hir.Index, params: []Hir.In
     });
 }
 
-pub fn addArrayInitializer(b: *BlockEditor, elements: []Hir.Index, node: Node.Index) !Hir.Index {
+pub fn addArrayInit(b: *BlockEditor, elements: []Hir.Index, node: Node.Index) !Hir.Index {
     const elements_start: u32 = @intCast(b.hg.extra.items.len);
     try b.hg.extra.appendSlice(b.hg.gpa, elements);
     const elements_end: u32 = @intCast(b.hg.extra.items.len);
 
-    return b.add(.array_initializer, .{
+    return b.add(.array_init, .{
+        .elements_start = elements_start,
+        .elements_end = elements_end,
+        .node = node,
+    });
+}
+
+pub fn addArray(b: *BlockEditor, elements: []Hir.Index, node: Node.Index) !Hir.Index {
+    const elements_start: u32 = @intCast(b.hg.extra.items.len);
+    try b.hg.extra.appendSlice(b.hg.gpa, elements);
+    const elements_end: u32 = @intCast(b.hg.extra.items.len);
+
+    return b.add(.array, .{
         .elements_start = elements_start,
         .elements_end = elements_end,
         .node = node,

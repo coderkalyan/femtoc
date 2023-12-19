@@ -432,8 +432,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                             try writer.print("constant({s}, {})", .{ lbuf, val });
                         },
                         .function => {
-                            const val = ir.values[data.val];
-                            const func = val.extended.cast(Value.Function).?;
+                            const func = ir.pool.getValue(data.val).function;
                             const func_type = ty.extended.cast(Type.Function).?;
 
                             try writer.print("function(", .{});

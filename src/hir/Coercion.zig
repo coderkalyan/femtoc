@@ -43,13 +43,14 @@ fn uint(self: *Coercion) !Hir.Index {
     switch (self.src_type.kind()) {
         // can coerce to a fixed uint if the comptime value fits in bounds
         .comptime_uint => {
-            const val: u64 = hg.instToInt(self.src);
+            const src = hg.get(self.src, .constant);
+            const val = hg.pool.getValue(src.val).integer;
             if (val > self.dest_type.maxInt()) {
                 return error.Truncated;
             }
             const constant = try b.add(.constant, .{
                 .ty = self.dest_type_ref,
-                .val = try b.addIntValue(self.dest_type, val),
+                .val = src.val,
                 .node = undefined, // TODO: node annotation
             });
             try self.maybeReplaceWith(constant);
@@ -88,13 +89,14 @@ fn sint(self: *Coercion) !Hir.Index {
     switch (self.src_type.kind()) {
         // can coerce to a fixed sint if the comptime value fits in bounds
         .comptime_uint => {
-            const val: u64 = hg.instToInt(self.src);
+            const src = hg.get(self.src, .constant);
+            const val = hg.pool.getValue(src.val).integer;
             if (val > self.dest_type.maxInt()) {
                 return error.Truncated;
             }
             const constant = try b.add(.constant, .{
                 .ty = self.dest_type_ref,
-                .val = try b.addIntValue(self.dest_type, val),
+                .val = src.val,
                 .node = undefined, // TODO: node annotation
             });
             try self.maybeReplaceWith(constant);
@@ -102,13 +104,14 @@ fn sint(self: *Coercion) !Hir.Index {
         },
         // can coerce to a fixed sint if the comptime value fits in bounds
         .comptime_sint => {
-            const val: i64 = @bitCast(hg.instToInt(self.src));
+            const src = hg.get(self.src, .constant);
+            const val: i64 = @bitCast(hg.pool.getValue(src.val).integer);
             if (val < self.dest_type.minInt() or val > self.dest_type.maxInt()) {
                 return error.Truncated;
             }
             const constant = try b.add(.constant, .{
                 .ty = self.dest_type_ref,
-                .val = try b.addIntValue(self.dest_type, @bitCast(val)),
+                .val = src.val,
                 .node = undefined, // TODO: node annotation
             });
             try self.maybeReplaceWith(constant);
@@ -144,10 +147,10 @@ fn float(self: *Coercion) !Hir.Index {
         // can coerce to a fixed float if the comptime value fits in bounds
         // TODO: we don't check that right now
         .comptime_float => {
-            const val: f64 = hg.instToFloat(self.src);
+            const src = hg.get(self.src, .constant);
             const constant = try b.add(.constant, .{
                 .ty = self.dest_type_ref,
-                .val = try b.addFloatValue(val),
+                .val = src.val,
                 .node = undefined, // TODO: node annotation
             });
             try self.maybeReplaceWith(constant);
@@ -182,6 +185,7 @@ fn array(self: *Coercion) Error!Hir.Index {
         .comptime_array => {
             const src_type = self.src_type.extended.cast(Type.ComptimeArray).?;
             const dest_type = self.dest_type.extended.cast(Type.Array).?;
+            const dest_element_type = try b.addType(dest_type.element);
 
             // first check that the lengths match
             if (src_type.count != dest_type.count) {
@@ -189,15 +193,13 @@ fn array(self: *Coercion) Error!Hir.Index {
             }
 
             // now coerce every source element to the destination type
-            const data = hg.get(self.src, .constant);
-            const src = hg.values.items[data.val].extended.cast(Value.Array).?;
+            const data = hg.get(self.src, .array_init);
+            const src_elements = hg.extra.items[data.elements_start..data.elements_end];
+            const scratch_top = b.scratch.items.len;
+            defer b.scratch.shrinkRetainingCapacity(scratch_top);
 
-            const dest_array = try hg.gpa.create(Value.Array);
-            dest_array.* = .{ .elements = try hg.gpa.alloc(u32, src.elements.len) };
-            const array_value: Value = .{ .extended = &dest_array.base };
-            const dest_element_type = try b.addType(dest_type.element);
-            std.debug.print("coercing array: elements = {any} {}\n", .{ src.elements, data.val });
-            for (src.elements, 0..) |element, i| {
+            try b.scratch.ensureUnusedCapacity(hg.arena, src_elements.len);
+            for (src_elements) |element| {
                 const element_type = try hg.resolveType(element);
                 var coercion = Coercion{
                     .src_block = self.src_block,
@@ -209,18 +211,58 @@ fn array(self: *Coercion) Error!Hir.Index {
                     .dest_type_ref = dest_element_type,
                     .dest_type = dest_type.element,
                 };
-                dest_array.elements[i] = try coercion.coerce();
+                b.scratch.appendAssumeCapacity(try coercion.coerce());
             }
 
-            const constant = try b.add(.constant, .{
-                .ty = self.dest_type_ref,
-                .val = try b.addValue(array_value),
-                .node = undefined, // TODO: node annotation
-            });
-            try self.maybeReplaceWith(constant);
-            return constant;
+            const elements = b.scratch.items[scratch_top..];
+            // try to upgrade this to a comptime known array
+            var comptime_known = true;
+            for (elements) |element| {
+                if (hg.insts.items(.tag)[element] != .constant) {
+                    comptime_known = false;
+                    break;
+                }
+            }
+
+            if (comptime_known) {
+                const handle_scratch_top = b.scratch.items.len;
+                defer b.scratch.shrinkRetainingCapacity(handle_scratch_top);
+                try b.scratch.ensureUnusedCapacity(hg.arena, elements.len);
+
+                for (elements) |element| {
+                    const element_data = hg.get(element, .constant);
+                    b.scratch.appendAssumeCapacity(element_data.val);
+                }
+                const comptime_elements = b.scratch.items[handle_scratch_top..];
+                const value = try Value.createArray(hg.pool.arena, comptime_elements);
+                const new_inst = try b.add(.constant, .{
+                    .ty = try b.addType(self.dest_type),
+                    .val = try hg.pool.internValue(value),
+                    .node = data.node,
+                });
+                try self.maybeReplaceWith(new_inst);
+                return new_inst;
+            } else {
+                const new_inst = try b.addArrayInit(elements, data.node);
+                try self.maybeReplaceWith(new_inst);
+                return new_inst;
+            }
         },
-        .array => unreachable, // TODO
+        .array => {
+            // if the element type is comptime, and the destination type isn't,
+            // we can coerce each element over. otherwise, there's nothing to do
+            // const src_type = self.src_type.extended.cast(Type.Array).?;
+            // const dest_type = self.dest_type.extended.cast(Type.Array).?;
+            // switch (src_type.element.kind()) {
+            //     .comptime_uint, .comptime_sint, .comptime_float,
+            //     => {
+            //
+            //     },
+            //     else =>
+            // }
+            // std.debug.print("coerce array: {} {}\n", .{ src_type, dest_type });
+            unreachable;
+        },
         else => return error.InvalidCoercion,
     }
 }

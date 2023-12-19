@@ -11,6 +11,7 @@ const error_handler = @import("error_handler.zig");
 const Value = @import("value.zig").Value;
 const Type = @import("hir/type.zig").Type;
 const BlockEditor = @import("hir/BlockEditor.zig");
+const InternPool = @import("InternPool.zig");
 
 const implicit_return = @import("hir/implicit_return.zig");
 const type_analysis = @import("hir/type_analysis.zig");
@@ -45,7 +46,7 @@ tree: *const Ast,
 insts: std.MultiArrayList(Inst),
 extra: std.ArrayListUnmanaged(u32),
 block_slices: std.ArrayListUnmanaged([]Hir.Index),
-values: std.ArrayListUnmanaged(Value),
+pool: InternPool,
 types: std.ArrayListUnmanaged(Type),
 untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 interner: Interner,
@@ -64,7 +65,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .insts = .{},
         .extra = .{},
         .block_slices = .{},
-        .values = .{},
+        .pool = InternPool.init(gpa), // TODO: actually use an arena
         .types = .{},
         .untyped_decls = .{},
         .interner = Interner.init(gpa),
@@ -89,7 +90,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .extra_data = try hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
         .types = try hirgen.types.toOwnedSlice(gpa),
-        .values = try hirgen.values.toOwnedSlice(gpa),
+        .pool = try hirgen.pool.ptr(),
         .untyped_decls = try hirgen.untyped_decls.clone(gpa),
         .errors = try hirgen.errors.toOwnedSlice(gpa),
         .instmap = try hirgen.instmap.toOwnedSlice(gpa),
@@ -234,8 +235,9 @@ pub fn explore(hg: *HirGen, inst: Hir.Index, cb: anytype, args: anytype) ErrorSe
             const data = hg.get(inst, .constant);
             const ty = try hg.resolveType(data.ty);
             if (ty.kind() == .function) {
-                const val = hg.values.items[data.val];
-                const payload = val.extended.cast(Value.Function).?;
+                const val = hg.pool.getValue(data.val);
+                const payload = val.function;
+                // const payload = val.extended.cast(Value.Function).?;
                 try @call(.auto, cb, args ++ .{payload.body});
             }
         },
@@ -320,26 +322,34 @@ fn stringLiteral(b: *BlockEditor, node: Node.Index) !Hir.Index {
     const inner = try hg.gpa.create(Type.Slice);
     inner.* = .{ .element = Type.Common.u8_type };
     const string_type = Type{ .extended = &inner.base };
-    const inner_value = try hg.gpa.create(Value.String);
-    inner_value.* = .{ .literal = id };
-    const string_value = Value{ .extended = &inner_value.base };
+    const string_value = try hg.pool.internValue(.{ .string = id });
 
     // underlying string, gets emitted to .rodata as a global
-    const string = try b.add(.constant, .{
+    _ = try b.add(.constant, .{
         .ty = try b.add(.ty, .{ .ty = string_type }),
-        .val = try b.addValue(string_value),
+        .val = string_value,
         .node = node,
     });
 
-    const inner_slice = try hg.gpa.create(Value.Slice);
-    inner_slice.* = .{ .ptr = string, .len = string_literal.len };
-    const slice = Value{ .extended = &inner_slice.base };
-    // comptime slice to that string
-    return try b.add(.constant, .{
+    const len_value = try hg.pool.internValue(.{ .integer = string_literal.len });
+    const slice = try Value.createSlice(hg.pool.arena, string_value, len_value);
+    const slice_value = try hg.pool.internValue(slice);
+
+    return b.add(.constant, .{
         .ty = try b.add(.ty, .{ .ty = string_type }),
-        .val = try b.addValue(slice),
+        .val = slice_value,
         .node = node,
     });
+
+    // const inner_slice = try hg.gpa.create(Value.Slice);
+    // inner_slice.* = .{ .ptr = string, .len = string_literal.len };
+    // const slice = Value{ .extended = &inner_slice.base };
+    // // comptime slice to that string
+    // return try b.add(.constant, .{
+    //     .ty = try b.add(.ty, .{ .ty = string_type }),
+    //     .val = try b.addValue(slice),
+    //     .node = node,
+    // });
 }
 
 fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.Index {
@@ -508,17 +518,48 @@ fn computeFunctionHash(tree: *const Ast, node: Node.Index, hash: []u8) void {
 
 fn binary(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const binary_expr = hg.tree.data(node).binary_expr;
     const operator_token = hg.tree.mainToken(node);
+    const tag = hg.tree.tokenTag(operator_token);
+    switch (tag) {
+        .k_or,
+        .k_and,
+        .k_xor,
+        .k_implies,
+        => return binaryShort(b, scope, node),
+        else => {
+            const binary_expr = hg.tree.data(node).binary;
+            const left = try valExpr(b, scope, binary_expr.left);
+            const right = try valExpr(b, scope, binary_expr.right);
+            return binaryInner(b, node, operator_token, left, right);
+        },
+    }
+}
 
-    const left = try valExpr(b, scope, binary_expr.left);
-    const right = try valExpr(b, scope, binary_expr.right);
-    return binaryInner(b, node, operator_token, left, right);
+fn binaryShort(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const operator_token = hg.tree.mainToken(node);
+    const binary_expr = hg.tree.data(node).binary;
+
+    const bool_type = try b.addType(Type.Common.u1_type);
+    const left_inner = try valExpr(b, scope, binary_expr.left);
+    const left = try coerce(b, scope, left_inner, bool_type, node);
+
+    _ = operator_token;
+    _ = left;
+    unreachable;
+    // switch (operator_token) {
+    //     .k_or => {
+    //         // if left, yield true, else return and yield false
+    //     },
+    // }
+    // const tag: Inst.Tag = switch (operator_token) {
+    //     .k_or => .
+    // }
 }
 
 fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const unary_expr = hg.tree.data(node).unary_expr;
+    const unary_expr = hg.tree.data(node).unary;
     const operator_token = hg.tree.mainToken(node);
 
     switch (hg.tree.tokenTag(operator_token)) {
@@ -548,7 +589,7 @@ fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             const operand = try coerce(b, scope, inner, bool_type, node);
             const other = try b.add(.constant, .{
                 .ty = bool_type,
-                .val = try b.addValue(Value.Common.zero),
+                .val = try hg.pool.internValue(Value.Common.zero),
                 .node = node,
             });
             return b.add(.cmp_eq, .{ .node = node, .lref = operand, .rref = other });
@@ -633,7 +674,7 @@ fn arrayInitializer(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.
     }
 
     const hir_elements = b.scratch.items[scratch_top..];
-    return b.addArrayInitializer(hir_elements, node);
+    return b.addArray(hir_elements, node);
 }
 
 fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.Index {
@@ -645,9 +686,9 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .char_literal => charLiteral(b, node),
             .string_literal => stringLiteral(b, node),
             .ident => identExpr(b, scope, ri, node),
-            .call_expr => try call(b, scope, node),
-            .binary_expr => try binary(b, scope, node),
-            .unary_expr => try unary(b, scope, ri, node),
+            .call => try call(b, scope, node),
+            .binary => try binary(b, scope, node),
+            .unary => try unary(b, scope, ri, node),
             .fn_decl => try fnDecl(b, scope, node),
             .array_init => try arrayInitializer(b, scope, node),
             .index => try indexAccess(b, scope, ri, node),
@@ -662,9 +703,9 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .float_literal => floatLiteral(b, node),
             .bool_literal => boolLiteral(b, node),
             .ident => identExpr(b, scope, ri, node),
-            .call_expr => try call(b, scope, node),
-            .binary_expr => try binary(b, scope, node),
-            .unary_expr => try unary(b, scope, ri, node),
+            .call => try call(b, scope, node),
+            .binary => try binary(b, scope, node),
+            .unary => try unary(b, scope, ri, node),
             .index => try indexAccess(b, scope, ri, node),
             .field => try fieldAccess(b, scope, ri, node),
             else => {
@@ -674,11 +715,11 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
         },
         .ty => switch (b.hg.tree.data(node)) {
             .ident => identExpr(b, scope, ri, node),
-            .unary_expr => try unary(b, scope, ri, node),
+            .unary => try unary(b, scope, ri, node),
             .pointer => try pointerType(b, scope, node),
-            .fn_type => try fnType(b, scope, node),
-            .array => try arrayType(b, scope, node),
             .many_pointer => try manyPointerType(b, scope, node),
+            .array => try arrayType(b, scope, node),
+            .function => try fnType(b, scope, node),
             else => {
                 std.log.err("expr (type semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -725,7 +766,7 @@ fn sliceType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
 
 fn fnType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const fn_type = hg.tree.data(node).fn_type;
+    const fn_type = hg.tree.data(node).function;
     const signature = hg.tree.extraData(fn_type, Node.FnSignature);
 
     const params = hg.tree.extra_data[signature.params_start..signature.params_end];
@@ -798,7 +839,7 @@ fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         .loop_conditional => loopConditional(b, scope, node),
         .loop_range => loopRange(b, scope, node),
         .@"break" => loopBreak(b, scope, node),
-        .call_expr => call(b, scope, node),
+        .call => call(b, scope, node),
         else => {
             std.log.err("statement: unexpected node: {}\n", .{b.hg.tree.data(node)});
             return GenError.NotImplemented;
@@ -820,7 +861,7 @@ fn globalStatement(hg: *HirGen, scope: *Scope, node: Node.Index) Error!Hir.Index
 }
 
 fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
-    const call_expr = b.hg.tree.data(node).call_expr;
+    const call_expr = b.hg.tree.data(node).call;
     const ri: ResultInfo = .{ .semantics = .ref };
     const ptr = try identExpr(b, scope, ri, call_expr.ptr);
 
@@ -1391,7 +1432,7 @@ pub fn getTempHir(hg: *HirGen) Hir {
         .tree = hg.tree,
         .insts = hg.insts.slice(),
         .extra_data = hg.extra.items,
-        .values = hg.values.items,
+        .pool = .{ .values = hg.pool.values.slice() },
         .types = hg.types.items,
         .block_slices = hg.block_slices.items,
         .interner = hg.interner,

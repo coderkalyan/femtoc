@@ -71,8 +71,7 @@ pub fn executePass(hg: *HirGen, module_index: Hir.Index) !void {
                 const constant = hg.get(block_inst, .constant);
                 const ty = try hg.resolveType(constant.ty);
                 if (ty.kind() == .function) {
-                    const val = hg.values.items[constant.val];
-                    const payload = val.extended.cast(Value.Function).?;
+                    const payload = hg.pool.getValue(constant.val).function;
                     var analysis: StackAnalysis = .{
                         .hg = hg,
                         .arena = hg.arena,
