@@ -525,25 +525,4 @@ fn arrayInit(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     }
 
     return codegen.builder.addConstArray(array_type.element, vals);
-    // .slice => {
-    //     const value = hir.values[data.val];
-    //     if (value.kind() == .string) {
-    //         const string = value.extended.cast(Value.String).?;
-    //         const literal = try hir.interner.get(string.literal);
-    //         const llvm_string = try builder.context.addConstString(literal);
-    //         const global = builder.context.addGlobal(".str", c.LLVMArrayType(c.LLVMInt8TypeInContext(builder.context.context), @intCast(literal.len + 1)));
-    //         c.LLVMSetInitializer(global, llvm_string);
-    //         c.LLVMSetGlobalConstant(global, 1);
-    //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-    //         c.LLVMSetUnnamedAddr(global, 1);
-    //         return global;
-    //     } else {
-    //         const slice = value.extended.cast(Value.Slice).?;
-    //         var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-    //         // TODO: highly sus, we shouldn't have a slice constant for this
-    //         elements[0] = codegen.resolveInst(slice.ptr);
-    //         elements[1] = try builder.addUint(Type.Common.u64_type, slice.len);
-    //         return builder.context.addConstStruct(&elements);
-    //     }
-    // },
 }
