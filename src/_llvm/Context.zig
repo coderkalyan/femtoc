@@ -308,6 +308,10 @@ pub const Builder = struct {
     pub fn addInsertValue(builder: *Builder, agg: c.LLVMValueRef, element: c.LLVMValueRef, index: u32) !c.LLVMValueRef {
         return c.LLVMBuildInsertValue(builder.builder, agg, element, index, "");
     }
+
+    pub fn addExtractValue(builder: *Builder, agg: c.LLVMValueRef, index: u32) !c.LLVMValueRef {
+        return c.LLVMBuildExtractValue(builder.builder, agg, index, "");
+    }
     // basic types are guaranteed not to allocate, so they won't throw errors
     // pub fn getBasicType(builder: *Builder, ty: Type) c.LLVMTypeRef {
     //     return llvm.getBasicType(builder.context, ty);

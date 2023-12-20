@@ -116,6 +116,7 @@ const ResultInfo = struct {
         val,
         ref,
         ty,
+        any,
     };
 };
 
@@ -385,7 +386,7 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
         // we can't use consts in an lvalue context, aka on the left side of an assignment
         .local_val => {
             switch (ri.semantics) {
-                .val => {
+                .val, .any => {
                     const local_val = ident_scope.cast(Scope.LocalVal).?;
                     return local_val.ref;
                 },
@@ -415,7 +416,7 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
                     const ptr = local_ptr.ptr;
                     return try b.add(.load, .{ .operand = ptr, .node = node });
                 },
-                .ref => return local_ptr.ptr,
+                .ref, .any => return local_ptr.ptr,
                 .ty => {
                     try b.hg.errors.append(b.hg.gpa, .{
                         .tag = .invalid_type,
@@ -427,7 +428,7 @@ fn identExpr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !
         },
         .local_type => {
             switch (ri.semantics) {
-                .ty => {
+                .ty, .any => {
                     const local_type = ident_scope.cast(Scope.LocalType).?;
                     return local_type.ref;
                 },
@@ -568,7 +569,7 @@ fn unary(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             // TODO: load everywhere
             switch (ri.semantics) {
                 .val => return b.add(.load, .{ .operand = ptr, .node = node }),
-                .ref => return ptr,
+                .ref, .any => return ptr,
                 .ty => unreachable,
             }
         },
@@ -622,7 +623,7 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const param_id = try hg.interner.intern(param_str);
 
         const ty_ref = try typeExpr(b, scope, data);
-        const param_index = try b.addParam(param_id, ty_ref, param);
+        const param_index = try b.add(.param, .{ .name = param_id, .ty = ty_ref, .node = param });
         b.scratch.appendAssumeCapacity(param_index);
 
         const ref = param_index;
@@ -691,6 +692,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .array_init => try arrayInitializer(b, scope, node),
             .index => try indexAccess(b, scope, ri, node),
             .field => try fieldAccess(b, scope, ri, node),
+            .paren => try expr(b, scope, ri, b.hg.tree.data(node).paren),
             .block => {
                 var block_scope = try Block.init(b, scope);
                 defer block_scope.deinit();
@@ -714,6 +716,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .unary => try unary(b, scope, ri, node),
             .index => try indexAccess(b, scope, ri, node),
             .field => try fieldAccess(b, scope, ri, node),
+            .paren => try expr(b, scope, ri, b.hg.tree.data(node).paren),
             else => {
                 std.log.err("expr (ref semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
@@ -728,6 +731,21 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .function => try fnType(b, scope, node),
             else => {
                 std.log.err("expr (type semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
+                return GenError.NotImplemented;
+            },
+        },
+        .any => switch (b.hg.tree.data(node)) {
+            .integer_literal => integerLiteral(b, node),
+            .float_literal => floatLiteral(b, node),
+            .bool_literal => boolLiteral(b, node),
+            .ident => identExpr(b, scope, ri, node),
+            .call => try call(b, scope, node),
+            .binary => try binary(b, scope, node),
+            .unary => try unary(b, scope, ri, node),
+            .index => try indexAccess(b, scope, ri, node),
+            .field => try fieldAccess(b, scope, ri, node),
+            else => {
+                std.log.err("expr (any semantics): unexpected node: {}\n", .{b.hg.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
@@ -746,6 +764,11 @@ inline fn refExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
 
 inline fn typeExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
     const ri: ResultInfo = .{ .semantics = .ty };
+    return expr(b, scope, ri, node);
+}
+
+inline fn anyExpr(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
+    const ri: ResultInfo = .{ .semantics = .any };
     return expr(b, scope, ri, node);
 }
 
@@ -813,21 +836,26 @@ fn indexAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index)
     switch (ri.semantics) {
         .val => return b.add(.load, .{ .operand = ptr, .node = node }),
         .ref => return ptr,
-        .ty => unreachable,
+        .ty, .any => unreachable,
     }
 }
 
 fn fieldAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
-    const field_access = hg.tree.data(node).field;
-    const operand = try refExpr(b, scope, field_access);
-    const ptr = try b.add(.field_access, .{ .operand = operand, .node = node });
+    const field_val = hg.tree.data(node).field;
 
+    const operand = try anyExpr(b, scope, field_val);
     switch (ri.semantics) {
-        .val => return b.add(.load, .{ .operand = ptr, .node = node }),
-        .ref => return ptr,
-        .ty => unreachable,
+        .val => return b.add(.field_val, .{ .operand = operand, .node = node }),
+        .ref => return b.add(.field_ref, .{ .operand = operand, .node = node }),
+        .any, .ty => unreachable,
     }
+
+    // switch (ri.semantics) {
+    //     .val => return b.add(.load, .{ .operand = ptr, .node = node }),
+    //     .ref => return ptr,
+    //     .ty => unreachable,
+    // }
 }
 
 fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
@@ -1314,7 +1342,7 @@ fn loopForever(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
         break :block try b.addBlockUnlinked(&block_scope.editor, node);
     };
 
-    return b.addLoop(condition, body, node);
+    return b.add(.loop, .{ .condition = condition, .body = body, .node = node });
 }
 
 fn loopConditional(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -1334,7 +1362,7 @@ fn loopConditional(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index 
     defer loop_scope.deinit();
     const body = try block(&loop_scope.editor, &loop_scope.base, loop_conditional.body, true);
 
-    return b.addLoop(condition, body, node);
+    return b.add(.loop, .{ .condition = condition, .body = body, .node = node });
 }
 
 fn loopRange(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
@@ -1382,7 +1410,7 @@ fn loopRange(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {
         break :body try b.addBlockUnlinked(&outer_scope.editor, node);
     };
 
-    return b.addLoop(condition, body, node);
+    return b.add(.loop, .{ .condition = condition, .body = body, .node = node });
 }
 
 fn loopBreak(b: *BlockEditor, scope: *Scope, node: Node.Index) !Hir.Index {

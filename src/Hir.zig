@@ -126,9 +126,12 @@ pub const Inst = struct {
         // TODO: phase this out in codegen (turn it into a cmp)
         bit_not,
         array_gep,
-        field_access,
-        slice_ptr,
-        slice_len,
+        field_ref,
+        field_val,
+        slice_ptr_ref,
+        slice_len_ref,
+        slice_ptr_val,
+        slice_len_val,
 
         // user requested implicit type coercion
         // i.e. type annotation
@@ -488,9 +491,12 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .create_unsafe_pointer_type,
         .create_slice_type,
         .type_of,
-        .field_access,
-        .slice_ptr,
-        .slice_len,
+        .field_ref,
+        .field_val,
+        .slice_ptr_ref,
+        .slice_len_ref,
+        .slice_ptr_val,
+        .slice_len_val,
         .push,
         => .un_node,
         .ret_implicit,
@@ -808,25 +814,27 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, inst: Index) error{OutOfMemo
             inner.* = .{ .pointee = array_type.element };
             break :ty .{ .extended = &inner.base };
         },
-        .slice_ptr => ty: {
-            const slice_ptr = hir.get(inst, .slice_ptr);
+        .slice_ptr_ref => {
+            const slice_ptr = hir.get(inst, .slice_ptr_ref);
             const ty = try hir.resolveType(gpa, slice_ptr.operand);
             const pointer_type = ty.extended.cast(Type.Pointer).?;
             const slice_type = pointer_type.pointee.extended.cast(Type.Slice).?;
 
-            const ptr_inner = try gpa.create(Type.ManyPointer);
-            ptr_inner.* = .{ .pointee = slice_type.element };
-            const ptr = Type{ .extended = &ptr_inner.base };
+            // the slice's ptr field itself is a manypointer
+            const ptr = try Type.ManyPointer.init(gpa, slice_type.element);
+            // and we have a reference to it
+            return Type.Pointer.init(gpa, ptr);
+        },
+        .slice_len_ref => return Type.Pointer.init(gpa, Type.Common.u64_type),
+        .slice_ptr_val => {
+            const slice_ptr = hir.get(inst, .slice_ptr_val);
+            const ty = try hir.resolveType(gpa, slice_ptr.operand);
+            const slice_type = ty.extended.cast(Type.Slice).?;
 
-            const inner = try gpa.create(Type.Pointer);
-            inner.* = .{ .pointee = ptr };
-            break :ty .{ .extended = &inner.base };
+            // the slice's ptr field itself is a manypointer
+            return Type.ManyPointer.init(gpa, slice_type.element);
         },
-        .slice_len => ty: {
-            const inner = try gpa.create(Type.Pointer);
-            inner.* = .{ .pointee = Type.Common.u64_type };
-            break :ty .{ .extended = &inner.base };
-        },
+        .slice_len_val => return Type.Common.u64_type,
         // resolve the type being extended to
         inline .zext,
         .sext,
@@ -922,7 +930,8 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, inst: Index) error{OutOfMemo
         .create_unsafe_pointer_type,
         .create_slice_type,
         .ret_type,
-        .field_access,
+        .field_ref,
+        .field_val,
         => |tag| {
             std.log.err("hir: encountered illegal instruction {} while resolving type\n", .{tag});
             const out = std.io.getStdOut();

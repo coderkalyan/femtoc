@@ -107,7 +107,8 @@ fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: 
             .ret_type => try retType(&analysis, inst),
             // .array_initializer => try arrayInitializer(&analysis, inst),
             // .array => try array(&analysis, inst),
-            .field_access => try fieldAccess(&analysis, inst),
+            .field_ref => try fieldRef(&analysis, inst),
+            .field_val => try fieldVal(&analysis, inst),
             .cmp_eq,
             .cmp_ne,
             .cmp_gt,
@@ -762,30 +763,156 @@ fn retType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
-fn fieldAccess(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+fn fieldRef(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .field_access);
+    const data = hg.get(inst, .field_val);
     // TODO: use interner value instead
     const field_token = hg.tree.mainToken(data.node) + 1;
     const field_string = hg.tree.tokenString(field_token);
 
-    const pointer_type = (try hg.resolveType(data.operand)).extended.cast(Type.Pointer).?;
-    const src_type = pointer_type.pointee;
-    switch (src_type.kind()) {
-        .slice => {
-            if (std.mem.eql(u8, field_string, "ptr")) {
-                const access = try b.add(.slice_ptr, .{ .operand = data.operand, .node = data.node });
-                try analysis.src_block.replaceAllUsesWith(inst, access);
-            } else if (std.mem.eql(u8, field_string, "len")) {
-                const access = try b.add(.slice_len, .{ .operand = data.operand, .node = data.node });
-                try analysis.src_block.replaceAllUsesWith(inst, access);
-            } else {
-                std.log.err("field access: no such field {s} for type slice", .{field_string});
-                unreachable;
+    switch (hg.insts.items(.tag)[data.operand]) {
+        // reading a field from a pointer by ref - emit a ref
+        .push, .alloca => {
+            const pointer_type = (try hg.resolveType(data.operand)).extended.cast(Type.Pointer).?;
+            const src_type = pointer_type.pointee;
+            // replace the generic field reference by a specific one - builtin, slice, array, structure
+            switch (src_type.kind()) {
+                // slices only have two runtime fields - ptr and len
+                .slice => {
+                    if (std.mem.eql(u8, field_string, "ptr")) {
+                        const access = try b.add(.slice_ptr_ref, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, access);
+                    } else if (std.mem.eql(u8, field_string, "len")) {
+                        const access = try b.add(.slice_len_ref, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, access);
+                    } else {
+                        std.log.err("field access: no such field {s} for type slice", .{field_string});
+                        unreachable;
+                    }
+                },
+                .array, .structure => unreachable, // unimplemented
+                else => unreachable,
             }
         },
-        .array, .structure => unreachable, // unimplemented
-        else => unreachable,
+        // reading a field from a value by ref - emit a val + alloc + store
+        else => {
+            const src_type = try hg.resolveType(data.operand);
+            // replace the generic field reference by a specific one - builtin, slice, array, structure
+            switch (src_type.kind()) {
+                // slices only have two runtime fields - ptr and len
+                .slice => {
+                    if (std.mem.eql(u8, field_string, "ptr")) {
+                        const access = try b.add(.slice_ptr_val, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        const push = try b.add(.push, .{
+                            .operand = access,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, push);
+                    } else if (std.mem.eql(u8, field_string, "len")) {
+                        const access = try b.add(.slice_len_val, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        const push = try b.add(.push, .{
+                            .operand = access,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, push);
+                    } else {
+                        std.log.err("field access: no such field {s} for type slice", .{field_string});
+                        unreachable;
+                    }
+                },
+                .array, .structure => unreachable, // unimplemented
+                else => unreachable,
+            }
+        },
+    }
+}
+
+fn fieldVal(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .field_val);
+    // TODO: use interner value instead
+    const field_token = hg.tree.mainToken(data.node) + 1;
+    const field_string = hg.tree.tokenString(field_token);
+
+    switch (hg.insts.items(.tag)[data.operand]) {
+        // reading a field from a pointer by value - emit a ref + load
+        .push, .alloca => {
+            const pointer_type = (try hg.resolveType(data.operand)).extended.cast(Type.Pointer).?;
+            const src_type = pointer_type.pointee;
+            // replace the generic field reference by a specific one - builtin, slice, array, structure
+            switch (src_type.kind()) {
+                // slices only have two runtime fields - ptr and len
+                .slice => {
+                    if (std.mem.eql(u8, field_string, "ptr")) {
+                        const ref = try b.add(.slice_ptr_ref, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        const access = try b.add(.load, .{
+                            .operand = ref,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, access);
+                    } else if (std.mem.eql(u8, field_string, "len")) {
+                        const ref = try b.add(.slice_len_ref, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        const access = try b.add(.load, .{
+                            .operand = ref,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, access);
+                    } else {
+                        std.log.err("field access: no such field {s} for type slice", .{field_string});
+                        unreachable;
+                    }
+                },
+                .array, .structure => unreachable, // unimplemented
+                else => unreachable,
+            }
+        },
+        // reading a field from a value by value - emit a val
+        else => {
+            const src_type = try hg.resolveType(data.operand);
+            // replace the generic field reference by a specific one - builtin, slice, array, structure
+            switch (src_type.kind()) {
+                // slices only have two runtime fields - ptr and len
+                .slice => {
+                    if (std.mem.eql(u8, field_string, "ptr")) {
+                        const access = try b.add(.slice_ptr_val, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, access);
+                    } else if (std.mem.eql(u8, field_string, "len")) {
+                        const access = try b.add(.slice_len_val, .{
+                            .operand = data.operand,
+                            .node = data.node,
+                        });
+                        try analysis.src_block.replaceAllUsesWith(inst, access);
+                    } else {
+                        std.log.err("field access: no such field {s} for type slice", .{field_string});
+                        unreachable;
+                    }
+                },
+                .array, .structure => unreachable, // unimplemented
+                else => unreachable,
+            }
+        },
     }
 }

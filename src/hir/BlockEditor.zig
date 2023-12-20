@@ -223,6 +223,7 @@ pub fn addBlock(b: *BlockEditor, data_block: *BlockEditor, node: Node.Index) !Hi
 
     const slice = try data_block.insts.toOwnedSlice(hg.gpa);
     try hg.block_slices.append(hg.gpa, slice);
+    try hg.annot.append(hg.gpa, .{ .node = node });
 
     return b.addInst(.{
         .tag = .block,
@@ -239,6 +240,7 @@ pub fn addBlockUnlinked(b: *BlockEditor, data_block: *BlockEditor, node: Node.In
 
     const slice = try data_block.insts.toOwnedSlice(hg.gpa);
     try hg.block_slices.append(hg.gpa, slice);
+    try hg.annot.append(hg.gpa, .{ .node = node });
 
     return b.hg.addInstUnlinked(.{
         .tag = .block,
@@ -255,6 +257,7 @@ pub fn addBlockInline(b: *BlockEditor, inline_block: *BlockEditor, node: Node.In
 
     const slice = try inline_block.insts.toOwnedSlice(hg.gpa);
     try hg.block_slices.append(hg.gpa, slice);
+    try hg.annot.append(hg.gpa, .{ .node = node });
 
     return b.addInst(.{
         .tag = .block_inline,
@@ -270,6 +273,7 @@ pub fn addBlockInlineUnlinked(hg: *HirGen, inline_block: *BlockEditor, node: Nod
 
     const slice = try inline_block.insts.toOwnedSlice(hg.gpa);
     try hg.block_slices.append(hg.gpa, slice);
+    try hg.annot.append(hg.gpa, .{ .node = node });
 
     return hg.addInstUnlinked(.{
         .tag = .block_inline,
@@ -473,6 +477,8 @@ pub fn addFnDecl(b: *BlockEditor, params: []u32, return_type: Hir.Index, body: H
         .hash_upper = @truncate(hash >> 32),
     });
 
+    try b.hg.annot.append(b.hg.gpa, .{ .node = node });
+
     return b.addInst(.{
         .tag = .fn_decl,
         .data = .{ .pl_node = .{ .pl = pl, .node = node } },
@@ -509,67 +515,6 @@ pub fn addBinary(b: *BlockEditor, tag: Hir.Inst.Tag, lref: Hir.Index, rref: Hir.
         => |t| try b.add(t, .{ .lref = lref, .rref = rref, .node = node }),
         else => unreachable,
     };
-}
-
-pub fn addParam(b: *BlockEditor, name: u32, ty: Hir.Index, node: Node.Index) !Hir.Index {
-    const hg = b.hg;
-    const pl = try hg.addExtra(Inst.Param{
-        .name = name,
-        .ty = ty,
-    });
-
-    return b.hg.addInstUnlinked(.{
-        .tag = .param,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addLoop(b: *BlockEditor, cond: Hir.Index, body: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Inst.Loop{
-        .condition = cond,
-        .body = body,
-    });
-
-    return b.addInst(.{
-        .tag = .loop,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addZext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Hir.Inst.Extend{
-        .val = val,
-        .ty = ty,
-    });
-
-    return b.addInst(.{
-        .tag = .zext,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addSext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Hir.Inst.Extend{
-        .val = val,
-        .ty = ty,
-    });
-
-    return b.addInst(.{
-        .tag = .sext,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
-}
-
-pub fn addFpext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index) !Hir.Index {
-    const pl = try b.hg.addExtra(Hir.Inst.Extend{
-        .val = val,
-        .ty = ty,
-    });
-
-    return b.addInst(.{
-        .tag = .fpext,
-        .data = .{ .pl_node = .{ .pl = pl, .node = node } },
-    });
 }
 
 pub fn addAllocaUnlinked(b: *BlockEditor, ty: Hir.Index, slot_ty: Hir.Index, node: Node.Index) !Hir.Index {
