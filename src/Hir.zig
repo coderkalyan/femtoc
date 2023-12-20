@@ -20,11 +20,9 @@ module_index: Index,
 block_slices: [][]Hir.Index,
 extra_data: []const u32,
 pool: InternPool.Ptr,
-types: []Type,
 interner: Interner,
 untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 errors: []error_handler.SourceError,
-instmap: []Index,
 
 pub const Inst = struct {
     tag: Tag,

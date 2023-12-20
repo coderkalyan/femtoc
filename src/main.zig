@@ -1,15 +1,27 @@
 const std = @import("std");
+const parse = @import("parse.zig");
+const HirGen = @import("HirGen.zig");
+const LlvmBackend = @import("_llvm/Backend.zig");
 const error_handler = @import("error_handler.zig");
-const Driver = @import("Driver.zig");
 const render = @import("render.zig");
 const Allocator = std.mem.Allocator;
 
-const debug = std.debug;
 const io = std.io;
 const max_file_size = std.math.maxInt(u32);
 
+pub const HIR = (1 << 0);
+pub const CODEGEN = (1 << 1);
+pub const COMPILE = (1 << 2);
+pub const ASSEMBLE = (1 << 3);
+
+pub const Stage = enum(u8) {
+    llvm = HIR | CODEGEN,
+    compile = HIR | CODEGEN | COMPILE,
+    assemble = HIR | CODEGEN | COMPILE | ASSEMBLE,
+};
+
 fn fatal(msg: []const u8) noreturn {
-    debug.print("{s}\n", .{msg});
+    std.debug.print("{s}\n", .{msg});
     std.process.exit(1);
 }
 
@@ -28,18 +40,56 @@ fn print_usage() !void {
     std.os.exit(0);
 }
 
+fn stem(path: []const u8) []const u8 {
+    var start = path.len - 1;
+    while (path[start] != '/') : (start -= 1) {}
+    var end = path.len - 1;
+    while (path[end] != '.') : (end -= 1) {}
+    return path[start + 1 .. end];
+}
+
+fn guessOutputFilename(allocator: Allocator, input_filename: []const u8, stage: Stage) ![]u8 {
+    const input_stem = stem(input_filename);
+    const extension = switch (stage) {
+        .llvm => "ll",
+        .compile => "s",
+        .assemble => "o",
+    };
+
+    return std.fmt.allocPrint(allocator, "{s}.{s}", .{ input_stem, extension });
+}
+
+pub fn readSource(gpa: Allocator, input_filename: []const u8) ![:0]u8 {
+    var file = try std.fs.cwd().openFile(input_filename, .{});
+    defer file.close();
+    const stat = try file.stat();
+    if (stat.size > max_file_size) {
+        std.log.err("File size too large, must be at most {} bytes", .{max_file_size});
+        std.process.exit(1);
+    }
+
+    var source = try gpa.allocSentinel(u8, @intCast(stat.size), 0);
+    const size = try file.readAll(source);
+    if (stat.size != size) {
+        std.log.err("Failed to read entire source file", .{});
+        std.os.exit(1);
+    }
+
+    return source;
+}
+
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    var arena = std.heap.ArenaAllocator.init(allocator);
+    var allocator: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    const gpa = allocator.allocator();
+    var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try std.process.argsWithAllocator(gpa);
     defer args.deinit();
 
     var input_filename: ?[]const u8 = null;
     var output_filename: ?[]const u8 = null;
-    var stage: Driver.Stage = .assemble;
+    var stage: Stage = .assemble;
     var stage_set = false;
     var verbose_hir = false;
     var verbose_llvm = false;
@@ -97,30 +147,37 @@ pub fn main() !void {
         std.log.err("must specify input filename\n", .{});
         std.os.exit(1);
     }
+    if (output_filename == null) {
+        output_filename = try guessOutputFilename(gpa, input_filename.?, stage);
+    }
 
     const out = std.io.getStdOut();
     var buffered_out = std.io.bufferedWriter(out.writer());
     var writer = buffered_out.writer();
 
-    var driver = try Driver.init(allocator, arena.allocator(), input_filename.?, output_filename, stage);
     const stage_bits = @intFromEnum(stage);
 
-    var source = try driver.readSource();
-    const ast = try driver.parseAst(source);
+    var source = try readSource(gpa, input_filename.?);
+    const ast = try parse.parse(gpa, source);
     if (ast.errors.len > 0) {
-        const errors = try error_handler.LocatedSourceError.locateErrors(allocator, &ast, ast.errors);
-        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, allocator, &ast, input_filename.?, errors);
+        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, ast.errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);
 
         try error_renderer.render();
         try buffered_out.flush();
         std.os.exit(1);
     }
 
-    if (stage_bits & Driver.HIR == 0) std.os.exit(0);
-    const hir = try driver.generateHir(&ast);
+    if (stage_bits & HIR == 0) std.os.exit(0);
+    // var hirgen = HirGen.init(gpa, &ast);
+    // try hirgen.lowerAst();
+    // try hirgen.semanticAnalysis();
+    // const hir = try hirgen.toOwnedHir();
+    const hir = try HirGen.generate(gpa, &ast);
+
     if (hir.errors.len > 0) {
-        const errors = try error_handler.LocatedSourceError.locateErrors(allocator, &ast, hir.errors);
-        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, allocator, &ast, input_filename.?, errors);
+        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, hir.errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);
 
         try error_renderer.render();
         try buffered_out.flush();
@@ -133,14 +190,16 @@ pub fn main() !void {
         try buffered_out.flush();
     }
 
-    if (stage_bits & Driver.CODEGEN == 0) std.os.exit(0);
-    var backend = try driver.generateLlvm(&hir);
+    if (stage_bits & CODEGEN == 0) std.os.exit(0);
+    var backend = LlvmBackend.init(gpa, arena.allocator());
     defer backend.deinit();
+    try backend.generate(&hir);
+
     if (verbose_llvm) {
-        try driver.dumpLlvm(&backend);
+        try backend.dumpToStdout();
     }
     if (stage == .llvm) {
-        try driver.printLlvmToFile(&backend);
+        try backend.printToFile(output_filename.?);
         std.os.exit(0);
     }
 }

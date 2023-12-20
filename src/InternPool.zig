@@ -23,6 +23,29 @@ values: std.MultiArrayList(Value),
 // TODO: encountering some strange issues with unions on multi arraylist
 value_map: std.HashMapUnmanaged(Value, ValueHandle, ValueContext, load_percentage),
 
+const Index = enum(u32) {
+    _,
+};
+
+const Item = struct {
+    tag: Tag,
+    data: u32,
+};
+
+const Tag = enum(u8) {
+    type_void,
+    type_comptime_uint,
+    type_comptime_sint,
+    type_comptime_float,
+    type_uint,
+    type_sint,
+    type_float,
+    type_pointer,
+    type_many_pointer,
+    type_array,
+    type_slice,
+};
+
 pub const Ptr = struct {
     values: std.MultiArrayList(Value).Slice,
 

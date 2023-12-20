@@ -15,9 +15,9 @@ const null_node: Node.Index = 0;
 // parses a string of source characters into an abstract syntax tree
 // gpa: allocator for tree data that outlives this function call
 pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
-    var tokens = Ast.TokenList{};
+    var tokens: Ast.TokenList = .{};
+    var integers: std.ArrayListUnmanaged(u64) = .{};
     defer tokens.deinit(gpa);
-    var integers = std.ArrayListUnmanaged(u64){};
     defer integers.deinit(gpa);
 
     // lex entire source file into token list
@@ -37,8 +37,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
 
     // initialize parser
     var parser = Parser.init(gpa, source, &tokens, integers.items);
-    defer parser.nodes.deinit(gpa);
-    defer parser.extra.deinit(gpa);
+    defer parser.deinit();
 
     _ = try parser.addNode(.{
         .main_token = 0,
@@ -88,6 +87,11 @@ const Parser = struct {
             .attributes = .{},
             .errors = std.ArrayList(error_handler.SourceError).init(gpa),
         };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.nodes.deinit(self.gpa);
+        self.extra.deinit(self.gpa);
     }
 
     fn addNode(p: *Parser, node: Node) !Node.Index {

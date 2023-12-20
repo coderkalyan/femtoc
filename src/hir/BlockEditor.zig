@@ -13,7 +13,6 @@ const ValueHandle = InternPool.ValueHandle;
 const BlockEditor = @This();
 
 hg: *HirGen,
-// insts: InstList,
 insts: std.ArrayListUnmanaged(Hir.Index),
 scratch: std.ArrayListUnmanaged(u32),
 

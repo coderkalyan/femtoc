@@ -47,11 +47,9 @@ insts: std.MultiArrayList(Inst),
 extra: std.ArrayListUnmanaged(u32),
 block_slices: std.ArrayListUnmanaged([]Hir.Index),
 pool: InternPool,
-types: std.ArrayListUnmanaged(Type),
 untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
 interner: Interner,
 errors: std.ArrayListUnmanaged(error_handler.SourceError),
-instmap: std.ArrayListUnmanaged(Hir.Index),
 module_index: Hir.Index,
 
 pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
@@ -66,11 +64,9 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .extra = .{},
         .block_slices = .{},
         .pool = InternPool.init(gpa), // TODO: actually use an arena
-        .types = .{},
         .untyped_decls = .{},
         .interner = Interner.init(gpa),
         .errors = .{},
-        .instmap = .{},
         .module_index = undefined,
     };
 
@@ -89,11 +85,9 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .block_slices = try hirgen.block_slices.toOwnedSlice(gpa),
         .extra_data = try hirgen.extra.toOwnedSlice(gpa),
         .interner = hirgen.interner,
-        .types = try hirgen.types.toOwnedSlice(gpa),
         .pool = try hirgen.pool.ptr(),
         .untyped_decls = try hirgen.untyped_decls.clone(gpa),
         .errors = try hirgen.errors.toOwnedSlice(gpa),
-        .instmap = try hirgen.instmap.toOwnedSlice(gpa),
     };
 }
 
@@ -248,18 +242,8 @@ pub fn explore(hg: *HirGen, inst: Hir.Index, cb: anytype, args: anytype) ErrorSe
 
 pub inline fn addInstUnlinked(hg: *HirGen, inst: Inst) !Hir.Index {
     const array_index: Hir.Index = @intCast(hg.insts.len);
-
-    try hg.insts.ensureUnusedCapacity(hg.gpa, 1);
-    try hg.instmap.ensureUnusedCapacity(hg.gpa, 1);
-
-    hg.insts.appendAssumeCapacity(inst);
-    hg.instmap.appendAssumeCapacity(array_index);
-
+    try hg.insts.append(hg.gpa, inst);
     return array_index;
-}
-
-pub inline fn updateInst(hg: *HirGen, index: Hir.Index, new: Hir.Index) void {
-    hg.instmap.items[index] = new;
 }
 
 fn addModule(hg: *HirGen, node: Node.Index) !Hir.Index {
@@ -1449,10 +1433,8 @@ pub fn getTempHir(hg: *HirGen) Hir {
         .insts = hg.insts.slice(),
         .extra_data = hg.extra.items,
         .pool = .{ .values = hg.pool.values.slice() },
-        .types = hg.types.items,
         .block_slices = hg.block_slices.items,
         .interner = hg.interner,
-        .instmap = hg.instmap.items,
         .untyped_decls = hg.untyped_decls, // TODO: not good
         .errors = hg.errors.items,
         .module_index = hg.module_index,
