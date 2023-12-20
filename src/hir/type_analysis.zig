@@ -670,11 +670,7 @@ fn createPointerType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const b = analysis.b;
     const data = hg.get(inst, .create_pointer_type);
     const pointee = try hg.resolveType(data.operand);
-
-    const inner = try hg.gpa.create(Type.Pointer);
-    inner.* = .{ .pointee = pointee };
-    const pointer: Type = .{ .extended = &inner.base };
-
+    const pointer = try Type.Pointer.init(hg.gpa, pointee);
     const new_type = try b.add(.ty, .{ .ty = pointer });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
@@ -687,11 +683,7 @@ fn createArrayType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const data = hg.get(inst, .create_array_type);
     const element = try hg.resolveType(data.element_type);
     const count = hg.instToInt(data.count);
-
-    const inner = try hg.gpa.create(Type.Array);
-    inner.* = .{ .element = element, .count = @intCast(count) };
-    const array: Type = .{ .extended = &inner.base };
-
+    const array = try Type.Array.init(hg.gpa, element, @intCast(count));
     const new_type = try b.add(.ty, .{ .ty = array });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
@@ -703,11 +695,7 @@ fn createUnsafePointerType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const b = analysis.b;
     const data = hg.get(inst, .create_unsafe_pointer_type);
     const pointee = try hg.resolveType(data.operand);
-
-    const inner = try hg.gpa.create(Type.UnsafePointer);
-    inner.* = .{ .pointee = pointee };
-    const pointer: Type = .{ .extended = &inner.base };
-
+    const pointer = try Type.ManyPointer.init(hg.gpa, pointee);
     const new_type = try b.add(.ty, .{ .ty = pointer });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
@@ -719,11 +707,7 @@ fn createSliceType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const b = analysis.b;
     const data = hg.get(inst, .create_slice_type);
     const element = try hg.resolveType(data.operand);
-
-    const inner = try hg.gpa.create(Type.Slice);
-    inner.* = .{ .element = element };
-    const slice: Type = .{ .extended = &inner.base };
-
+    const slice = try Type.Slice.init(hg.gpa, element);
     const new_type = try b.add(.ty, .{ .ty = slice });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
@@ -777,31 +761,6 @@ fn retType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const new_type = try b.add(.ty, .{ .ty = analysis.return_type.? });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
-
-// fn arrayInitializer(analysis: *BlockAnalysis, inst: Hir.Index) !void {
-//     const hg = analysis.hg;
-//     const b = analysis.b;
-//     const data = hg.get(inst, .array_initializer);
-//     const elements = hg.extra.items[data.elements_start..data.elements_end];
-//
-//     const array_type_inner = try hg.gpa.create(Type.ComptimeArray);
-//     array_type_inner.* = .{ .count = @intCast(elements.len) };
-//     const array_type: Type = .{ .extended = &array_type_inner.base };
-//
-//     const heap_elements = try hg.gpa.alloc(u32, elements.len);
-//     std.mem.copy(u32, heap_elements, elements);
-//
-//     const array = try hg.gpa.create(Value.Array);
-//     array.* = .{ .elements = heap_elements };
-//     const array_value: Value = .{ .extended = &array.base };
-//
-//     const constant = try b.add(.constant, .{
-//         .ty = try b.add(.ty, .{ .ty = array_type }),
-//         .val = try b.addValue(array_value),
-//         .node = data.node,
-//     });
-//     try analysis.src_block.replaceAllUsesWith(inst, constant);
-// }
 
 fn fieldAccess(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;

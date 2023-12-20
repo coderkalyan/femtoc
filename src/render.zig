@@ -4,6 +4,7 @@ const lex = @import("lex.zig");
 const Hir = @import("Hir.zig");
 const Type = @import("hir/type.zig").Type;
 const Value = @import("value.zig").Value;
+const Allocator = std.mem.Allocator;
 
 const io = std.io;
 
@@ -225,11 +226,12 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
     return struct {
         stream: IndentingWriter(width, WriterType),
         hir: *const Hir,
+        arena: Allocator,
 
         pub const Self = @This();
 
-        pub fn init(writer: anytype, hir_data: *const Hir) Self {
-            return .{ .stream = indentingWriter(width, writer), .hir = hir_data };
+        pub fn init(writer: anytype, arena: Allocator, hir_data: *const Hir) Self {
+            return .{ .stream = indentingWriter(width, writer), .arena = arena, .hir = hir_data };
         }
 
         pub fn render(r: *Self) !void {
@@ -266,22 +268,17 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 else => try writer.print("%{} = ", .{index}),
             }
 
-            var lbuf: [256]u8 = [_]u8{0} ** 256;
-            var rbuf: [256]u8 = [_]u8{0} ** 256;
             switch (ir.insts.items(.tag)[index]) {
                 .load_global => {
-                    const pl = ir.insts.items(.data)[index].un_node.operand;
+                    const pl = ir.get(index, .load_global).operand;
                     const inst = ir.untyped_decls.get(pl).?;
                     const ident = try ir.interner.get(pl);
-                    try self.formatIndex(inst, &lbuf);
-                    try writer.print("load_global({s}) [{s}]", .{ ident, lbuf });
+                    try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
                 },
                 .fn_decl => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const fn_decl = ir.extraData(pl, Hir.Inst.FnDecl);
+                    const fn_decl = ir.get(index, .fn_decl);
 
-                    try self.formatIndex(fn_decl.return_type, &lbuf);
-                    try writer.print("func(ret_ty={s}, params={{", .{lbuf});
+                    try writer.print("func(ret_ty=%{}, params={{", .{fn_decl.return_type});
                     self.stream.indent();
                     self.stream.indent();
                     try self.stream.newline();
@@ -302,8 +299,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .param => {
                     const param = ir.get(index, .param);
                     const param_str = try ir.interner.get(param.name);
-                    try self.formatIndex(param.ty, &lbuf);
-                    try writer.print("param(\"{s}\", {s})", .{ param_str, lbuf });
+                    try writer.print("param(\"{s}\", %{})", .{ param_str, param.ty });
                 },
                 inline .block, .block_inline => |tag| {
                     const block = ir.get(index, .block);
@@ -328,108 +324,83 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     return;
                 },
                 .branch_single => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const branch_single = ir.extraData(pl, Hir.Inst.BranchSingle);
-
-                    try self.formatIndex(branch_single.condition, &lbuf);
-                    try writer.print("[%{}] branch_single({s}) {{", .{ index, lbuf });
-                    // self.stream.indent();
+                    const branch_single = ir.get(index, .branch_single);
+                    const cond = branch_single.condition;
+                    try writer.print("[%{}] branch_single(%{}) {{", .{ index, cond });
                     try self.stream.newline();
                     try writer.print("true ", .{});
                     try self.renderInst(branch_single.exec_true);
-                    // self.stream.dedent();
                     try writer.print("}}", .{});
                     try self.stream.newline();
                     return;
                 },
                 .branch_double => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const branch_double = ir.extraData(pl, Hir.Inst.BranchDouble);
-
-                    try self.formatIndex(branch_double.condition, &lbuf);
-                    try writer.print("[%{}] branch_double({s}) {{", .{ index, lbuf });
-                    // self.stream.indent();
+                    const branch_double = ir.get(index, .branch_double);
+                    const cond = branch_double.condition;
+                    try writer.print("[%{}] branch_double(%{}) {{", .{ index, cond });
                     try self.stream.newline();
                     try writer.print("true ", .{});
                     try self.renderInst(branch_double.exec_true);
                     try writer.print("false ", .{});
                     try self.renderInst(branch_double.exec_false);
-                    // self.stream.dedent();
                     try writer.print("}}", .{});
                     try self.stream.newline();
                     return;
                 },
                 .loop => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const loop = ir.extraData(pl, Hir.Inst.Loop);
-
+                    const loop = ir.get(index, .loop);
                     try writer.print("[%{}] loop {{", .{index});
-                    // self.stream.indent();
                     try self.stream.newline();
                     try writer.print("condition ", .{});
                     try self.renderInst(loop.condition);
                     try writer.print("body ", .{});
                     try self.renderInst(loop.body);
-                    // self.stream.dedent();
                     try writer.print("}}", .{});
                 },
                 .loop_break => {
                     try writer.print("[%{}] break", .{index});
                 },
                 .call => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const call = ir.extraData(pl, Hir.Inst.Call);
-                    try self.formatIndex(call.ptr, &lbuf);
-                    try writer.print("call({s}", .{lbuf});
+                    const call = ir.get(index, .call);
+                    try writer.print("call(%{}", .{call.ptr});
 
                     var extra_index: u32 = call.args_start;
                     while (extra_index < call.args_end) : (extra_index += 1) {
                         const arg = ir.extra_data[extra_index];
-                        try self.formatIndex(arg, &rbuf);
-                        try writer.print(", {s}", .{rbuf});
+                        try writer.print(", %{}", .{arg});
                     }
 
                     try writer.print(")", .{});
                 },
                 .create_function_type => {
                     const function_type = ir.get(index, .create_function_type);
-                    try self.formatIndex(function_type.return_type, &lbuf);
-                    try writer.print("function_type({s}", .{lbuf});
+                    const ret_type = function_type.return_type;
+                    try writer.print("function_type(%{}", .{ret_type});
 
                     var extra_index: u32 = function_type.params_start;
                     while (extra_index < function_type.params_end) : (extra_index += 1) {
                         const arg = ir.extra_data[extra_index];
-                        try self.formatIndex(arg, &rbuf);
-                        try writer.print(", {s}", .{rbuf});
+                        try writer.print(", %{}", .{arg});
                     }
 
                     try writer.print(")", .{});
                 },
-                // .dbg_value => {
-                //     const pl = ir.insts.items(.data)[index].pl_node.pl;
-                //     const data = ir.extraData(pl, Hir.Inst.DebugValue);
-                //     const ident_str = try ir.interner.get(data.name);
-                //     try self.formatRef(data.value, &lbuf);
-                //     try writer.print("dbg_value({s}, {s})", .{ ident_str, lbuf });
-                // },
                 .constant => {
-                    const pl = ir.insts.items(.data)[index].pl_node.pl;
-                    const data = ir.extraData(pl, Hir.Inst.Constant);
+                    const data = ir.get(index, .constant);
                     const ty = try ir.resolveType(undefined, data.ty);
-                    try self.formatIndex(data.ty, &lbuf);
                     switch (ty.kind()) {
                         .comptime_uint, .uint => {
                             const val = ir.instToInt(index);
-                            try writer.print("constant({s}, {})", .{ lbuf, val });
+                            try writer.print("constant(%{}, {})", .{ data.ty, val });
                         },
                         .comptime_sint, .sint => {
                             const val = ir.instToInt(index);
                             const signed: i32 = @bitCast(@as(u32, @truncate(val)));
-                            try writer.print("constant({s}, {})", .{ lbuf, signed });
+                            try writer.print("constant(%{}, {})", .{ data.ty, signed });
                         },
                         .comptime_float, .float => {
                             const val = ir.instToFloat(index);
-                            try writer.print("constant({s}, {})", .{ lbuf, val });
+                            try writer.print("constant(%{}, {})", .{ data.ty, val });
                         },
                         .function => {
                             const func = ir.pool.getValue(data.val).function;
@@ -441,8 +412,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                                 const param_pl = ir.insts.items(.data)[param].pl_node.pl;
                                 const param_data = ir.extraData(param_pl, Hir.Inst.Param);
                                 const ident_str = try ir.interner.get(param_data.name);
-                                try self.formatIndex(param_data.ty, &lbuf);
-                                try writer.print("{s}: {s}, ", .{ ident_str, lbuf });
+                                try writer.print("{s}: %{}, ", .{ ident_str, param_data.ty });
                             }
                             try writer.print(") {{", .{});
                             try self.stream.newline();
@@ -450,7 +420,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                             try self.renderInst(func.body);
                             try writer.print("}}", .{});
                         },
-                        else => {},
+                        else => |kind| try writer.print("{}", .{kind}),
                     }
                 },
                 else => try self.formatInst(index),
@@ -464,67 +434,47 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             _ = try std.fmt.bufPrint(buf, "%{}", .{index});
         }
 
-        fn formatType(self: *Self, ty: Type, buf: []u8) !void {
-            @memset(buf, 0);
-            _ = try std.fmt.bufPrint(buf, "{s}", .{switch (ty.kind()) {
-                .void => "void",
-                .comptime_uint => "comptime_uint",
-                .comptime_sint => "comptime_sint",
-                .comptime_float => "comptime_float",
-                .uint => {
-                    _ = try std.fmt.bufPrint(buf, "u{}", .{ty.basic.width});
-                    return;
-                },
-                .sint => {
-                    _ = try std.fmt.bufPrint(buf, "i{}", .{ty.basic.width});
-                    return;
-                },
-                .float => {
-                    _ = try std.fmt.bufPrint(buf, "f{}", .{ty.basic.width});
-                    return;
-                },
+        fn formatType(self: *Self, ty: Type) ![]const u8 {
+            switch (ty.kind()) {
+                .void => return "void",
+                .comptime_uint => return "comptime_uint",
+                .comptime_sint => return "comptime_sint",
+                .comptime_float => return "comptime_float",
+                .uint => return std.fmt.allocPrint(self.arena, "u{}", .{ty.basic.width}),
+                .sint => return std.fmt.allocPrint(self.arena, "i{}", .{ty.basic.width}),
+                .float => return std.fmt.allocPrint(self.arena, "f{}", .{ty.basic.width}),
                 .function => {
                     const function = ty.extended.cast(Type.Function).?;
-                    var ret_buf: [128]u8 = [_]u8{0} ** 128;
-                    try self.formatType(function.return_type, &ret_buf);
-                    _ = try std.fmt.bufPrint(buf, "function(return_ty = {s})", .{ret_buf});
-                    return;
+                    const ret = try self.formatType(function.return_type);
+                    return std.fmt.allocPrint(self.arena, "function(return_ty = {s})", .{ret});
                 },
                 .pointer => {
                     const pointer = ty.extended.cast(Type.Pointer).?;
-                    var pointee_buf: [128]u8 = [_]u8{0} ** 128;
-                    try self.formatType(pointer.pointee, &pointee_buf);
-                    _ = try std.fmt.bufPrint(buf, "pointer({s})", .{pointee_buf});
-                    return;
+                    const pointee = try self.formatType(pointer.pointee);
+                    return std.fmt.allocPrint(self.arena, "{s}*", .{pointee});
                 },
                 .array => {
                     const array = ty.extended.cast(Type.Array).?;
-                    var array_buf: [128]u8 = [_]u8{0} ** 128;
-                    try self.formatType(array.element, &array_buf);
-                    _ = try std.fmt.bufPrint(buf, "array({s}, {})", .{ array_buf, array.count });
-                    return;
+                    const element = try self.formatType(array.element);
+                    return std.fmt.allocPrint(self.arena, "{s}[{}]", .{ element, array.count });
                 },
-                .unsafe_pointer => {
-                    const pointer = ty.extended.cast(Type.UnsafePointer).?;
-                    var pointee_buf: [128]u8 = [_]u8{0} ** 128;
-                    try self.formatType(pointer.pointee, &pointee_buf);
-                    _ = try std.fmt.bufPrint(buf, "unsafe_pointer({s})", .{pointee_buf});
-                    return;
+                .many_pointer => {
+                    const pointer = ty.extended.cast(Type.ManyPointer).?;
+                    const pointee = try self.formatType(pointer.pointee);
+                    return std.fmt.allocPrint(self.arena, "{s}[*]", .{pointee});
                 },
                 .slice => {
                     const slice = ty.extended.cast(Type.Slice).?;
-                    var element_buf: [128]u8 = [_]u8{0} ** 128;
-                    try self.formatType(slice.element, &element_buf);
-                    _ = try std.fmt.bufPrint(buf, "slice({s})", .{element_buf});
-                    return;
+                    const element = try self.formatType(slice.element);
+                    return std.fmt.allocPrint(self.arena, "{s}[]", .{element});
                 },
                 .comptime_array => {
                     const array = ty.extended.cast(Type.ComptimeArray).?;
-                    _ = try std.fmt.bufPrint(buf, "comptime_array({})", .{array.count});
-                    return;
+                    return std.fmt.allocPrint(self.arena, "comptime_array({})", .{array.count});
                 },
+                .string => return "u8[]",
                 else => unreachable, //return error.NotImplemented,
-            }});
+            }
         }
 
         fn formatInst(self: *Self, inst: Hir.Index) !void {
@@ -541,8 +491,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         .int => try writer.print("{}", .{data.int}),
                         .float => try writer.print("{}", .{data.float}),
                         .ty => {
-                            var buf: [256]u8 = [_]u8{0} ** 256;
-                            try self.formatType(data.ty, &buf);
+                            const buf = try self.formatType(data.ty);
                             try writer.print("{s}", .{buf});
                         },
                         .placeholder => {},
@@ -550,12 +499,13 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         .un_tok,
                         .pl_node,
                         .pl_tok,
+                        .ty_op,
                         => {
                             const fields = std.meta.fields(@TypeOf(data));
                             inline for (fields, 0..) |field, i| {
                                 if (!std.mem.eql(u8, field.name, "node") and !std.mem.eql(u8, field.name, "tok") and !std.mem.eql(u8, field.name, "pl")) {
                                     const content = @field(data, field.name);
-                                    var lbuf: [256]u8 = [_]u8{0} ** 256;
+                                    var lbuf: [128]u8 = [_]u8{0} ** 128;
                                     try self.formatIndex(content, &lbuf);
                                     try writer.print("{s}", .{lbuf});
 

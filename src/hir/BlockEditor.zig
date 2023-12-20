@@ -81,6 +81,7 @@ pub fn addInner(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(
         },
         .un_node,
         .un_tok,
+        .ty_op,
         => inst: {
             const T = std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
             var inner: T = undefined;
@@ -110,16 +111,37 @@ pub fn addInner(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(
 
 pub fn add(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Index {
     const inst = try b.addInner(tag, data);
+    if (Hir.InstData(tag) == void) {} else if (@hasField(Hir.InstData(tag), "node")) {
+        try b.hg.annot.append(b.hg.gpa, .{ .node = data.node });
+    } else if (@hasField(Hir.InstData(tag), "tok")) {
+        try b.hg.annot.append(b.hg.gpa, .{ .token = data.tok });
+    } else {
+        try b.hg.annot.append(b.hg.gpa, undefined);
+    }
     return b.addInst(inst);
 }
 
 pub fn addUnlinked(b: *BlockEditor, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Index {
     const inst = try b.addInner(tag, data);
+    if (Hir.InstData(tag) == void) {} else if (@hasField(Hir.InstData(tag), "node")) {
+        try b.hg.annot.append(b.hg.gpa, .{ .node = data.node });
+    } else if (@hasField(Hir.InstData(tag), "tok")) {
+        try b.hg.annot.append(b.hg.gpa, .{ .token = data.tok });
+    } else {
+        try b.hg.annot.append(b.hg.gpa, undefined);
+    }
     return b.hg.addInstUnlinked(inst);
 }
 
 pub fn insert(b: *BlockEditor, i: usize, comptime tag: Hir.Inst.Tag, data: Hir.InstData(tag)) !Hir.Index {
     const index = try b.addUnlinked(tag, data);
+    if (Hir.InstData(tag) == void) {} else if (@hasField(Hir.InstData(tag), "node")) {
+        try b.hg.annot.append(b.hg.gpa, .{ .node = data.node });
+    } else if (@hasField(Hir.InstData(tag), "tok")) {
+        try b.hg.annot.append(b.hg.gpa, .{ .token = data.tok });
+    } else {
+        try b.hg.annot.append(b.hg.gpa, undefined);
+    }
     try b.insertInst(i, index);
     return index;
 }
@@ -270,7 +292,7 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
     switch (active_field) {
         // nothing to do here, these instructions don't store inst references
         .placeholder, .int, .float, .ty, .node, .token => {},
-        inline .un_node, .un_tok => {
+        inline .un_node, .un_tok, .ty_op => {
             // there's a single operand reference, replace it if it matches
             var data = hg.get(inst, tag);
             if (data.operand == old) {
@@ -550,9 +572,10 @@ pub fn addFpext(b: *BlockEditor, val: Hir.Index, ty: Hir.Index, node: Node.Index
     });
 }
 
-pub fn addAllocaUnlinked(b: *BlockEditor, ty: Hir.Index, node: Node.Index) !Hir.Index {
+pub fn addAllocaUnlinked(b: *BlockEditor, ty: Hir.Index, slot_ty: Hir.Index, node: Node.Index) !Hir.Index {
+    try b.hg.annot.append(b.hg.gpa, .{ .node = node });
     return b.hg.addInstUnlinked(.{
         .tag = .alloca,
-        .data = .{ .un_node = .{ .operand = ty, .node = node } },
+        .data = .{ .ty_op = .{ .ty = ty, .operand = slot_ty } },
     });
 }

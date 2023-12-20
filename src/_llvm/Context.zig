@@ -87,12 +87,13 @@ pub fn convertType(context: *Context, ty: Type) !c.LLVMTypeRef {
             const return_type = try context.convertType(function.return_type);
             return c.LLVMFunctionType(return_type, params.ptr, @intCast(params.len), 0);
         },
-        .pointer, .unsafe_pointer => return c.LLVMPointerTypeInContext(context.context, 0),
+        .pointer, .many_pointer => return c.LLVMPointerTypeInContext(context.context, 0),
         .array => {
             const array = ty.extended.cast(Type.Array).?;
             const element_type = try context.convertType(array.element);
             return c.LLVMArrayType(element_type, array.count);
         },
+        .string => unreachable,
         .slice => {
             var elements: [2]c.LLVMTypeRef = [1]c.LLVMTypeRef{undefined} ** 2;
             elements[0] = c.LLVMPointerTypeInContext(context.context, 0);
@@ -295,6 +296,17 @@ pub const Builder = struct {
     pub fn addPhi(builder: *Builder, ty: Type) !c.LLVMValueRef {
         const llvm_type = try builder.convertType(ty);
         return c.LLVMBuildPhi(builder.builder, llvm_type, "");
+    }
+
+    pub fn addMemcpy(builder: *Builder, ty: Type, dest: c.LLVMValueRef, src: c.LLVMValueRef) !c.LLVMValueRef {
+        const size = try builder.addUint(Type.Common.u32_type, ty.size());
+        const dest_align = c.LLVMGetAlignment(dest);
+        const src_align = c.LLVMGetAlignment(src);
+        return c.LLVMBuildMemCpy(builder.builder, dest, dest_align, src, src_align, size);
+    }
+
+    pub fn addInsertValue(builder: *Builder, agg: c.LLVMValueRef, element: c.LLVMValueRef, index: u32) !c.LLVMValueRef {
+        return c.LLVMBuildInsertValue(builder.builder, agg, element, index, "");
     }
     // basic types are guaranteed not to allocate, so they won't throw errors
     // pub fn getBasicType(builder: *Builder, ty: Type) c.LLVMTypeRef {

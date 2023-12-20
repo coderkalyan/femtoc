@@ -185,7 +185,9 @@ pub fn main() !void {
     }
 
     if (verbose_hir) {
-        var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, &hir);
+        var hir_arena = std.heap.ArenaAllocator.init(gpa);
+        defer hir_arena.deinit();
+        var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, hir_arena.allocator(), &hir);
         try hir_renderer.render();
         try buffered_out.flush();
     }

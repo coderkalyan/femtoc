@@ -4,7 +4,8 @@ const Allocator = std.mem.Allocator;
 
 const InternPool = @This();
 pub const ValueHandle = u32;
-const load_percentage = std.hash_map.default_max_load_percentage;
+const max_load_percentage = std.hash_map.default_max_load_percentage;
+const StringIndexContext = std.hash_map.StringIndexContext;
 
 const ValueContext = struct {
     pub const hash = std.hash_map.getAutoHashFn(Value, @This());
@@ -16,12 +17,15 @@ const ValueContext = struct {
     }.eql;
 };
 
+// gpa: Allocator,
 arena: Allocator,
 // underlying value store - allows allocation to a contigious
 // store and provides lookup by a u32 index
 values: std.MultiArrayList(Value),
 // TODO: encountering some strange issues with unions on multi arraylist
-value_map: std.HashMapUnmanaged(Value, ValueHandle, ValueContext, load_percentage),
+value_map: std.HashMapUnmanaged(Value, ValueHandle, ValueContext, max_load_percentage),
+// string_bytes: std.ArrayListUnmanaged(u8),
+// string_table: std.HashMapUnmanaged(u32, void, StringIndexContext, max_load_percentage),
 
 const Index = enum(u32) {
     _,
@@ -44,6 +48,7 @@ const Tag = enum(u8) {
     type_many_pointer,
     type_array,
     type_slice,
+    ident,
 };
 
 pub const Ptr = struct {

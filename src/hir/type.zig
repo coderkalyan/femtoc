@@ -25,9 +25,10 @@ pub const Type = extern union {
         function,
         comptime_array,
         array,
-        unsafe_pointer,
+        many_pointer,
         slice,
         structure,
+        string,
     };
 
     pub const Basic = packed struct {
@@ -80,18 +81,23 @@ pub const Type = extern union {
         base: Extended = .{ .kind = base_kind },
         pointee: Type,
 
-        pub fn init(pointee: Type) Pointer {
-            return .{ .pointee = pointee };
+        pub fn init(allocator: Allocator, pointee: Type) !Type {
+            const pointer = try allocator.create(Pointer);
+            pointer.* = .{ .pointee = pointee };
+            std.debug.print("creating pointer: {x}\n", .{@intFromPtr(&pointer.base)});
+            return .{ .extended = &pointer.base };
         }
     };
 
-    pub const ComptimeArray = struct {
-        const base_kind: Kind = .comptime_array;
+    pub const ManyPointer = struct {
+        const base_kind: Kind = .many_pointer;
         base: Extended = .{ .kind = base_kind },
-        count: u32,
+        pointee: Type,
 
-        pub fn init(element: Type) Array {
-            return .{ .element = element };
+        pub fn init(allocator: Allocator, pointee: Type) !Type {
+            const pointer = try allocator.create(ManyPointer);
+            pointer.* = .{ .pointee = pointee };
+            return .{ .extended = &pointer.base };
         }
     };
 
@@ -101,18 +107,10 @@ pub const Type = extern union {
         element: Type,
         count: u32,
 
-        pub fn init(element: Type, count: u32) Array {
-            return .{ .element = element, .count = count };
-        }
-    };
-
-    pub const UnsafePointer = struct {
-        const base_kind: Kind = .unsafe_pointer;
-        base: Extended = .{ .kind = base_kind },
-        pointee: Type,
-
-        pub fn init(pointee: Type) UnsafePointer {
-            return .{ .pointee = pointee };
+        pub fn init(allocator: Allocator, element: Type, count: u32) !Type {
+            const array = try allocator.create(Array);
+            array.* = .{ .element = element, .count = count };
+            return .{ .extended = &array.base };
         }
     };
 
@@ -121,7 +119,19 @@ pub const Type = extern union {
         base: Extended = .{ .kind = base_kind },
         element: Type,
 
-        pub fn init(element: Type) Slice {
+        pub fn init(allocator: Allocator, element: Type) !Type {
+            const slice = try allocator.create(Slice);
+            slice.* = .{ .element = element };
+            return .{ .extended = &slice.base };
+        }
+    };
+
+    pub const ComptimeArray = struct {
+        const base_kind: Kind = .comptime_array;
+        base: Extended = .{ .kind = base_kind },
+        count: u32,
+
+        pub fn init(element: Type) Array {
             return .{ .element = element };
         }
     };
@@ -184,10 +194,10 @@ pub const Type = extern union {
                 const other_ptr = other.extended.cast(Type.Pointer).?;
                 return self_ptr.pointee.eql(other_ptr.pointee);
             },
-            .unsafe_pointer => {
-                if (other_kind != .unsafe_pointer) return false;
-                const self_ptr = self.extended.cast(Type.UnsafePointer).?;
-                const other_ptr = other.extended.cast(Type.UnsafePointer).?;
+            .many_pointer => {
+                if (other_kind != .many_pointer) return false;
+                const self_ptr = self.extended.cast(Type.ManyPointer).?;
+                const other_ptr = other.extended.cast(Type.ManyPointer).?;
                 return self_ptr.pointee.eql(other_ptr.pointee);
             },
             .slice => {
@@ -218,7 +228,14 @@ pub const Type = extern union {
                 else => unreachable,
             },
             .pointer => 8, // TODO: architecture dependent
-            .structure, .function, .array => unreachable, // TODO
+            .array => {
+                const array_type = ty.extended.cast(Type.Array).?;
+                return array_type.element.size() * array_type.count;
+            },
+            .structure,
+            .function,
+            => unreachable, // TODO
+            else => unreachable,
         };
     }
 

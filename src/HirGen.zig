@@ -45,6 +45,7 @@ arena: Allocator,
 tree: *const Ast,
 insts: std.MultiArrayList(Inst),
 extra: std.ArrayListUnmanaged(u32),
+annot: std.ArrayListUnmanaged(Inst.Annotation),
 block_slices: std.ArrayListUnmanaged([]Hir.Index),
 pool: InternPool,
 untyped_decls: std.AutoHashMapUnmanaged(u32, Hir.Index),
@@ -62,6 +63,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
         .tree = tree,
         .insts = .{},
         .extra = .{},
+        .annot = .{},
         .block_slices = .{},
         .pool = InternPool.init(gpa), // TODO: actually use an arena
         .untyped_decls = .{},
@@ -81,6 +83,7 @@ pub fn generate(gpa: Allocator, tree: *const Ast) !Hir {
     return Hir{
         .tree = tree,
         .insts = hirgen.insts.toOwnedSlice(),
+        .annot = try hirgen.annot.toOwnedSlice(gpa),
         .module_index = hirgen.module_index,
         .block_slices = try hirgen.block_slices.toOwnedSlice(gpa),
         .extra_data = try hirgen.extra.toOwnedSlice(gpa),
@@ -179,6 +182,17 @@ pub fn get(hg: *HirGen, index: Hir.Index, comptime tag: Inst.Tag) Hir.InstData(t
             inline for (fields) |field| {
                 @field(result, field.name) = @field(source_data, field.name);
             }
+            return result;
+        },
+        .ty_op => {
+            var result: Hir.InstData(tag) = undefined;
+            const data_type = std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
+            const source_data = @field(data, @tagName(active_field));
+            const fields = std.meta.fields(data_type);
+            inline for (fields) |field| {
+                @field(result, field.name) = @field(source_data, field.name);
+            }
+            // result.node = hg.annot.get(index).node;
             return result;
         },
         .pl_node => {
@@ -303,21 +317,21 @@ fn stringLiteral(b: *BlockEditor, node: Node.Index) !Hir.Index {
     const string_literal = string_text[1 .. string_text.len - 1];
     const id = try hg.interner.intern(string_literal);
 
-    const inner = try hg.gpa.create(Type.Slice);
-    inner.* = .{ .element = Type.Common.u8_type };
-    const string_type = Type{ .extended = &inner.base };
-    const string_value = try hg.pool.internValue(.{ .string = id });
+    const len: u32 = @intCast(string_literal.len);
+    const buffer_type: Type = .{ .basic = .{ .kind = Type.Kind.string, .width = 0 } };
+    const buffer_value = try hg.pool.internValue(.{ .string = id });
 
-    // underlying string, gets emitted to .rodata as a global
+    // underlying string buffer, gets emitted to .rodata as a global
     _ = try b.add(.constant, .{
-        .ty = try b.add(.ty, .{ .ty = string_type }),
-        .val = string_value,
+        .ty = try b.add(.ty, .{ .ty = buffer_type }),
+        .val = buffer_value,
         .node = node,
     });
 
-    const len_value = try hg.pool.internValue(.{ .integer = string_literal.len });
-    const slice = try Value.createSlice(hg.pool.arena, string_value, len_value);
+    const len_value = try hg.pool.internValue(.{ .integer = len });
+    const slice = try Value.createSlice(hg.pool.arena, buffer_value, len_value);
     const slice_value = try hg.pool.internValue(slice);
+    const string_type = try Type.Slice.init(hg.gpa, Type.Common.u8_type);
 
     return b.add(.constant, .{
         .ty = try b.add(.ty, .{ .ty = string_type }),
@@ -794,7 +808,7 @@ fn indexAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index)
         .val = inner,
         .node = index_access.index,
     });
-    const ptr = try b.add(.array_access, .{ .array = array, .index = access_index, .node = node });
+    const ptr = try b.add(.array_gep, .{ .array = array, .index = access_index, .node = node });
 
     switch (ri.semantics) {
         .val => return b.add(.load, .{ .operand = ptr, .node = node }),
@@ -1432,6 +1446,7 @@ pub fn getTempHir(hg: *HirGen) Hir {
         .tree = hg.tree,
         .insts = hg.insts.slice(),
         .extra_data = hg.extra.items,
+        .annot = hg.annot.items,
         .pool = .{ .values = hg.pool.values.slice() },
         .block_slices = hg.block_slices.items,
         .interner = hg.interner,

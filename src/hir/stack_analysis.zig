@@ -9,6 +9,7 @@
 const std = @import("std");
 const Hir = @import("../Hir.zig");
 const HirGen = @import("../HirGen.zig");
+const Type = @import("type.zig").Type;
 const Value = @import("../value.zig").Value;
 const BlockEditor = @import("BlockEditor.zig");
 const Allocator = std.mem.Allocator;
@@ -31,8 +32,12 @@ const StackAnalysis = struct {
             if (hg.insts.items(.tag)[inst] == .push) {
                 const data = hg.get(inst, .push);
                 // unlike pushes, alloca instructions are strongly typed
-                const ty = try b.addType(try hg.resolveType(data.operand));
-                const alloca = try b.addAllocaUnlinked(ty, data.node);
+                const slot_type = try hg.resolveType(data.operand);
+                const slot_type_index = try b.add(.ty, .{ .ty = slot_type });
+                const ty = try Type.Pointer.init(hg.gpa, slot_type);
+                const ty_index = try b.add(.ty, .{ .ty = ty });
+                const node = hg.annot.items[inst].node;
+                const alloca = try b.addAllocaUnlinked(ty_index, slot_type_index, node);
                 // don't link this alloca in place, instead we want to
                 // collect them at the top of the function
                 try self.allocas.append(self.arena, alloca);
@@ -43,7 +48,7 @@ const StackAnalysis = struct {
                 const store = try b.addUnlinked(.store, .{
                     .ptr = alloca,
                     .val = data.operand,
-                    .node = data.node,
+                    .node = node,
                 });
 
                 b.replaceInst(i, store);

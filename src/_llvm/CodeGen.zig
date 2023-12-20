@@ -14,6 +14,7 @@ arena: Allocator,
 builder: *Context.Builder,
 hir: *const Hir,
 func: *const Value.Function,
+scratch: std.ArrayListUnmanaged(c.LLVMValueRef),
 // TODO: is LLVM thread safe?
 map: std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
 global_map: *std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
@@ -29,20 +30,37 @@ pub fn generate(codegen: *CodeGen) !void {
     _ = try codegen.block(codegen.func.body);
 }
 
-fn resolveInst(codegen: *CodeGen, inst: Hir.Index) c.LLVMValueRef {
+pub fn deinit(codegen: *CodeGen) void {
+    codegen.builder.deinit();
+    codegen.scratch.deinit(codegen.arena);
+}
+
+fn resolveInst(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
-    if (hir.insts.items(.tag)[inst] == .load_global) {
-        const data = hir.get(inst, .load_global);
-        // TODO: we can probably remove global map and just use llvm to look it up
-        // via the name
-        return codegen.global_map.get(data.operand).?;
-    } else {
-        if (codegen.map.get(inst)) |ref| {
+    switch (hir.insts.items(.tag)[inst]) {
+        .load_global => {
+            const load_global = hir.get(inst, .load_global);
+            // TODO: we can probably remove global map and just use llvm to look it up
+            // via the name
+            // but should we?
+            return codegen.global_map.get(load_global.operand).?;
+        },
+        .constant => {
+            // constants aren't generated until someone uses them, so
+            // take the time to emit them now and then return
+            const ref = try codegen.constant(inst);
+            try codegen.map.put(codegen.arena, inst, ref);
             return ref;
-        } else {
-            std.log.err("codegen: unable to resolve instruction %{}\n", .{inst});
-            unreachable;
-        }
+        },
+        else => {
+            // the instruction should exist
+            if (codegen.map.get(inst)) |ref| {
+                return ref;
+            } else {
+                std.log.err("codegen: unable to resolve instruction %{}\n", .{inst});
+                unreachable;
+            }
+        },
     }
 }
 
@@ -72,7 +90,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .asl,
             .asr,
             => |tag| try codegen.binaryOp(inst, tag),
-            inline .ret_node, .ret_implicit => |tag| codegen.ret(inst, tag),
+            inline .ret_node, .ret_implicit => |tag| try codegen.ret(inst, tag),
             .alloca => try codegen.alloca(inst),
             .load => try codegen.load(inst),
             .store => try codegen.store(inst),
@@ -104,7 +122,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .fpext => try codegen.fpext(inst),
             .param => try codegen.param(inst, @intCast(i)),
             .call => try codegen.call(inst),
-            .array_access => try codegen.arrayAccess(inst),
+            .array_gep => try codegen.arrayAccess(inst),
             .slice_ptr => try codegen.slicePtr(inst),
             .slice_len => try codegen.sliceLen(inst),
             .branch_single => {
@@ -113,9 +131,10 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             },
             .branch_double => try codegen.branchDouble(inst),
             .ty, .load_global, .array => continue,
-            .array_init => try codegen.arrayInit(inst),
+            // .array_init => try codegen.arrayInit(inst),
+            .array_init => continue,
             inline .yield_implicit, .yield_node => |tag| {
-                yield_val = codegen.yield(inst, tag);
+                yield_val = try codegen.yield(inst, tag);
                 break;
             },
             .loop => {
@@ -162,7 +181,6 @@ fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
         .comptime_float,
         .comptime_array,
         => return null,
-
         .uint => return builder.addUint(ty, value.integer),
         .sint => return builder.addSint(ty, value.integer),
         .float => return builder.addFloat(ty, @bitCast(value.float)),
@@ -185,39 +203,51 @@ fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
             c.LLVMSetUnnamedAddr(global, 1);
             return global;
         },
-        .slice => {
-            switch (value) {
-                .string => {
-                    const string = value.string;
-                    const literal = try hir.interner.get(string);
-                    const llvm_string = try builder.context.addConstString(literal);
-                    const llvm_type = c.LLVMTypeOf(llvm_string);
-                    const global = builder.context.addGlobal(".str", llvm_type);
-                    c.LLVMSetInitializer(global, llvm_string);
-                    c.LLVMSetGlobalConstant(global, 1);
-                    c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-                    c.LLVMSetUnnamedAddr(global, 1);
-                    return global;
-                },
-                .slice => {
-                    const slice = value.slice;
-                    var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-                    const len_type = Type.Common.u64_type;
-                    const len = hir.pool.getValue(slice.len);
-                    elements[0] = codegen.value_map.get(slice.ptr).?;
-                    elements[1] = try codegen.constantInner(len_type, len);
-                    const llvm_slice = try builder.context.addConstStruct(&elements);
-                    const llvm_type = try builder.convertType(ty);
-                    const global = builder.context.addGlobal(".slice", llvm_type);
-                    c.LLVMSetInitializer(global, llvm_slice);
-                    c.LLVMSetGlobalConstant(global, 1);
-                    c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-                    c.LLVMSetUnnamedAddr(global, 1);
-                    return global;
-                },
-                else => unreachable,
-            }
+        .string => {
+            const string = value.string;
+            const literal = try hir.interner.get(string);
+            const llvm_string = try builder.context.addConstString(literal);
+            const llvm_type = c.LLVMTypeOf(llvm_string);
+            const global = builder.context.addGlobal(".data", llvm_type);
+            c.LLVMSetInitializer(global, llvm_string);
+            c.LLVMSetGlobalConstant(global, 1);
+            c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+            c.LLVMSetUnnamedAddr(global, 1);
+            return global;
         },
+        .slice => return null,
+        // switch (value) {
+        //     .string => {
+        //         const string = value.string;
+        //         const literal = try hir.interner.get(string);
+        //         const llvm_string = try builder.context.addConstString(literal);
+        //         const llvm_type = c.LLVMTypeOf(llvm_string);
+        //         const global = builder.context.addGlobal(".str", llvm_type);
+        //         c.LLVMSetInitializer(global, llvm_string);
+        //         c.LLVMSetGlobalConstant(global, 1);
+        //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+        //         c.LLVMSetUnnamedAddr(global, 1);
+        //         return global;
+        //     },
+        //     .slice => {
+        //         const slice = value.slice;
+        //         var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
+        //         const len_type = Type.Common.u64_type;
+        //         const len = hir.pool.getValue(slice.len);
+        //         elements[0] = codegen.value_map.get(slice.ptr).?;
+        //         elements[1] = try codegen.constantInner(len_type, len);
+        //         const llvm_slice = try builder.context.addConstStruct(&elements);
+        //         const llvm_type = try builder.convertType(ty);
+        //         const global = builder.context.addGlobal(".slice", llvm_type);
+        //         c.LLVMSetInitializer(global, llvm_slice);
+        //         c.LLVMSetGlobalConstant(global, 1);
+        //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+        //         c.LLVMSetUnnamedAddr(global, 1);
+        //         return global;
+        //     },
+        //     else => unreachable,
+        // }
+        // },
         else => unreachable,
     }
 }
@@ -225,8 +255,8 @@ fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
 fn binaryOp(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, tag);
-    const lref = codegen.resolveInst(data.lref);
-    const rref = codegen.resolveInst(data.rref);
+    const lref = try codegen.resolveInst(data.lref);
+    const rref = try codegen.resolveInst(data.rref);
     var builder = codegen.builder;
 
     // C (clang 17) emits urem for all integer modulo
@@ -285,7 +315,7 @@ fn load(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.get(inst, .load);
     const pointer_type = try hir.resolveType(codegen.arena, data.operand);
     const pointee_type = pointer_type.extended.cast(Type.Pointer).?.pointee;
-    const ptr = codegen.resolveInst(data.operand);
+    const ptr = try codegen.resolveInst(data.operand);
     return codegen.builder.addLoad(ptr, pointee_type);
 }
 
@@ -293,26 +323,100 @@ fn store(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, .store);
     // TODO: better way to check for comptime data
-    const addr = codegen.resolveInst(data.ptr);
-    var val = codegen.resolveInst(data.val);
-    const ty = try hir.resolveType(codegen.arena, data.val);
-    if (hir.insts.items(.tag)[data.val] == .constant) {
-        switch (ty.kind()) {
-            // TODO: better to generate memcpy than load
-            .array,
-            .slice,
-            => val = try codegen.builder.addLoad(val, ty),
-            else => {},
-        }
+    const addr = try codegen.resolveInst(data.ptr);
+    const ptr_inner_type = try hir.resolveType(codegen.arena, data.ptr);
+    const ptr_type = ptr_inner_type.extended.cast(Type.Pointer).?.pointee;
+    // const ty = try hir.resolveType(codegen.arena, data.val);
+    // we lower different "stores" differently to avoid
+    // creating a large store to an aggregate type
+    switch (ptr_type.kind()) {
+        .array => {
+            // arrays can either be initialized from a comptime known Value
+            // or runtime known .array_init instruction
+            // for the former, we prefer to emit a memcpy from a static global
+            // into the ptr
+            // for the latter, we generate a series of insertvalue instructions
+            switch (hir.insts.items(.tag)[data.val]) {
+                // to initialize an array from a set of comptime values, the best
+                // solution is to emit an unnamed constant global in the data section
+                // (done by resolveInst above) and memcpy from it to the array pointer
+                .constant => {
+                    var val = try codegen.resolveInst(data.val);
+                    return codegen.builder.addMemcpy(ptr_type, addr, val);
+                },
+                // to initialize an array from a set of runtime values, we loop
+                // over each index in the array and emit a GEP + store
+                // to avoid doing a large store to the entire array
+                .array_init => {
+                    const array_init = hir.get(data.val, .array_init);
+                    const start = array_init.elements_start;
+                    const end = array_init.elements_end;
+                    const src_elements = hir.extra_data[start..end];
+
+                    const scratch_top = codegen.scratch.items.len;
+                    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
+                    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
+
+                    for (src_elements, 0..) |src_element, i| {
+                        indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
+                        indices[1] = try codegen.builder.addUint(Type.Common.u32_type, i);
+                        const element = try codegen.resolveInst(src_element);
+                        const gep = try codegen.builder.addGetElementPtr(ptr_type, addr, indices);
+                        c.LLVMSetIsInBounds(gep, 1);
+                        _ = codegen.builder.addStore(gep, element);
+                    }
+
+                    return null;
+                },
+                else => unreachable,
+            }
+        },
+        .slice => {
+            // slices are initialized by adding two GEP + stores, even if the data
+            // is comptime known, because it doesn't make sense to emit a 64/128 bit
+            // "wide pointer" constant global and then memcpy from it
+            switch (hir.insts.items(.tag)[data.val]) {
+                .constant => {
+                    const slice_constant = hir.get(data.val, .constant);
+                    const slice = hir.pool.values.items(.data)[slice_constant.val].slice;
+
+                    const scratch_top = codegen.scratch.items.len;
+                    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
+                    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
+                    indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
+
+                    // ptr
+                    const ptr = codegen.value_map.get(slice.ptr).?;
+                    indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 0);
+                    const gep1 = try codegen.builder.addGetElementPtr(ptr_type, addr, indices);
+                    c.LLVMSetIsInBounds(gep1, 1);
+                    _ = codegen.builder.addStore(gep1, ptr);
+
+                    // len
+                    const slice_len = hir.pool.getValue(slice.len);
+                    const len = try codegen.constantInner(Type.Common.u64_type, slice_len);
+                    indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 1);
+                    const gep2 = try codegen.builder.addGetElementPtr(ptr_type, addr, indices);
+                    c.LLVMSetIsInBounds(gep2, 1);
+                    _ = codegen.builder.addStore(gep2, len);
+
+                    return null;
+                },
+                else => unreachable,
+            }
+        },
+        else => {
+            var val = try codegen.resolveInst(data.val);
+            return codegen.builder.addStore(addr, val);
+        },
     }
-    return codegen.builder.addStore(addr, val);
 }
 
 fn cmp(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, tag);
-    const lref = codegen.resolveInst(data.lref);
-    const rref = codegen.resolveInst(data.rref);
+    const lref = try codegen.resolveInst(data.lref);
+    const rref = try codegen.resolveInst(data.rref);
     return codegen.builder.addCmp(tag, lref, rref);
 }
 
@@ -321,7 +425,7 @@ fn branchSingle(codegen: *CodeGen, inst: Hir.Index) Error!void {
     var builder = codegen.builder;
     const data = hir.get(inst, .branch_single);
 
-    const condition = codegen.resolveInst(data.condition);
+    const condition = try codegen.resolveInst(data.condition);
     const exec_true = builder.appendBlock("if.true");
     const prev = builder.getInsertBlock();
     builder.positionAtEnd(exec_true);
@@ -343,7 +447,7 @@ fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!c.LLVMValueRef {
     var builder = codegen.builder;
     const data = hir.get(inst, .branch_double);
 
-    const condition = codegen.resolveInst(data.condition);
+    const condition = try codegen.resolveInst(data.condition);
 
     // TODO: branch expressions
     const prev = builder.getInsertBlock();
@@ -394,7 +498,7 @@ fn zext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, .zext);
     const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = codegen.resolveInst(data.val);
+    const ref = try codegen.resolveInst(data.val);
     return codegen.builder.addZext(ty, ref);
 }
 
@@ -402,7 +506,7 @@ fn sext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, .sext);
     const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = codegen.resolveInst(data.val);
+    const ref = try codegen.resolveInst(data.val);
     return codegen.builder.addSext(ty, ref);
 }
 
@@ -410,14 +514,14 @@ fn fpext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, .fpext);
     const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = codegen.resolveInst(data.val);
+    const ref = try codegen.resolveInst(data.val);
     return codegen.builder.addFpext(ty, ref);
 }
 
-fn yield(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) c.LLVMValueRef {
+fn yield(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, tag);
-    return codegen.resolveInst(data.operand);
+    return try codegen.resolveInst(data.operand);
 }
 
 fn loop(codegen: *CodeGen, inst: Hir.Index) !void {
@@ -448,36 +552,36 @@ fn call(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const pl = hir.insts.items(.data)[inst].pl_node.pl;
     const data = hir.extraData(pl, Hir.Inst.Call);
 
-    const addr = codegen.resolveInst(data.ptr);
+    const addr = try codegen.resolveInst(data.ptr);
     const args = try codegen.arena.alloc(c.LLVMValueRef, data.args_end - data.args_start);
     defer codegen.arena.free(args);
     const hir_args = hir.extra_data[data.args_start..data.args_end];
     for (hir_args, 0..) |arg, i| {
-        args[i] = codegen.resolveInst(arg);
+        args[i] = try codegen.resolveInst(arg);
     }
 
     const ty = try hir.resolveType(codegen.arena, data.ptr);
     return codegen.builder.addCall(ty, addr, args);
 }
 
-fn ret(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) c.LLVMValueRef {
+fn ret(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, tag);
 
     const is_none = hir.insts.items(.tag)[data.operand] == .none;
-    const ref = if (is_none) null else codegen.resolveInst(data.operand);
+    const ref = if (is_none) null else try codegen.resolveInst(data.operand);
     return codegen.builder.addReturn(ref);
 }
 
 fn arrayAccess(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
-    const data = hir.get(inst, .array_access);
+    const data = hir.get(inst, .array_gep);
 
     const ty = try hir.resolveType(codegen.arena, data.array);
     const pointer_type = ty.extended.cast(Type.Pointer).?;
     const array_type = pointer_type.pointee;
-    const array = codegen.resolveInst(data.array);
-    const access_index = codegen.resolveInst(data.index);
+    const array = try codegen.resolveInst(data.array);
+    const access_index = try codegen.resolveInst(data.index);
     var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
     indices[0] = try codegen.builder.addUint(Type.Common.u64_type, 0);
     indices[1] = access_index;
@@ -491,7 +595,7 @@ fn slicePtr(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const ty = try hir.resolveType(codegen.arena, data.operand);
     const pointer_type = ty.extended.cast(Type.Pointer).?;
     const slice_type = pointer_type.pointee;
-    const slice = codegen.resolveInst(data.operand);
+    const slice = try codegen.resolveInst(data.operand);
     var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
     indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
     indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 0);
@@ -505,13 +609,15 @@ fn sliceLen(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const ty = try hir.resolveType(codegen.arena, data.operand);
     const pointer_type = ty.extended.cast(Type.Pointer).?;
     const slice_type = pointer_type.pointee;
-    const slice = codegen.resolveInst(data.operand);
+    const slice = try codegen.resolveInst(data.operand);
     var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
     indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
     indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 1);
     return try codegen.builder.addGetElementPtr(slice_type, slice, &indices);
 }
 
+// initializes an array (all elements) atomically with some data
+// which can either be constant (a Value) or based on runtime instructions
 fn arrayInit(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
     const data = hir.get(inst, .array_init);
@@ -523,7 +629,7 @@ fn arrayInit(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     defer codegen.arena.free(vals);
 
     for (elements, 0..) |element, i| {
-        vals[i] = codegen.resolveInst(element);
+        vals[i] = try codegen.resolveInst(element);
     }
 
     return codegen.builder.addConstArray(array_type.element, vals);

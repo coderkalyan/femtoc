@@ -60,7 +60,7 @@ pub fn generate(self: *Backend, hir: *const Hir) !void {
     while (i < codegens.items.len) : (i += 1) {
         const codegen = &codegens.items[i];
         defer self.gpa.destroy(codegen.builder);
-        defer codegen.builder.deinit();
+        defer codegen.deinit();
         try codegen.generate();
     }
 }

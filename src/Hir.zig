@@ -16,6 +16,7 @@ pub const Hir = @This();
 
 tree: *const Ast,
 insts: std.MultiArrayList(Inst).Slice,
+annot: []Inst.Annotation,
 module_index: Index,
 block_slices: [][]Hir.Index,
 extra_data: []const u32,
@@ -124,7 +125,7 @@ pub const Inst = struct {
         neg,
         // TODO: phase this out in codegen (turn it into a cmp)
         bit_not,
-        array_access,
+        array_gep,
         field_access,
         slice_ptr,
         slice_len,
@@ -279,6 +280,10 @@ pub const Inst = struct {
             // index into extra where payload is stored
             pl: ExtraIndex,
         },
+        ty_op: struct {
+            ty: Index,
+            operand: Index,
+        },
     };
 
     pub const Call = struct {
@@ -391,6 +396,11 @@ pub const Inst = struct {
     //     name: u32,
     //     value: Ref,
     // };
+
+    pub const Annotation = union {
+        node: u32,
+        token: u32,
+    };
 };
 
 pub const Index = u32;
@@ -463,12 +473,10 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .slice_init,
         .array,
         .create_array_type,
-        .array_access,
+        .array_gep,
         => .pl_node,
         .neg,
         .bit_not,
-        .push,
-        .alloca,
         .load,
         .global_set_mutable,
         .global_set_linkage_external,
@@ -483,10 +491,12 @@ pub fn activeDataField(comptime tag: Inst.Tag) std.meta.FieldEnum(Inst.Data) {
         .field_access,
         .slice_ptr,
         .slice_len,
+        .push,
         => .un_node,
         .ret_implicit,
         .yield_implicit,
         => .un_tok,
+        .alloca => .ty_op,
     };
 }
 
@@ -552,7 +562,7 @@ pub fn payloadType(comptime tag: Inst.Tag) type {
         .array_init, .array => Inst.ArrayInitializer,
         .slice_init => Inst.SliceInit,
         .create_array_type => Inst.ArrayType,
-        .array_access => Inst.ArrayAccess,
+        .array_gep => Inst.ArrayAccess,
         else => {
             @compileLog(tag);
             unreachable;
@@ -602,6 +612,12 @@ pub fn InstData(comptime tag: Inst.Tag) type {
         .un_node,
         .un_tok,
         => {
+            // no extra data associated with this, so just return the
+            // data type of the active field
+            // no need to generate a type since it already exists
+            return std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
+        },
+        .ty_op => {
             // no extra data associated with this, so just return the
             // data type of the active field
             // no need to generate a type since it already exists
@@ -671,6 +687,17 @@ pub fn get(hir: *const Hir, index: Index, comptime tag: Inst.Tag) InstData(tag) 
             }
             return result;
         },
+        .ty_op => {
+            var result: InstData(tag) = undefined;
+            const data_type = std.meta.TagPayloadByName(Inst.Data, @tagName(active_field));
+            const source_data = @field(data, @tagName(active_field));
+            const fields = std.meta.fields(data_type);
+            inline for (fields) |field| {
+                @field(result, field.name) = @field(source_data, field.name);
+            }
+            // result.node = hir.annot[index].node;
+            return result;
+        },
         .pl_node => {
             var result: InstData(tag) = undefined;
             result.pl = data.pl_node.pl;
@@ -694,38 +721,35 @@ pub fn get(hir: *const Hir, index: Index, comptime tag: Inst.Tag) InstData(tag) 
 // either by the type of instruction (comparison => u1),
 // signature (call is the return type of the address),
 // or by recursively resolving the operand type (arithmetic)
-pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMemory}!Type {
-    const data = hir.insts.items(.data)[index];
-    return switch (hir.insts.items(.tag)[index]) {
+pub fn resolveType(hir: *const Hir, gpa: Allocator, inst: Index) error{OutOfMemory}!Type {
+    const data = hir.insts.items(.data)[inst];
+    return switch (hir.insts.items(.tag)[inst]) {
         // type instructions just store a type
-        .ty => data.ty,
+        .ty => return hir.get(inst, .ty).ty,
         // constants are typed values, they reference a type
-        .constant => ty: {
-            const constant_data = hir.extraData(data.pl_node.pl, Hir.Inst.Constant);
-            break :ty hir.resolveType(gpa, constant_data.ty);
-        },
+        .constant => return hir.resolveType(gpa, hir.get(inst, .constant).ty),
         .none => Type.Common.void_type,
         // unary operand instructions - recursively resolve
-        .neg,
+        inline .neg,
         .bit_not,
         .ret_node,
         .yield_node,
         .yield_inline,
         .type_of,
-        => hir.resolveType(gpa, data.un_node.operand),
         .yield_implicit,
         .ret_implicit,
-        => hir.resolveType(gpa, data.un_tok.operand),
-        .push,
-        .alloca,
-        => {
+        => |tag| hir.resolveType(gpa, hir.get(inst, tag).operand),
+        .push => {
             const pointee = try hir.resolveType(gpa, data.un_node.operand);
             const inner = try gpa.create(Type.Pointer);
             inner.* = .{ .pointee = pointee };
             return .{ .extended = &inner.base };
         },
+        .alloca => return hir.resolveType(gpa, hir.get(inst, .alloca).ty),
         // binary operand instructions - recursively resolve
-        .add,
+        // during generation, we make sure both operands match, so we can
+        // just use the left one
+        inline .add,
         .sub,
         .mul,
         .div,
@@ -737,12 +761,7 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         .asl,
         .lsr,
         .asr,
-        => ty: {
-            // during generation, we make sure both operands match, so we can
-            // just use the left one
-            const bin_data = hir.extraData(data.pl_node.pl, Hir.Inst.Binary);
-            break :ty hir.resolveType(gpa, bin_data.lref);
-        },
+        => |tag| return hir.resolveType(gpa, hir.get(inst, tag).lref),
         // comparison instructions - returns a u1
         .icmp_eq,
         .icmp_ne,
@@ -761,40 +780,26 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
         => Type.Common.u1_type,
         // resolve the type of the alloca/push being loaded
         .load => ty: {
-            const pointer = try hir.resolveType(gpa, data.un_node.operand);
-            switch (pointer.kind()) {
-                .pointer => {
-                    const inner = pointer.extended.cast(Type.Pointer).?;
-                    break :ty inner.pointee;
-                },
-                .unsafe_pointer => {
-                    const inner = pointer.extended.cast(Type.UnsafePointer).?;
-                    break :ty inner.pointee;
-                },
-                .array => {
-                    const inner = pointer.extended.cast(Type.Array).?;
-                    break :ty inner.element;
-                },
+            const operand = try hir.resolveType(gpa, data.un_node.operand);
+            break :ty switch (operand.kind()) {
+                .pointer => operand.extended.cast(Type.Pointer).?.pointee,
+                .many_pointer => operand.extended.cast(Type.ManyPointer).?.pointee,
+                .array => operand.extended.cast(Type.Array).?.element,
                 else => |kind| {
                     std.log.err("tried to load invalid type {}\n", .{kind});
                     unreachable;
                 },
-            }
+            };
         },
         // parameters reference their type
-        .param => ty: {
-            const param_data = hir.extraData(data.pl_node.pl, Hir.Inst.Param);
-            break :ty hir.resolveType(gpa, param_data.ty);
-        },
+        .param => return hir.resolveType(gpa, hir.get(inst, .param).ty),
         // resolve the return type of the address being called
-        .call => ty: {
-            const call_data = hir.extraData(data.pl_node.pl, Hir.Inst.Call);
-            const call_ty = try hir.resolveType(gpa, call_data.ptr);
-            const fn_type = call_ty.extended.cast(Type.Function).?;
-            break :ty fn_type.return_type;
+        .call => {
+            const function_type = try hir.resolveType(gpa, hir.get(inst, .call).ptr);
+            return function_type.extended.cast(Type.Function).?.return_type;
         },
-        .array_access => ty: {
-            const array_access = hir.get(index, .array_access);
+        .array_gep => ty: {
+            const array_access = hir.get(inst, .array_gep);
             const ty = try hir.resolveType(gpa, array_access.array);
             const pointer_type = ty.extended.cast(Type.Pointer).?;
             const array_type = pointer_type.pointee.extended.cast(Type.Array).?;
@@ -804,12 +809,12 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             break :ty .{ .extended = &inner.base };
         },
         .slice_ptr => ty: {
-            const slice_ptr = hir.get(index, .slice_ptr);
+            const slice_ptr = hir.get(inst, .slice_ptr);
             const ty = try hir.resolveType(gpa, slice_ptr.operand);
             const pointer_type = ty.extended.cast(Type.Pointer).?;
             const slice_type = pointer_type.pointee.extended.cast(Type.Slice).?;
 
-            const ptr_inner = try gpa.create(Type.UnsafePointer);
+            const ptr_inner = try gpa.create(Type.ManyPointer);
             ptr_inner.* = .{ .pointee = slice_type.element };
             const ptr = Type{ .extended = &ptr_inner.base };
 
@@ -823,23 +828,20 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             break :ty .{ .extended = &inner.base };
         },
         // resolve the type being extended to
-        .zext,
+        inline .zext,
         .sext,
         .fpext,
-        => ty: {
-            const ext_data = hir.extraData(data.pl_node.pl, Hir.Inst.Extend);
-            break :ty hir.resolveType(gpa, ext_data.ty);
-        },
+        => |tag| return hir.resolveType(gpa, hir.get(inst, tag).ty),
         // resolve the last instruction in the block
-        .block => ty: {
-            const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
+        .block => {
+            const block_data = hir.get(inst, .block);
             const insts = hir.block_slices[block_data.head];
-            break :ty hir.resolveType(gpa, insts[insts.len - 1]);
+            return hir.resolveType(gpa, insts[insts.len - 1]);
         },
         // TODO: this won't be generic to local inline_blocks if those
         // exist in the future
         .block_inline => ty: {
-            const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
+            const block_data = hir.get(inst, .block_inline);
             const insts = hir.block_slices[block_data.head];
             const yield = hir.get(insts[insts.len - 1], .yield_inline);
             const handle = yield.operand;
@@ -875,22 +877,15 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             inner.* = .{ .count = @intCast(len) };
             break :ty .{ .extended = &inner.base };
         },
-        .slice_init => ty: {
-            const slice_init = hir.extraData(data.pl_node.pl, Hir.Inst.SliceInit);
-            break :ty hir.resolveType(gpa, slice_init.element_type);
-        },
-        .branch_double => ty: {
-            const branch_double = hir.extraData(data.pl_node.pl, Hir.Inst.BranchDouble);
-            break :ty hir.resolveType(gpa, branch_double.exec_true);
-        },
-        .branch_single,
+        .slice_init => hir.resolveType(gpa, hir.get(inst, .slice_init).element_type),
+        .branch_double => hir.resolveType(gpa, hir.get(inst, .branch_double).exec_true),
+        .branch_single => Type.Common.void_type,
         .loop,
         .loop_break,
-        => unreachable, // TODO: follow into the block
+        => unreachable,
         .load_global => ty: {
-            const pl = hir.insts.items(.data)[index].un_node.operand;
-            const inst = hir.untyped_decls.get(pl).?;
-            break :ty hir.resolveType(gpa, inst);
+            const global = hir.untyped_decls.get(hir.get(inst, .load_global).operand).?;
+            break :ty hir.resolveType(gpa, global);
         },
         // should not be referenced (don't return anything meaningful)
         // .dbg_value,
@@ -933,7 +928,8 @@ pub fn resolveType(hir: *const Hir, gpa: Allocator, index: Index) error{OutOfMem
             const out = std.io.getStdOut();
             var buffered_out = std.io.bufferedWriter(out.writer());
             var writer = buffered_out.writer();
-            var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, hir);
+            // TODO: use arena
+            var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, gpa, hir);
             hir_renderer.render() catch unreachable;
             buffered_out.flush() catch unreachable;
             unreachable;

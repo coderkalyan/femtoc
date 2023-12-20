@@ -36,8 +36,9 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
         .comptime_float,
         .void,
         .comptime_array,
+        .string,
         => unreachable,
-        .uint, .sint, .float, .pointer, .unsafe_pointer => decl: {
+        .uint, .sint, .float, .pointer, .many_pointer => decl: {
             const global = dg.context.addGlobal(name, llvm_type);
             const is_constant = @intFromBool(!info.mutable);
             c.LLVMSetGlobalConstant(global, is_constant);
@@ -61,6 +62,7 @@ pub fn generate(dg: *DeclGen, codegens: *std.ArrayList(CodeGen)) !c.LLVMValueRef
                     .map = .{},
                     .global_map = dg.global_map,
                     .value_map = .{},
+                    .scratch = .{},
                 };
                 try codegens.append(codegen);
             }
