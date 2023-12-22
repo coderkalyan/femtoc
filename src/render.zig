@@ -329,7 +329,7 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const cond = branch_single.condition;
                     try writer.print("[%{}] branch_single(%{}) {{", .{ index, cond });
                     try self.stream.newline();
-                    try writer.print("true ", .{});
+                    try writer.print("true: ", .{});
                     try self.renderInst(branch_single.exec_true);
                     try writer.print("}}", .{});
                     try self.stream.newline();
@@ -564,13 +564,10 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const ident = try fir.interner.get(global.name);
                     try writer.print("[global] {s}: ", .{ident});
                     try self.renderInst(global.block);
-                    return;
                 },
                 .function => |function| {
                     try writer.print("function(%{}) body: ", .{@intFromEnum(function.signature)});
                     try self.renderInst(function.body);
-                    try self.stream.newline();
-                    return;
                 },
                 .block => |block| {
                     try writer.print("block {{", .{});
@@ -585,7 +582,7 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
                     self.stream.dedent();
                     try writer.print("}}", .{});
-                    return;
+                    try self.stream.newline();
                 },
                 .block_inline => |block| {
                     try writer.print("block_inline {{", .{});
@@ -600,28 +597,26 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
                     self.stream.dedent();
                     try writer.print("}}", .{});
+                    try self.stream.newline();
                 },
                 .branch_single => |branch_single| {
                     const cond = @intFromEnum(branch_single.cond);
                     try writer.print("branch_single(%{}) true: ", .{cond});
-                    try self.stream.newline();
                     try self.renderInst(branch_single.exec_true);
-                    try self.stream.newline();
-                    return;
                 },
                 .branch_double => |data| {
                     const cond = @intFromEnum(data.cond);
                     const branch_double = fir.extraData(Fir.Inst.BranchDouble, data.pl);
                     try writer.print("branch_double(%{}) {{", .{cond});
+                    self.stream.indent();
                     try self.stream.newline();
                     try writer.print("true: ", .{});
                     try self.renderInst(branch_double.exec_true);
-                    try self.stream.newline();
                     try writer.print("false: ", .{});
                     try self.renderInst(branch_double.exec_false);
+                    self.stream.dedent();
                     try writer.print("}}", .{});
                     try self.stream.newline();
-                    return;
                 },
                 .loop => |loop| {
                     try writer.print("loop {{", .{});
@@ -629,7 +624,6 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.stream.newline();
                     try writer.print("condition: ", .{});
                     try self.renderInst(loop.cond);
-                    try self.stream.newline();
                     try writer.print("body: ", .{});
                     try self.renderInst(loop.body);
                     self.stream.dedent();
@@ -641,10 +635,12 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     // try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
                     const ident = try fir.interner.get(load_global.name);
                     try writer.print("load_global({s})", .{ident});
+                    try self.stream.newline();
                 },
                 .param => |param| {
                     const param_str = try fir.interner.get(param.name);
                     try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
+                    try self.stream.newline();
                 },
                 .call => |call| {
                     try writer.print("call(%{}", .{@intFromEnum(call.function)});
@@ -654,6 +650,7 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         try writer.print(", %{}", .{arg});
                     }
                     try writer.print(")", .{});
+                    try self.stream.newline();
                 },
                 .function_type => |function_type| {
                     try writer.print("function_type((", .{});
@@ -664,6 +661,7 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         if (i < params.len - 1) try writer.print(", ", .{});
                     }
                     try writer.print(") %{})", .{@intFromEnum(function_type.@"return")});
+                    try self.stream.newline();
                 },
                 inline else => |data| {
                     try writer.print("{s}(", .{@tagName(fir.tag(inst))});
@@ -686,10 +684,9 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         },
                     }
                     try writer.print(")", .{});
+                    try self.stream.newline();
                 },
             }
-
-            try self.stream.newline();
         }
     };
 }
