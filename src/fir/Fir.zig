@@ -327,7 +327,7 @@ pub fn get(fir: *const Fir, index: Fir.Index) Fir.Inst {
 }
 
 pub fn tag(fir: *const Fir, index: Fir.Index) std.meta.Tag(Inst.Data) {
-    return fir.insts.items(.tag)[@intFromEnum(index)];
+    return fir.insts.items(.tags)[@intFromEnum(index)];
 }
 
 pub fn extraData(fir: *const Fir, comptime T: type, index: Fir.ExtraIndex) T {

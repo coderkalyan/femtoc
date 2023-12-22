@@ -568,10 +568,8 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .function => |function| {
                     try writer.print("function(%{}) body: ", .{@intFromEnum(function.signature)});
-                    self.stream.indent();
-                    try self.stream.newline();
                     try self.renderInst(function.body);
-                    self.stream.dedent();
+                    try self.stream.newline();
                     return;
                 },
                 .block => |block| {
@@ -587,7 +585,6 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
                     self.stream.dedent();
                     try writer.print("}}", .{});
-                    try self.stream.newline();
                     return;
                 },
                 .block_inline => |block| {
@@ -619,6 +616,7 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.stream.newline();
                     try writer.print("true: ", .{});
                     try self.renderInst(branch_double.exec_true);
+                    try self.stream.newline();
                     try writer.print("false: ", .{});
                     try self.renderInst(branch_double.exec_false);
                     try writer.print("}}", .{});
@@ -631,143 +629,68 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.stream.newline();
                     try writer.print("condition: ", .{});
                     try self.renderInst(loop.cond);
+                    try self.stream.newline();
                     try writer.print("body: ", .{});
                     try self.renderInst(loop.body);
                     self.stream.dedent();
                     try writer.print("}}", .{});
+                    try self.stream.newline();
                 },
-                // .load_global => |load_global| {
-                //     const inst = ir.untyped_decls.get(pl).?;
-                //     try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
-                // },
+                .load_global => |load_global| {
+                    // const inst = ir.untyped_decls.get(pl).?;
+                    // try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
+                    const ident = try fir.interner.get(load_global.name);
+                    try writer.print("load_global({s})", .{ident});
+                },
                 .param => |param| {
                     const param_str = try fir.interner.get(param.name);
                     try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
                 },
-                else => {},
+                .call => |call| {
+                    try writer.print("call(%{}", .{@intFromEnum(call.function)});
+                    const slice = fir.extraData(Fir.Inst.ExtraSlice, call.args);
+                    const args = fir.extraSlice(slice);
+                    for (args) |arg| {
+                        try writer.print(", %{}", .{arg});
+                    }
+                    try writer.print(")", .{});
+                },
+                .function_type => |function_type| {
+                    try writer.print("function_type((", .{});
+                    const slice = fir.extraData(Fir.Inst.ExtraSlice, function_type.params);
+                    const params = fir.extraSlice(slice);
+                    for (params, 0..) |param, i| {
+                        try writer.print("%{}", .{param});
+                        if (i < params.len - 1) try writer.print(", ", .{});
+                    }
+                    try writer.print(") %{})", .{@intFromEnum(function_type.@"return")});
+                },
+                inline else => |data| {
+                    try writer.print("{s}(", .{@tagName(fir.tag(inst))});
+                    switch (@TypeOf(data)) {
+                        void => {},
+                        inline u32, u64, f64 => try writer.print("{}", .{data}),
+                        Fir.Index => try writer.print("%{}", .{@intFromEnum(data)}),
+                        else => {
+                            const fields = std.meta.fields(@TypeOf(data));
+                            inline for (fields, 0..) |field, i| {
+                                const arg = @field(data, field.name);
+                                switch (field.type) {
+                                    u32 => try writer.print("{}", .{arg}),
+                                    Fir.Index => try writer.print("%{}", .{@intFromEnum(arg)}),
+                                    else => try writer.print("format error", .{}),
+                                }
+
+                                if (i < fields.len - 1) try writer.print(", ", .{});
+                            }
+                        },
+                    }
+                    try writer.print(")", .{});
+                },
             }
 
             try self.stream.newline();
-
-            // switch (ir.insts.items(.tag)[index]) {
-            //     .call => {
-            //         const call = ir.get(index, .call);
-            //         try writer.print("call(%{}", .{call.ptr});
-            //
-            //         var extra_index: u32 = call.args_start;
-            //         while (extra_index < call.args_end) : (extra_index += 1) {
-            //             const arg = ir.extra_data[extra_index];
-            //             try writer.print(", %{}", .{arg});
-            //         }
-            //
-            //         try writer.print(")", .{});
-            //     },
-            //     .function_type => {
-            //         const function_type = ir.get(index, .function_type);
-            //         const ret_type = function_type.return_type;
-            //         try writer.print("function_type(%{}", .{ret_type});
-            //
-            //         var extra_index: u32 = function_type.params_start;
-            //         while (extra_index < function_type.params_end) : (extra_index += 1) {
-            //             const arg = ir.extra_data[extra_index];
-            //             try writer.print(", %{}", .{arg});
-            //         }
-            //
-            //         try writer.print(")", .{});
-            //     },
-            //     .constant => {
-            //         const data = ir.get(index, .constant);
-            //         const ty = try ir.resolveType(undefined, data.ty);
-            //         switch (ty.kind()) {
-            //             .comptime_uint, .uint => {
-            //                 const val = ir.instToInt(index);
-            //                 try writer.print("constant(%{}, {})", .{ data.ty, val });
-            //             },
-            //             .comptime_sint, .sint => {
-            //                 const val = ir.instToInt(index);
-            //                 const signed: i32 = @bitCast(@as(u32, @truncate(val)));
-            //                 try writer.print("constant(%{}, {})", .{ data.ty, signed });
-            //             },
-            //             .comptime_float, .float => {
-            //                 const val = ir.instToFloat(index);
-            //                 try writer.print("constant(%{}, {})", .{ data.ty, val });
-            //             },
-            //             .function => {
-            //                 const func = ir.pool.getValue(data.val).function;
-            //                 const func_type = ty.extended.cast(Type.Function).?;
-            //
-            //                 try writer.print("function(", .{});
-            //                 for (func.params, func_type.param_types) |param, param_type| {
-            //                     _ = param_type;
-            //                     const param_pl = ir.insts.items(.data)[param].pl_node.pl;
-            //                     const param_data = ir.extraData(param_pl, Hir.Inst.Param);
-            //                     const ident_str = try ir.interner.get(param_data.name);
-            //                     try writer.print("{s}: %{}, ", .{ ident_str, param_data.ty });
-            //                 }
-            //                 try writer.print(") {{", .{});
-            //                 try self.stream.newline();
-            //                 try writer.print("body ", .{});
-            //                 try self.renderInst(func.body);
-            //                 try writer.print("}}", .{});
-            //             },
-            //             else => |kind| try writer.print("{}", .{kind}),
-            //         }
-            //     },
-            //     else => try self.formatInst(index),
-            // }
-
         }
-
-        // fn formatIndex(_: *Self, index: Hir.Index, buf: []u8) !void {
-        //     @memset(buf, 0);
-        //     _ = try std.fmt.bufPrint(buf, "%{}", .{index});
-        // }
-
-        // fn formatInst(self: *Self, inst: Hir.Index) !void {
-        //     const hir = self.hir;
-        //     const writer = self.stream.writer();
-        //
-        //     switch (hir.insts.items(.tag)[inst]) {
-        //         inline else => |tag| {
-        //             try writer.print("{s}(", .{@tagName(tag)});
-        //
-        //             const data = hir.get(inst, tag);
-        //             const active_field = comptime Hir.activeDataField(tag);
-        //             switch (active_field) {
-        //                 .int => try writer.print("{}", .{data.int}),
-        //                 .float => try writer.print("{}", .{data.float}),
-        //                 .ty => {
-        //                     const buf = try self.formatType(data.ty);
-        //                     try writer.print("{s}", .{buf});
-        //                 },
-        //                 .placeholder => {},
-        //                 .un_node,
-        //                 .un_tok,
-        //                 .pl_node,
-        //                 .pl_tok,
-        //                 .ty_op,
-        //                 => {
-        //                     const fields = std.meta.fields(@TypeOf(data));
-        //                     inline for (fields, 0..) |field, i| {
-        //                         if (!std.mem.eql(u8, field.name, "node") and !std.mem.eql(u8, field.name, "tok") and !std.mem.eql(u8, field.name, "pl")) {
-        //                             const content = @field(data, field.name);
-        //                             var lbuf: [128]u8 = [_]u8{0} ** 128;
-        //                             try self.formatIndex(content, &lbuf);
-        //                             try writer.print("{s}", .{lbuf});
-        //
-        //                             if (i < fields.len - 1) {
-        //                                 try writer.print(", ", .{});
-        //                             }
-        //                         }
-        //                     }
-        //                 },
-        //                 .node, .token => {},
-        //             }
-        //
-        //             try writer.print(")", .{});
-        //         },
-        //     }
-        // }
     };
 }
 
