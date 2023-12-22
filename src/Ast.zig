@@ -146,6 +146,10 @@ pub const Node = struct {
             operand: Index,
             index: Index,
         },
+        get_slice: struct {
+            operand: Index,
+            range: ExtraIndex,
+        },
         // accesses a field by name (identifier)
         // main_token = '.'
         field: Index,
@@ -337,6 +341,11 @@ pub const Node = struct {
         ty: Index,
         attrs_start: ExtraIndex,
         attrs_end: ExtraIndex,
+    };
+
+    pub const GetSlice = struct {
+        start: Index,
+        end: Index,
     };
 };
 

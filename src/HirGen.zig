@@ -623,7 +623,7 @@ fn fnDecl(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
         const param_id = try hg.interner.intern(param_str);
 
         const ty_ref = try typeExpr(b, scope, data);
-        const param_index = try b.add(.param, .{ .name = param_id, .ty = ty_ref, .node = param });
+        const param_index = try b.addUnlinked(.param, .{ .name = param_id, .ty = ty_ref, .node = param });
         b.scratch.appendAssumeCapacity(param_index);
 
         const ref = param_index;
@@ -692,6 +692,7 @@ fn expr(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) !Hir.I
             .array_init => try arrayInitializer(b, scope, node),
             .index => try indexAccess(b, scope, ri, node),
             .field => try fieldAccess(b, scope, ri, node),
+            .get_slice => try getSlice(b, scope, node),
             .paren => try expr(b, scope, ri, b.hg.tree.data(node).paren),
             .block => {
                 var block_scope = try Block.init(b, scope);
@@ -776,21 +777,21 @@ fn pointerType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index
     const hg = b.hg;
     const pointee = hg.tree.data(node).pointer;
     const inner = try typeExpr(b, scope, pointee);
-    return b.add(.create_pointer_type, .{ .operand = inner, .node = node });
+    return b.add(.pointer_type, .{ .operand = inner, .node = node });
 }
 
 fn manyPointerType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const pointee = hg.tree.data(node).many_pointer;
     const inner = try typeExpr(b, scope, pointee);
-    return b.add(.create_unsafe_pointer_type, .{ .operand = inner, .node = node });
+    return b.add(.many_pointer_type, .{ .operand = inner, .node = node });
 }
 
 fn sliceType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const element_type = hg.tree.data(node).slice;
     const inner = try typeExpr(b, scope, element_type);
-    return b.add(.create_slice_type, .{ .operand = inner, .node = node });
+    return b.add(.slice_type, .{ .operand = inner, .node = node });
 }
 
 fn fnType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
@@ -816,28 +817,65 @@ fn arrayType(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     const element_type = try typeExpr(b, scope, array_type.element_type);
     const count = try valExpr(b, scope, array_type.count_expr);
     // TODO: make sure count is actually a comptime_int
-    return b.add(.create_array_type, .{ .element_type = element_type, .count = count, .node = node });
+    return b.add(.array_type, .{ .element_type = element_type, .count = count, .node = node });
 }
 
 fn indexAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
     const hg = b.hg;
     const index_access = hg.tree.data(node).index;
-    const array = try refExpr(b, scope, index_access.operand);
-    const inner = try valExpr(b, scope, index_access.index);
+
+    const operand = try anyExpr(b, scope, index_access.operand);
+    const index = access: {
+        const inner = try valExpr(b, scope, index_access.index);
+        // TODO: actual variable length usize
+        const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
+        break :access try b.add(.coerce, .{
+            .ty = usize_type,
+            .val = inner,
+            .node = index_access.index,
+        });
+    };
+    switch (ri.semantics) {
+        .val => return b.add(.index_val, .{ .array = operand, .index = index, .node = node }),
+        .ref => return b.add(.index_ref, .{ .array = operand, .index = index, .node = node }),
+        .any, .ty => unreachable,
+    }
+}
+
+fn getSlice(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
+    const hg = b.hg;
+    const get_slice = hg.tree.data(node).get_slice;
+    const payload = hg.tree.extraData(get_slice.range, Node.GetSlice);
+    const array = try anyExpr(b, scope, get_slice.operand);
+    const start = try valExpr(b, scope, payload.start);
+    const end = try valExpr(b, scope, payload.end);
     // TODO: actual variable length usize
     const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
-    const access_index = try b.add(.coerce, .{
+    const start_index = try b.add(.coerce, .{
         .ty = usize_type,
-        .val = inner,
-        .node = index_access.index,
+        .val = start,
+        .node = payload.start,
     });
-    const ptr = try b.add(.array_gep, .{ .array = array, .index = access_index, .node = node });
+    const end_index = try b.add(.coerce, .{
+        .ty = usize_type,
+        .val = end,
+        .node = payload.end,
+    });
+    const type_of = try b.add(.type_of, .{ .operand = array, .node = node });
+    const element_type = try b.add(.element_type, .{ .operand = type_of, .node = node });
+    const len = try b.add(.sub, .{ .lref = end_index, .rref = start_index, .node = node });
+    return try b.add(.slice_init, .{
+        .element_type = element_type,
+        .ptr = array, // TODO: pointer arithmetic
+        .len = len,
+        .node = node,
+    });
 
-    switch (ri.semantics) {
-        .val => return b.add(.load, .{ .operand = ptr, .node = node }),
-        .ref => return ptr,
-        .ty, .any => unreachable,
-    }
+    // switch (ri.semantics) {
+    //     .val => return b.add(.load, .{ .operand = ptr, .node = node }),
+    //     .ref => return ptr,
+    //     .ty, .any => unreachable,
+    // }
 }
 
 fn fieldAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Hir.Index {
@@ -850,12 +888,6 @@ fn fieldAccess(b: *BlockEditor, scope: *Scope, ri: ResultInfo, node: Node.Index)
         .ref => return b.add(.field_ref, .{ .operand = operand, .node = node }),
         .any, .ty => unreachable,
     }
-
-    // switch (ri.semantics) {
-    //     .val => return b.add(.load, .{ .operand = ptr, .node = node }),
-    //     .ref => return ptr,
-    //     .ty => unreachable,
-    // }
 }
 
 fn statement(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
@@ -908,7 +940,7 @@ fn call(b: *BlockEditor, scope: *Scope, node: Node.Index) Error!Hir.Index {
     for (arg_nodes, 0..) |arg_node, i| {
         const arg_inner = try valExpr(b, scope, arg_node);
         const param_index: u32 = @intCast(i);
-        const param_type = try b.add(.param_type_of, .{
+        const param_type = try b.add(.param_type, .{
             .ptr = ptr,
             .param_index = param_index,
             .node = arg_node,
@@ -1035,12 +1067,12 @@ fn varDecl(b: *BlockEditor, s: *Scope, node: Node.Index) !Hir.Index {
     const val = try valExpr(b, s, var_decl.val);
     if (var_decl.ty == 0) {
         // untyped (inferred) declaration
-        return try b.add(.push, .{ .operand = val, .node = node });
+        return try b.add(.push, .{ .ty = undefined, .operand = val, .node = node });
     } else {
         // type annotated declaration
         const dest_ty = try typeExpr(b, s, var_decl.ty);
         const coerced = try coerce(b, s, val, dest_ty, node);
-        return try b.add(.push, .{ .operand = coerced, .node = node });
+        return try b.add(.push, .{ .ty = undefined, .operand = coerced, .node = node });
     }
 }
 
@@ -1475,7 +1507,9 @@ pub fn getTempHir(hg: *HirGen) Hir {
         .insts = hg.insts.slice(),
         .extra_data = hg.extra.items,
         .annot = hg.annot.items,
-        .pool = .{ .values = hg.pool.values.slice() },
+        .pool = .{
+            .values = hg.pool.values.slice(),
+        },
         .block_slices = hg.block_slices.items,
         .interner = hg.interner,
         .untyped_decls = hg.untyped_decls, // TODO: not good

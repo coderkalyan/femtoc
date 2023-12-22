@@ -198,6 +198,7 @@ pub const Type = extern union {
                 if (other_kind != .many_pointer) return false;
                 const self_ptr = self.extended.cast(Type.ManyPointer).?;
                 const other_ptr = other.extended.cast(Type.ManyPointer).?;
+                std.debug.print("many ptr: {} {}\n", .{ self_ptr.pointee.basic, other_ptr.pointee.basic });
                 return self_ptr.pointee.eql(other_ptr.pointee);
             },
             .slice => {

@@ -1,7 +1,8 @@
 const std = @import("std");
 const parse = @import("parse.zig");
-const HirGen = @import("HirGen.zig");
-const LlvmBackend = @import("_llvm/Backend.zig");
+// const HirGen = @import("HirGen.zig");
+const FirGen = @import("fir/FirGen.zig");
+// const LlvmBackend = @import("_llvm/Backend.zig");
 const error_handler = @import("error_handler.zig");
 const render = @import("render.zig");
 const Allocator = std.mem.Allocator;
@@ -68,7 +69,7 @@ pub fn readSource(gpa: Allocator, input_filename: []const u8) ![:0]u8 {
         std.process.exit(1);
     }
 
-    var source = try gpa.allocSentinel(u8, @intCast(stat.size), 0);
+    const source = try gpa.allocSentinel(u8, @intCast(stat.size), 0);
     const size = try file.readAll(source);
     if (stat.size != size) {
         std.log.err("Failed to read entire source file", .{});
@@ -153,11 +154,11 @@ pub fn main() !void {
 
     const out = std.io.getStdOut();
     var buffered_out = std.io.bufferedWriter(out.writer());
-    var writer = buffered_out.writer();
+    const writer = buffered_out.writer();
 
     const stage_bits = @intFromEnum(stage);
 
-    var source = try readSource(gpa, input_filename.?);
+    const source = try readSource(gpa, input_filename.?);
     const ast = try parse.parse(gpa, source);
     if (ast.errors.len > 0) {
         const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, ast.errors);
@@ -173,35 +174,37 @@ pub fn main() !void {
     // try hirgen.lowerAst();
     // try hirgen.semanticAnalysis();
     // const hir = try hirgen.toOwnedHir();
-    const hir = try HirGen.generate(gpa, &ast);
-
-    if (hir.errors.len > 0) {
-        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, hir.errors);
-        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);
-
-        try error_renderer.render();
-        try buffered_out.flush();
-        std.os.exit(1);
-    }
+    // const hir = try HirGen.generate(gpa, &ast);
+    const fir = try FirGen.lowerAst(gpa, &ast);
+    // if (fir.errors.len > 0) {
+    //     const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, fir.errors);
+    //     var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);
+    //
+    //     try error_renderer.render();
+    //     try buffered_out.flush();
+    //     std.os.exit(1);
+    // }
 
     if (verbose_hir) {
-        var hir_arena = std.heap.ArenaAllocator.init(gpa);
-        defer hir_arena.deinit();
-        var hir_renderer = render.HirRenderer(2, @TypeOf(writer)).init(writer, hir_arena.allocator(), &hir);
-        try hir_renderer.render();
+        var fir_arena = std.heap.ArenaAllocator.init(gpa);
+        defer fir_arena.deinit();
+
+        const fir_renderer = render.FirRenderer(2, @TypeOf(writer));
+        var renderer = fir_renderer.init(writer, fir_arena.allocator(), &fir);
+        try renderer.render();
         try buffered_out.flush();
     }
 
-    if (stage_bits & CODEGEN == 0) std.os.exit(0);
-    var backend = LlvmBackend.init(gpa, arena.allocator());
-    defer backend.deinit();
-    try backend.generate(&hir);
-
-    if (verbose_llvm) {
-        try backend.dumpToStdout();
-    }
-    if (stage == .llvm) {
-        try backend.printToFile(output_filename.?);
-        std.os.exit(0);
-    }
+    // if (stage_bits & CODEGEN == 0) std.os.exit(0);
+    // var backend = LlvmBackend.init(gpa, arena.allocator());
+    // defer backend.deinit();
+    // try backend.generate(&hir);
+    //
+    // if (verbose_llvm) {
+    //     try backend.dumpToStdout();
+    // }
+    // if (stage == .llvm) {
+    //     try backend.printToFile(output_filename.?);
+    //     std.os.exit(0);
+    // }
 }

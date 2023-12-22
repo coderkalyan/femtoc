@@ -71,6 +71,8 @@ pub const Token = struct {
         l_angle_equal,
         r_angle_equal,
         bang_equal,
+        // slicing
+        period_period,
 
         // triple character punctuation
         /// binary
@@ -443,7 +445,12 @@ pub const Lexer = struct {
                         state = .decimal;
                         self.int_value = c - '0';
                     },
-                    '.' => state = .float_base,
+                    '.' => if (self.source[self.index + 1] == '.') {
+                        result.tag = .int_lit;
+                        break;
+                    } else {
+                        state = .float_base;
+                    },
                     'a', 'c'...'n', 'p'...'w', 'y'...'z', 'A'...'Z' => {
                         self.index += 1;
                         const invalid_length = self.eatInvalidLiteral();
@@ -585,6 +592,11 @@ pub const Lexer = struct {
                 .period => switch (c) {
                     '0'...'9' => {
                         state = .float_base;
+                    },
+                    '.' => {
+                        result.tag = .period_period;
+                        self.index += 1;
+                        break;
                     },
                     else => {
                         result.tag = .period;

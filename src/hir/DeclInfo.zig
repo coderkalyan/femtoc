@@ -87,7 +87,10 @@ pub fn generate(hir: *const Hir, gpa: Allocator, inline_block: Hir.Index, name: 
                 const handle = map.get(data.operand).?.decl_handle;
                 return handle;
             },
-            else => unreachable,
+            else => |tag| {
+                std.log.err("encountered invalid decl instruction {}\n", .{tag});
+                unreachable;
+            },
         }
     }
 

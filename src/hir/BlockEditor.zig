@@ -351,8 +351,8 @@ fn replaceInstUsesWith(b: *BlockEditor, old: Hir.Index, new: Hir.Index, comptime
                         }
                     }
                 },
-                .create_function_type => {
-                    data = hg.get(inst, .create_function_type);
+                .function_type => {
+                    data = hg.get(inst, .function_type);
                     const old_params = hg.extra.items[data.params_start..data.params_end];
                     for (old_params, 0..) |old_param, i| {
                         if (old_param == old) {
@@ -431,7 +431,7 @@ pub fn addFunctionType(b: *BlockEditor, return_type: Hir.Index, params: []Hir.In
     try b.hg.extra.appendSlice(b.hg.gpa, params);
     const params_end: u32 = @intCast(b.hg.extra.items.len);
 
-    return b.add(.create_function_type, .{
+    return b.add(.function_type, .{
         .return_type = return_type,
         .params_start = params_start,
         .params_end = params_end,

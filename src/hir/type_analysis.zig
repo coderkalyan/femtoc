@@ -77,14 +77,45 @@ fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: 
         .return_type = if (parent) |p| p.return_type else null,
     };
 
-    for (slice, 0..) |inst, i| {
-        _ = i;
+    // processes each instruction, either transforming it or leaving it alone
+    for (slice) |inst| {
         switch (hg.insts.items(.tag)[inst]) {
+            // integer and float literals are turned into comptime_*** constants
             .int => try integer(&analysis, inst),
             .float => try float(&analysis, inst),
+            // TODO: not sure why this isn't working, i guess we have bugs
+            // with none as a general datatype
+            // .none => try none(&analysis, inst),
+            // coerces a source value to a destination type, replaced either by
+            // a nop (already correct type), or safe casting logic (like extend)
             .coerce => try coerce(&analysis, inst),
-            .fn_decl => try fnDecl(&analysis, inst),
+            // for binary arithmetic, we make sure both operand types are the
+            // same or coercable, coerce implicitly to the destination type,
+            // and emit a typed signed/unsigned/float arithmetic op
+            // if both operations are comptime known, the value is comptime
+            inline .add,
+            .sub,
+            .mul,
+            .div,
+            .mod,
+            => |tag| try binaryArithOp(&analysis, inst, tag),
+            // similar to above, check, coerce, and emit typed instruction
+            // comptime known values are emitted at comptime
+            .cmp_eq,
+            .cmp_ne,
+            .cmp_gt,
+            .cmp_ge,
+            .cmp_lt,
+            .cmp_le,
+            => try binaryCmp(&analysis, inst),
+            // make sure the correct number of arguments are passed in,
+            // and we are calling a function and not some other junk
             .call => try call(&analysis, inst),
+            .field_ref => try fieldRef(&analysis, inst),
+            .field_val => try fieldVal(&analysis, inst),
+            .index_ref => try indexRef(&analysis, inst),
+            .index_val => try indexVal(&analysis, inst),
+            .fn_decl => try fnDecl(&analysis, inst),
             .branch_single,
             .branch_double,
             .loop,
@@ -98,32 +129,24 @@ fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: 
             .global_set_type,
             // just re-link these
             => try b.linkInst(inst),
-            .create_pointer_type => try createPointerType(&analysis, inst),
-            .create_unsafe_pointer_type => try createUnsafePointerType(&analysis, inst),
-            .create_slice_type => try createSliceType(&analysis, inst),
-            .create_array_type => try createArrayType(&analysis, inst),
-            .param_type_of => try paramTypeOf(&analysis, inst),
+            // builders for generating types from other types - computed
+            // and inlined into a new ty instruction
+            .function_type => try createFunctionType(&analysis, inst),
+            .pointer_type => try createPointerType(&analysis, inst),
+            .many_pointer_type => try createUnsafePointerType(&analysis, inst),
+            .slice_type => try createSliceType(&analysis, inst),
+            .array_type => try createArrayType(&analysis, inst),
+            // used for coercion logic when the initial ast lowering
+            // isn't sure what the type of something is
+            // when resolved, yields the type of the operand
             .type_of => try typeOf(&analysis, inst),
+            // extracts a parameter type by index from a function type
+            .param_type => try paramTypeOf(&analysis, inst),
+            // extracts the element type from an array or slice type
+            .element_type => try elementTypeOf(&analysis, inst),
+            // yields the return type of the current context
+            // only valid within a function body (not in a global)
             .ret_type => try retType(&analysis, inst),
-            // .array_initializer => try arrayInitializer(&analysis, inst),
-            // .array => try array(&analysis, inst),
-            .field_ref => try fieldRef(&analysis, inst),
-            .field_val => try fieldVal(&analysis, inst),
-            .cmp_eq,
-            .cmp_ne,
-            .cmp_gt,
-            .cmp_ge,
-            .cmp_lt,
-            .cmp_le,
-            => try binaryCmp(&analysis, inst),
-            inline .add,
-            .sub,
-            .mul,
-            .div,
-            .mod,
-            => |tag| try binaryArithOp(&analysis, inst, tag),
-            .create_function_type => try createFunctionType(&analysis, inst),
-            // else => {},
             // TODO: remove else clause and switch explicitly
             // to avoid copying bad instructions
             else => try b.linkInst(inst),
@@ -137,6 +160,7 @@ fn analyze(hg: *HirGen, comptime explore: bool, parent: ?*BlockAnalysis, block: 
                 analysis.return_type = function_type.return_type;
             }
         }
+
         if (explore) try hg.explore(inst, analyze, .{ hg, explore, &analysis });
     }
 
@@ -198,6 +222,17 @@ fn float(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const ty = try b.add(.ty, .{ .ty = Type.Common.comptime_float });
     // TODO: maybe try to store the node
     const constant = try b.add(.constant, .{ .ty = ty, .val = value, .node = undefined });
+    try analysis.src_block.replaceAllUsesWith(inst, constant);
+}
+
+fn none(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const constant = try b.add(.constant, .{
+        .ty = try b.add(.ty, .{ .ty = Type.Common.void_type }),
+        .val = try hg.pool.internValue(.{ .none = 0 }),
+        .node = undefined,
+    });
     try analysis.src_block.replaceAllUsesWith(inst, constant);
 }
 
@@ -664,24 +699,24 @@ fn call(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     try b.linkInst(inst);
 }
 
-// replaces a create_pointer_type instruction with an inline ty instruction
+// replaces a pointer_type instruction with an inline ty instruction
 // by constructing a pointer to the operand type
 fn createPointerType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .create_pointer_type);
+    const data = hg.get(inst, .pointer_type);
     const pointee = try hg.resolveType(data.operand);
     const pointer = try Type.Pointer.init(hg.gpa, pointee);
     const new_type = try b.add(.ty, .{ .ty = pointer });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
-// replaces a create_array_type instruction with an inline ty instruction
+// replaces a array_type instruction with an inline ty instruction
 // by constructing a array to the operand type with the correct count
 fn createArrayType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .create_array_type);
+    const data = hg.get(inst, .array_type);
     const element = try hg.resolveType(data.element_type);
     const count = hg.instToInt(data.count);
     const array = try Type.Array.init(hg.gpa, element, @intCast(count));
@@ -689,24 +724,24 @@ fn createArrayType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
-// replaces a create_unsafe_pointer_type instruction with an inline ty instruction
+// replaces a many_pointer_type instruction with an inline ty instruction
 // by constructing a pointer to the operand type
 fn createUnsafePointerType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .create_unsafe_pointer_type);
+    const data = hg.get(inst, .many_pointer_type);
     const pointee = try hg.resolveType(data.operand);
     const pointer = try Type.ManyPointer.init(hg.gpa, pointee);
     const new_type = try b.add(.ty, .{ .ty = pointer });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
-// replaces a create_slice_type instruction with an inline ty instruction
+// replaces a slice_type instruction with an inline ty instruction
 // by constructing a slice to the operand type
 fn createSliceType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .create_slice_type);
+    const data = hg.get(inst, .slice_type);
     const element = try hg.resolveType(data.operand);
     const slice = try Type.Slice.init(hg.gpa, element);
     const new_type = try b.add(.ty, .{ .ty = slice });
@@ -739,11 +774,34 @@ fn createFunctionType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
 fn paramTypeOf(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .param_type_of);
+    const data = hg.get(inst, .param_type);
     const ptr_type = (try hg.resolveType(data.ptr)).extended.cast(Type.Function).?;
     const param_type = ptr_type.param_types[data.param_index];
 
     const new_type = try b.add(.ty, .{ .ty = param_type });
+    try analysis.src_block.replaceAllUsesWith(inst, new_type);
+}
+
+fn elementTypeOf(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .element_type);
+    const operand_type = try hg.resolveType(data.operand);
+    const element_type = switch (operand_type.kind()) {
+        .array => operand_type.extended.cast(Type.Array).?.element,
+        .slice => operand_type.extended.cast(Type.Slice).?.element,
+        .pointer => ty: {
+            const inner_type = operand_type.extended.cast(Type.Pointer).?.pointee;
+            break :ty switch (inner_type.kind()) {
+                .array => inner_type.extended.cast(Type.Array).?.element,
+                .slice => inner_type.extended.cast(Type.Slice).?.element,
+                else => unreachable,
+            };
+        },
+        else => unreachable,
+    };
+
+    const new_type = try b.add(.ty, .{ .ty = element_type });
     try analysis.src_block.replaceAllUsesWith(inst, new_type);
 }
 
@@ -766,7 +824,7 @@ fn retType(analysis: *BlockAnalysis, inst: Hir.Index) !void {
 fn fieldRef(analysis: *BlockAnalysis, inst: Hir.Index) !void {
     const hg = analysis.hg;
     const b = analysis.b;
-    const data = hg.get(inst, .field_val);
+    const data = hg.get(inst, .field_ref);
     // TODO: use interner value instead
     const field_token = hg.tree.mainToken(data.node) + 1;
     const field_string = hg.tree.tokenString(field_token);
@@ -813,7 +871,10 @@ fn fieldRef(analysis: *BlockAnalysis, inst: Hir.Index) !void {
                             .operand = data.operand,
                             .node = data.node,
                         });
+                        const ptr_type = try Type.Pointer.init(hg.gpa, src_type.extended.cast(Type.Slice).?.element);
+                        const slot_type = try Type.Pointer.init(hg.gpa, ptr_type);
                         const push = try b.add(.push, .{
+                            .ty = slot_type,
                             .operand = access,
                             .node = data.node,
                         });
@@ -823,7 +884,9 @@ fn fieldRef(analysis: *BlockAnalysis, inst: Hir.Index) !void {
                             .operand = data.operand,
                             .node = data.node,
                         });
+                        const slot_type = try Type.Pointer.init(hg.gpa, Type.Common.u64_type);
                         const push = try b.add(.push, .{
+                            .ty = slot_type,
                             .operand = access,
                             .node = data.node,
                         });
@@ -911,6 +974,100 @@ fn fieldVal(analysis: *BlockAnalysis, inst: Hir.Index) !void {
                     }
                 },
                 .array, .structure => unreachable, // unimplemented
+                else => unreachable,
+            }
+        },
+    }
+}
+
+fn indexVal(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .index_val);
+
+    switch (hg.insts.items(.tag)[data.array]) {
+        // reading an index from a pointer by value - emit a ref + load
+        .push, .alloca => {
+            const pointer_type = (try hg.resolveType(data.array)).extended.cast(Type.Pointer).?;
+            const src_type = pointer_type.pointee;
+            switch (src_type.kind()) {
+                .array => {
+                    const ref = try b.add(.index_ref, .{
+                        .array = data.array,
+                        .index = data.index,
+                        .node = data.node,
+                    });
+                    const access = try b.add(.load, .{
+                        .operand = ref,
+                        .node = data.node,
+                    });
+                    try analysis.src_block.replaceAllUsesWith(inst, access);
+                },
+                .slice => unreachable, // unimplemented
+                else => unreachable,
+            }
+        },
+        // reading a field from a value by value - emit a val
+        else => {
+            const src_type = try hg.resolveType(data.array);
+            switch (src_type.kind()) {
+                .array => {
+                    const access = try b.add(.index_val, .{
+                        .array = data.array,
+                        .index = data.index,
+                        .node = data.node,
+                    });
+                    try analysis.src_block.replaceAllUsesWith(inst, access);
+                },
+                .slice => unreachable, // unimplemented
+                else => unreachable,
+            }
+        },
+    }
+}
+
+fn indexRef(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+    const hg = analysis.hg;
+    const b = analysis.b;
+    const data = hg.get(inst, .index_ref);
+
+    switch (hg.insts.items(.tag)[data.array]) {
+        // reading an index from a pointer by ref - emit a ref
+        .push, .alloca => {
+            const pointer_type = (try hg.resolveType(data.array)).extended.cast(Type.Pointer).?;
+            const src_type = pointer_type.pointee;
+            switch (src_type.kind()) {
+                .array => {
+                    const access = try b.add(.index_ref, .{
+                        .array = data.array,
+                        .index = data.index,
+                        .node = data.node,
+                    });
+                    try analysis.src_block.replaceAllUsesWith(inst, access);
+                },
+                .slice => unreachable, // unimplemented
+                else => unreachable,
+            }
+        },
+        // reading a field from a value by value - emit a val
+        else => {
+            const src_type = try hg.resolveType(data.array);
+            switch (src_type.kind()) {
+                .array => {
+                    const access = try b.add(.index_val, .{
+                        .array = data.array,
+                        .index = data.index,
+                        .node = data.node,
+                    });
+                    const slot_type = try Type.Pointer.init(hg.gpa, src_type.extended.cast(Type.Array).?.element);
+                    const push = try b.add(.push, .{
+                        .ty = slot_type,
+                        .operand = access,
+                        .node = data.node,
+                    });
+                    try analysis.src_block.replaceAllUsesWith(inst, push);
+                },
+                .slice => unreachable, // unimplemented
                 else => unreachable,
             }
         },

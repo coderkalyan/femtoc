@@ -45,14 +45,14 @@ fn resolveInst(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
             // but should we?
             return codegen.global_map.get(load_global.operand).?;
         },
-        .constant => {
-            // constants aren't generated until someone uses them, so
-            // take the time to emit them now and then return
-            // this is actually out of date
-            const ref = try codegen.constant(inst);
-            try codegen.map.put(codegen.arena, inst, ref);
-            return ref;
-        },
+        // .constant => {
+        //     // constants aren't generated until someone uses them, so
+        //     // take the time to emit them now and then return
+        //     // this is actually out of date
+        //     const ref = try codegen.constant(inst);
+        //     try codegen.map.put(codegen.arena, inst, ref);
+        //     return ref;
+        // },
         else => {
             // the instruction should exist
             if (codegen.map.get(inst)) |ref| {
@@ -123,7 +123,8 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .fpext => try codegen.fpext(inst),
             .param => try codegen.param(inst, @intCast(i)),
             .call => try codegen.call(inst),
-            .array_gep => try codegen.arrayAccess(inst),
+            .index_ref => try codegen.indexRef(inst),
+            .index_val => try codegen.indexVal(inst),
             .slice_ptr_ref => try codegen.slicePtrRef(inst),
             .slice_len_ref => try codegen.sliceLenRef(inst),
             .slice_ptr_val => try codegen.slicePtrVal(inst),
@@ -136,6 +137,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .ty, .load_global, .array => continue,
             // .array_init => try codegen.arrayInit(inst),
             .array_init => continue,
+            .slice_init => continue,
             inline .yield_implicit, .yield_node => |tag| {
                 yield_val = try codegen.yield(inst, tag);
                 break;
@@ -190,13 +192,17 @@ fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
         .array => {
             const element_type = ty.extended.cast(Type.Array).?.element;
             const src_elements = value.array.elements;
-            const dest_elements = try codegen.arena.alloc(c.LLVMValueRef, src_elements.len);
-            defer codegen.arena.free(dest_elements);
-            for (src_elements, 0..) |element, i| {
+
+            const scratch_top = codegen.scratch.items.len;
+            defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
+            try codegen.scratch.ensureUnusedCapacity(codegen.arena, src_elements.len);
+            for (src_elements) |element| {
                 const element_value = hir.pool.getValue(element);
-                dest_elements[i] = try codegen.constantInner(element_type, element_value);
+                const dest_element = try codegen.constantInner(element_type, element_value);
+                codegen.scratch.appendAssumeCapacity(dest_element);
             }
 
+            const dest_elements = codegen.scratch.items[scratch_top..];
             const llvm_type = try builder.convertType(ty);
             const llvm_array = try builder.addConstArray(ty, dest_elements);
             const global = builder.context.addGlobal(".data", llvm_type);
@@ -230,16 +236,6 @@ fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
             const len_value = try codegen.constantInner(len_type, len);
             const ptr = try codegen.builder.addInsertValue(undef, ptr_value, 0);
             return codegen.builder.addInsertValue(ptr, len_value, 1);
-
-            // var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-            // const llvm_slice = try builder.context.addConstStruct(&elements);
-            // const llvm_type = try builder.convertType(ty);
-            // const global = builder.context.addGlobal(".slice", llvm_type);
-            // c.LLVMSetInitializer(global, llvm_slice);
-            // c.LLVMSetGlobalConstant(global, 1);
-            // c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-            // c.LLVMSetUnnamedAddr(global, 1);
-            // return global;
         },
         // switch (value) {
         //     .string => {
@@ -427,6 +423,19 @@ fn store(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
 
                     return null;
                 },
+                .slice_init => {
+                    const slice_init = hir.get(data.val, .slice_init);
+                    const ptr_value = try codegen.resolveInst(slice_init.ptr);
+                    const len_value = try codegen.resolveInst(slice_init.len);
+
+                    // generate a slice value by starting with an undef
+                    // and inserting 2 values into it (ptr and len)
+                    const ty = try hir.resolveType(codegen.arena, data.val);
+                    const llvm_type = try codegen.builder.convertType(ty);
+                    const undef = c.LLVMGetUndef(llvm_type);
+                    const ptr = try codegen.builder.addInsertValue(undef, ptr_value, 0);
+                    return codegen.builder.addInsertValue(ptr, len_value, 1);
+                },
                 else => unreachable,
             }
         },
@@ -550,6 +559,11 @@ fn yield(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVM
 }
 
 fn loop(codegen: *CodeGen, inst: Hir.Index) !void {
+    // the canonical form of a loop in LLVM is a do-while
+    // where the body is placed first, and then the condition, which
+    // results in a branch back to the body or to the exit
+    // finally, a jump is placed at the top (entry) that jumps unconditionally
+    // to the branch to create "while" behavior rather than "do" while
     const hir = codegen.hir;
     var builder = codegen.builder;
     const data = hir.get(inst, .loop);
@@ -578,13 +592,16 @@ fn call(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const data = hir.extraData(pl, Hir.Inst.Call);
 
     const addr = try codegen.resolveInst(data.ptr);
-    const args = try codegen.arena.alloc(c.LLVMValueRef, data.args_end - data.args_start);
-    defer codegen.arena.free(args);
     const hir_args = hir.extra_data[data.args_start..data.args_end];
-    for (hir_args, 0..) |arg, i| {
-        args[i] = try codegen.resolveInst(arg);
+
+    const scratch_top = codegen.scratch.items.len;
+    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
+    try codegen.scratch.ensureUnusedCapacity(codegen.arena, hir_args.len);
+    for (hir_args) |arg| {
+        codegen.scratch.appendAssumeCapacity(try codegen.resolveInst(arg));
     }
 
+    const args = codegen.scratch.items[scratch_top..];
     const ty = try hir.resolveType(codegen.arena, data.ptr);
     return codegen.builder.addCall(ty, addr, args);
 }
@@ -598,9 +615,9 @@ fn ret(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMVa
     return codegen.builder.addReturn(ref);
 }
 
-fn arrayAccess(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
+fn indexRef(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     const hir = codegen.hir;
-    const data = hir.get(inst, .array_gep);
+    const data = hir.get(inst, .index_ref);
 
     const ty = try hir.resolveType(codegen.arena, data.array);
     const pointer_type = ty.extended.cast(Type.Pointer).?;
@@ -610,7 +627,38 @@ fn arrayAccess(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
     var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
     indices[0] = try codegen.builder.addUint(Type.Common.u64_type, 0);
     indices[1] = access_index;
-    return try codegen.builder.addGetElementPtr(array_type, array, &indices);
+    const gep = try codegen.builder.addGetElementPtr(array_type, array, &indices);
+    if (hir.insts.items(.tag)[data.index] == .constant) {
+        // comptime known, so inbounds
+        // TODO: better check and also make sure this is correct
+        // and actually inbound
+        c.LLVMSetIsInBounds(gep, 1);
+    }
+    return gep;
+}
+
+fn indexVal(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
+    const hir = codegen.hir;
+    const data = hir.get(inst, .index_val);
+
+    const array_type = try hir.resolveType(codegen.arena, data.array);
+    const array = try codegen.resolveInst(data.array);
+    const element_type = array_type.extended.cast(Type.Array).?.element;
+    const access_index = try codegen.resolveInst(data.index);
+
+    const scratch_top = codegen.scratch.items.len;
+    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
+    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
+    indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
+    indices[1] = access_index;
+    const gep = try codegen.builder.addGetElementPtr(array_type, array, indices);
+    if (hir.insts.items(.tag)[data.index] == .constant) {
+        // comptime known, so inbounds
+        // TODO: better check and also make sure this is correct
+        // and actually inbound
+        c.LLVMSetIsInBounds(gep, 1);
+    }
+    return codegen.builder.addLoad(gep, element_type);
 }
 
 fn slicePtrRef(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
@@ -665,23 +713,4 @@ fn sliceLenVal(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
 
     const slice = try codegen.resolveInst(data.operand);
     return codegen.builder.addExtractValue(slice, 1);
-}
-
-// initializes an array (all elements) atomically with some data
-// which can either be constant (a Value) or based on runtime instructions
-fn arrayInit(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .array_init);
-
-    const ty = try hir.resolveType(codegen.arena, inst);
-    const elements = hir.extra_data[data.elements_start..data.elements_end];
-    const array_type = ty.extended.cast(Type.Array).?;
-    const vals = try codegen.arena.alloc(c.LLVMValueRef, elements.len);
-    defer codegen.arena.free(vals);
-
-    for (elements, 0..) |element, i| {
-        vals[i] = try codegen.resolveInst(element);
-    }
-
-    return codegen.builder.addConstArray(array_type.element, vals);
 }

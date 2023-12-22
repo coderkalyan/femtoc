@@ -317,7 +317,12 @@ const Parser = struct {
                 const left_node = try p.parsePrimaryExpr();
                 switch (p.token_tags[p.index]) {
                     .l_bracket => return p.expectIndex(left_node),
-                    .period => return p.expectField(left_node),
+                    // TODO: double dot
+                    .period => if (p.token_tags[p.index + 1] == .ident) {
+                        return p.expectField(left_node);
+                    } else {
+                        return p.parseBinRExpr(left_node, 0);
+                    },
                     else => return p.parseBinRExpr(left_node, 0),
                 }
             },
@@ -459,11 +464,30 @@ const Parser = struct {
     fn expectIndex(p: *Parser, operand: Node.Index) Error!Node.Index {
         const l_bracket_token = try p.expectToken(.l_bracket);
         const index = try p.expectExpr();
+
+        if (p.token_tags[p.index] == .period_period) {
+            return p.expectGetSlice(l_bracket_token, operand, index);
+        }
         _ = try p.expectToken(.r_bracket);
 
         return p.addNode(.{
             .main_token = l_bracket_token,
             .data = .{ .index = .{ .operand = operand, .index = index } },
+        });
+    }
+
+    fn expectGetSlice(p: *Parser, token: TokenIndex, op: Node.Index, start: Node.Index) Error!Node.Index {
+        _ = try p.expectToken(.period_period);
+        const end = try p.expectExpr();
+        _ = try p.expectToken(.r_bracket);
+
+        const pl = try p.addExtra(Node.GetSlice{
+            .start = start,
+            .end = end,
+        });
+        return p.addNode(.{
+            .main_token = token,
+            .data = .{ .get_slice = .{ .operand = op, .range = pl } },
         });
     }
 

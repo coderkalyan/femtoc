@@ -2,6 +2,7 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const Hir = @import("Hir.zig");
+const Fir = @import("fir/Fir.zig");
 const Type = @import("hir/type.zig").Type;
 const Value = @import("value.zig").Value;
 const Allocator = std.mem.Allocator;
@@ -372,8 +373,8 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
                     try writer.print(")", .{});
                 },
-                .create_function_type => {
-                    const function_type = ir.get(index, .create_function_type);
+                .function_type => {
+                    const function_type = ir.get(index, .function_type);
                     const ret_type = function_type.return_type;
                     try writer.print("function_type(%{}", .{ret_type});
 
@@ -522,6 +523,251 @@ pub fn HirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
             }
         }
+    };
+}
+
+pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
+    return struct {
+        stream: IndentingWriter(width, WriterType),
+        fir: *const Fir,
+        arena: Allocator,
+
+        pub const Self = @This();
+
+        pub fn init(writer: anytype, arena: Allocator, fir: *const Fir) Self {
+            return .{
+                .stream = indentingWriter(width, writer),
+                .arena = arena,
+                .fir = fir,
+            };
+        }
+
+        pub fn render(self: *Self) !void {
+            const fir = self.fir;
+
+            const module_pl = fir.insts.items(.data)[@intFromEnum(fir.module_index)].module.insts;
+            const slice = fir.extraData(Fir.Inst.ExtraSlice, module_pl);
+            const globals = fir.extraSlice(slice);
+            for (globals) |global| {
+                try self.renderInst(@enumFromInt(global));
+            }
+        }
+
+        pub fn renderInst(self: *Self, inst: Fir.Index) !void {
+            const fir = self.fir;
+            const writer = self.stream.writer();
+
+            try writer.print("%{} = ", .{@intFromEnum(inst)});
+
+            switch (fir.get(inst).data) {
+                .global => |global| {
+                    const ident = try fir.interner.get(global.name);
+                    try writer.print("[global] {s}: ", .{ident});
+                    try self.renderInst(global.block);
+                    return;
+                },
+                .function => |function| {
+                    try writer.print("function(%{}) body: ", .{@intFromEnum(function.signature)});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try self.renderInst(function.body);
+                    self.stream.dedent();
+                    return;
+                },
+                .block => |block| {
+                    try writer.print("block {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+
+                    const slice = fir.extraData(Fir.Inst.ExtraSlice, block.insts);
+                    const insts = fir.extraSlice(slice);
+                    for (insts) |block_inst| {
+                        try self.renderInst(@enumFromInt(block_inst));
+                    }
+
+                    self.stream.dedent();
+                    try writer.print("}}", .{});
+                    try self.stream.newline();
+                    return;
+                },
+                .block_inline => |block| {
+                    try writer.print("block_inline {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+
+                    const slice = fir.extraData(Fir.Inst.ExtraSlice, block.insts);
+                    const insts = fir.extraSlice(slice);
+                    for (insts) |block_inst| {
+                        try self.renderInst(@enumFromInt(block_inst));
+                    }
+
+                    self.stream.dedent();
+                    try writer.print("}}", .{});
+                },
+                .branch_single => |branch_single| {
+                    const cond = @intFromEnum(branch_single.cond);
+                    try writer.print("branch_single(%{}) true: ", .{cond});
+                    try self.stream.newline();
+                    try self.renderInst(branch_single.exec_true);
+                    try self.stream.newline();
+                    return;
+                },
+                .branch_double => |data| {
+                    const cond = @intFromEnum(data.cond);
+                    const branch_double = fir.extraData(Fir.Inst.BranchDouble, data.pl);
+                    try writer.print("branch_double(%{}) {{", .{cond});
+                    try self.stream.newline();
+                    try writer.print("true: ", .{});
+                    try self.renderInst(branch_double.exec_true);
+                    try writer.print("false: ", .{});
+                    try self.renderInst(branch_double.exec_false);
+                    try writer.print("}}", .{});
+                    try self.stream.newline();
+                    return;
+                },
+                .loop => |loop| {
+                    try writer.print("loop {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try writer.print("condition: ", .{});
+                    try self.renderInst(loop.cond);
+                    try writer.print("body: ", .{});
+                    try self.renderInst(loop.body);
+                    self.stream.dedent();
+                    try writer.print("}}", .{});
+                },
+                // .load_global => |load_global| {
+                //     const inst = ir.untyped_decls.get(pl).?;
+                //     try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
+                // },
+                .param => |param| {
+                    const param_str = try fir.interner.get(param.name);
+                    try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
+                },
+                else => {},
+            }
+
+            try self.stream.newline();
+
+            // switch (ir.insts.items(.tag)[index]) {
+            //     .call => {
+            //         const call = ir.get(index, .call);
+            //         try writer.print("call(%{}", .{call.ptr});
+            //
+            //         var extra_index: u32 = call.args_start;
+            //         while (extra_index < call.args_end) : (extra_index += 1) {
+            //             const arg = ir.extra_data[extra_index];
+            //             try writer.print(", %{}", .{arg});
+            //         }
+            //
+            //         try writer.print(")", .{});
+            //     },
+            //     .function_type => {
+            //         const function_type = ir.get(index, .function_type);
+            //         const ret_type = function_type.return_type;
+            //         try writer.print("function_type(%{}", .{ret_type});
+            //
+            //         var extra_index: u32 = function_type.params_start;
+            //         while (extra_index < function_type.params_end) : (extra_index += 1) {
+            //             const arg = ir.extra_data[extra_index];
+            //             try writer.print(", %{}", .{arg});
+            //         }
+            //
+            //         try writer.print(")", .{});
+            //     },
+            //     .constant => {
+            //         const data = ir.get(index, .constant);
+            //         const ty = try ir.resolveType(undefined, data.ty);
+            //         switch (ty.kind()) {
+            //             .comptime_uint, .uint => {
+            //                 const val = ir.instToInt(index);
+            //                 try writer.print("constant(%{}, {})", .{ data.ty, val });
+            //             },
+            //             .comptime_sint, .sint => {
+            //                 const val = ir.instToInt(index);
+            //                 const signed: i32 = @bitCast(@as(u32, @truncate(val)));
+            //                 try writer.print("constant(%{}, {})", .{ data.ty, signed });
+            //             },
+            //             .comptime_float, .float => {
+            //                 const val = ir.instToFloat(index);
+            //                 try writer.print("constant(%{}, {})", .{ data.ty, val });
+            //             },
+            //             .function => {
+            //                 const func = ir.pool.getValue(data.val).function;
+            //                 const func_type = ty.extended.cast(Type.Function).?;
+            //
+            //                 try writer.print("function(", .{});
+            //                 for (func.params, func_type.param_types) |param, param_type| {
+            //                     _ = param_type;
+            //                     const param_pl = ir.insts.items(.data)[param].pl_node.pl;
+            //                     const param_data = ir.extraData(param_pl, Hir.Inst.Param);
+            //                     const ident_str = try ir.interner.get(param_data.name);
+            //                     try writer.print("{s}: %{}, ", .{ ident_str, param_data.ty });
+            //                 }
+            //                 try writer.print(") {{", .{});
+            //                 try self.stream.newline();
+            //                 try writer.print("body ", .{});
+            //                 try self.renderInst(func.body);
+            //                 try writer.print("}}", .{});
+            //             },
+            //             else => |kind| try writer.print("{}", .{kind}),
+            //         }
+            //     },
+            //     else => try self.formatInst(index),
+            // }
+
+        }
+
+        // fn formatIndex(_: *Self, index: Hir.Index, buf: []u8) !void {
+        //     @memset(buf, 0);
+        //     _ = try std.fmt.bufPrint(buf, "%{}", .{index});
+        // }
+
+        // fn formatInst(self: *Self, inst: Hir.Index) !void {
+        //     const hir = self.hir;
+        //     const writer = self.stream.writer();
+        //
+        //     switch (hir.insts.items(.tag)[inst]) {
+        //         inline else => |tag| {
+        //             try writer.print("{s}(", .{@tagName(tag)});
+        //
+        //             const data = hir.get(inst, tag);
+        //             const active_field = comptime Hir.activeDataField(tag);
+        //             switch (active_field) {
+        //                 .int => try writer.print("{}", .{data.int}),
+        //                 .float => try writer.print("{}", .{data.float}),
+        //                 .ty => {
+        //                     const buf = try self.formatType(data.ty);
+        //                     try writer.print("{s}", .{buf});
+        //                 },
+        //                 .placeholder => {},
+        //                 .un_node,
+        //                 .un_tok,
+        //                 .pl_node,
+        //                 .pl_tok,
+        //                 .ty_op,
+        //                 => {
+        //                     const fields = std.meta.fields(@TypeOf(data));
+        //                     inline for (fields, 0..) |field, i| {
+        //                         if (!std.mem.eql(u8, field.name, "node") and !std.mem.eql(u8, field.name, "tok") and !std.mem.eql(u8, field.name, "pl")) {
+        //                             const content = @field(data, field.name);
+        //                             var lbuf: [128]u8 = [_]u8{0} ** 128;
+        //                             try self.formatIndex(content, &lbuf);
+        //                             try writer.print("{s}", .{lbuf});
+        //
+        //                             if (i < fields.len - 1) {
+        //                                 try writer.print(", ", .{});
+        //                             }
+        //                         }
+        //                     }
+        //                 },
+        //                 .node, .token => {},
+        //             }
+        //
+        //             try writer.print(")", .{});
+        //         },
+        //     }
+        // }
     };
 }
 
