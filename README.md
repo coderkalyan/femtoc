@@ -20,3 +20,29 @@ Very very long term goals include:
 Some other important links:
 [tree-sitter-femto](https://github.com/coderkalyan/tree-sitter-femto): Tree sitter grammar for femto. This should help you with your neovim experience.
 Once there's a standard library and language server, they will be linked here.
+
+# Overview of Features
+(WIP) This is a list of features that differentiate femto from C and some other well-known systems languages. Many languages implement these subsets of these features, and these aren't necessarily unique to femto. Some of these features are inspired by:
+* C
+* Zig
+* Rust
+* Hare
+* Go
+
+* variables are immutable by default
+* explicit width types only (int/long/short/double => u32/u64/u16/f64)
+* no implicit unsafe casts, like integer truncation, sign changes, or float to/from integer
+* all datatypes (including arrays) copy by value
+* variables cannot be declared without defining (except explicitly with `undefined`)
+* `defer` keyword for running teardown code at all exit codepaths
+* arrays know their length at compile time
+* default "safe" pointers aren't indexable
+* slices (implemented using wide pointers) that store length information at runtime
+* `yield` for emiting values from a block (treats a long block as an expression)
+* u8 slices solve C's null termination issues
+* support for interfaces (backed by vtables)
+* compile time code execution (eventually)
+* improved switch cases with completeness check, ranges, no break needed
+* annotations to guide (or enforce) optimizations - inlining, unrolling, linkage
+* heap allocation as an API - bring your own allocator, like Zig
+* unified loop syntax with `for`
