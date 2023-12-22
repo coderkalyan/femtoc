@@ -1,0 +1,23 @@
+@import let write: fn (fd: u32, buf: u8*, n: u64) u64;
+
+let write_char = fn (char: u8) void {
+    let mut buf: u8 = char;
+    write(0, &buf, 1);
+};
+
+@export let main = fn () void {
+    write_char('H');
+    write_char('e');
+    write_char('l');
+    write_char('l');
+    write_char('o');
+    write_char(',');
+    write_char(' ');
+    write_char('w');
+    write_char('o');
+    write_char('r');
+    write_char('l');
+    write_char('d');
+    write_char('!');
+    write_char(10);
+};

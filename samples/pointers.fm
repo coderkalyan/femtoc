@@ -1,0 +1,30 @@
+let increment = fn (n: u32*) void {
+    *n = *n + 1;
+};
+
+let add = fn (a: u32*, b: u32*) void {
+    *a = *a + *b;
+};
+
+@export let main = fn () void {
+    let mut a: u32 = 123;
+    let mut b: u32 = 456; // TODO: promote to ptr
+
+    let foo = increment(&a);
+    let bar = add(&a, &b);
+
+    if a != 580 {
+        for {}
+    }
+
+    // TODO: call expressions as statements
+    let mut direct: u32 = 234;
+    let ptr = &direct;
+    let new: u32 = 580;
+    *ptr = new;
+    let mut mut_ptr = ptr;
+
+    if direct != 580 {
+        for {}
+    }
+};

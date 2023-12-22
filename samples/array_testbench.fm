@@ -1,0 +1,17 @@
+@import let print_answer: fn (ans: u64) void;
+
+@export let main = fn () void {
+    let mut numbers: u32[4] = [1, 2, 3, 4];
+    let first = numbers[0];
+    let second = numbers[1];
+    let third = numbers[2];
+    let fourth = numbers[3];
+
+    print_answer(first);
+    print_answer(second);
+    print_answer(third);
+    print_answer(fourth);
+
+    let slice: []u8 = &numbers;
+    let slice: []u8 = &numbers;
+};

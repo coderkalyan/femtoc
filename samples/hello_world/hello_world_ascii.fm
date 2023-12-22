@@ -1,0 +1,23 @@
+@import let write: fn (fd: u32, buf: u8*, n: u64) u64;
+
+let write_char = fn (char: u8) void {
+    let mut buf: u8 = char;
+    let discard = write(0, &buf, 1);
+};
+
+@export let main = fn () void {
+    let discard = write_char(72);
+    let discard = write_char(101);
+    let discard = write_char(108);
+    let discard = write_char(108);
+    let discard = write_char(111);
+    let discard = write_char(44);
+    let discard = write_char(32);
+    let discard = write_char(119);
+    let discard = write_char(111);
+    let discard = write_char(114);
+    let discard = write_char(108);
+    let discard = write_char(100);
+    let discard = write_char(33);
+    let discard = write_char(10);
+};

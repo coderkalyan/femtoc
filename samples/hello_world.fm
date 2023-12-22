@@ -1,0 +1,9 @@
+@import let write: fn (fd: u32, buf: u8[*], n: u64) u64;
+
+@export let main = fn () void {
+    let mut greetings = "Hello, world!\n";
+    write(0, greetings.ptr, greetings.len);
+    let mut hello_world = ['H', 'e', 'l', 'l', 'o', ','];
+    let mut hello = hello_world[0..5];
+    write(0, hello.ptr, hello.len);
+};

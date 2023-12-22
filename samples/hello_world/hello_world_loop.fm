@@ -1,0 +1,8 @@
+@import let write: fn (fd: u32, buf: u8*, n: u64) u64;
+
+@export let main = fn () void {
+    let mut greetings: u8[14] = ['H', 'e', 'l', 'l', 'o', ',', ' ', 'w', 'o', 'r', 'l', 'd', '!', 10];
+    for let mut i: u32 = 0; i < 14; i += 1 {
+        write(0, &(greetings[i]), 1);
+    }
+};

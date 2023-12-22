@@ -17,7 +17,7 @@ let fibonacci = fn (n: i32) i32 {
     return b;
 };
 
-let main = fn () void {
-    let x: i32 = 5;
-    let fib = fibonacci(x);
-};
+// let main = fn () void {
+//     let x: i32 = 5;
+//     let fib = fibonacci(x);
+// };

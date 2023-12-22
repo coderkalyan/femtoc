@@ -1,0 +1,8 @@
+// @import let write = fn (fd: u32, buf: u8*, count: usize) isize;
+@import let write = fn (fd: u32, buf: u8[]) isize;
+@import let exit = fn (status: u32) void;
+
+let main = fn () void {
+    write("Hello, world!");
+    exit(0);
+};

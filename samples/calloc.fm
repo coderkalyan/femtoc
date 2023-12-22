@@ -1,0 +1,5 @@
+@import let calloc = fn(nmemb: u64, size: u64) u32[*];
+
+@export let main = fn () void {
+    calloc
+};
