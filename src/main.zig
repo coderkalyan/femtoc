@@ -5,6 +5,7 @@ const FirGen = @import("fir/FirGen.zig");
 // const LlvmBackend = @import("_llvm/Backend.zig");
 const error_handler = @import("error_handler.zig");
 const render = @import("render.zig");
+const InternPool = @import("InternPool.zig");
 const Allocator = std.mem.Allocator;
 
 const io = std.io;
@@ -175,7 +176,9 @@ pub fn main() !void {
     // try hirgen.semanticAnalysis();
     // const hir = try hirgen.toOwnedHir();
     // const hir = try HirGen.generate(gpa, &ast);
-    const fir = try FirGen.lowerAst(gpa, &ast);
+    var pool = InternPool.init(gpa);
+    defer pool.deinit();
+    const fir = try FirGen.lowerAst(gpa, &pool, &ast);
     // if (fir.errors.len > 0) {
     //     const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, fir.errors);
     //     var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);

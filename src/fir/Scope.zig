@@ -2,7 +2,7 @@ const std = @import("std");
 const Ast = @import("../Ast.zig");
 const Fir = @import("Fir.zig");
 const FirGen = @import("FirGen.zig");
-const Interner = @import("../interner.zig").Interner;
+const InternPool = @import("../InternPool.zig");
 
 const Allocator = std.mem.Allocator;
 const Node = Ast.Node;
@@ -45,8 +45,8 @@ pub const Namespace = struct {
     base: Scope = .{ .tag = base_tag },
 
     parent: *Scope,
-    decls: std.AutoHashMapUnmanaged(u32, void),
-    types: std.AutoHashMapUnmanaged(u32, void),
+    decls: std.AutoHashMapUnmanaged(InternPool.StringIndex, void),
+    types: std.AutoHashMapUnmanaged(InternPool.StringIndex, void),
 
     pub fn init(s: *Scope) @This() {
         return .{
@@ -138,10 +138,10 @@ pub const LocalVal = struct {
     base: Scope = .{ .tag = base_tag },
 
     parent: *Scope,
-    ident: u32,
+    ident: InternPool.StringIndex,
     inst: Fir.Index,
 
-    pub fn init(s: *Scope, ident: u32, inst: Fir.Index) LocalVal {
+    pub fn init(s: *Scope, ident: InternPool.StringIndex, inst: Fir.Index) LocalVal {
         return .{
             .parent = s,
             .ident = ident,
@@ -155,10 +155,10 @@ pub const LocalPtr = struct {
     base: Scope = .{ .tag = base_tag },
 
     parent: *Scope,
-    ident: u32,
+    ident: InternPool.StringIndex,
     ptr: Fir.Index,
 
-    pub fn init(s: *Scope, ident: u32, ptr: Fir.Index) LocalPtr {
+    pub fn init(s: *Scope, ident: InternPool.StringIndex, ptr: Fir.Index) LocalPtr {
         return .{
             .parent = s,
             .ident = ident,
@@ -172,10 +172,10 @@ pub const LocalType = struct {
     base: Scope = .{ .tag = base_tag },
 
     parent: *Scope,
-    ident: u32,
+    ident: InternPool.StringIndex,
     inst: Fir.Index,
 
-    pub fn init(s: *Scope, ident: u32, inst: Fir.Index) @This() {
+    pub fn init(s: *Scope, ident: InternPool.StringIndex, inst: Fir.Index) @This() {
         return .{
             .parent = s,
             .ident = ident,
@@ -184,7 +184,7 @@ pub const LocalType = struct {
     }
 };
 
-pub fn resolveIdent(inner: *Scope, ident: u32) !?*Scope {
+pub fn resolveIdent(inner: *Scope, ident: InternPool.StringIndex) !?*Scope {
     var found: ?*Scope = null;
     var shadows_scope: bool = false;
     var s: *Scope = inner;

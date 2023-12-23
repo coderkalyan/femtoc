@@ -2,8 +2,7 @@ const std = @import("std");
 const Ast = @import("../Ast.zig");
 const Fir = @import("Fir.zig");
 const Scope = @import("Scope.zig");
-const interner = @import("../interner.zig");
-const Interner = interner.Interner;
+const InternPool = @import("../InternPool.zig");
 const parseFloat = @import("../floatLiteral.zig").parseFloat;
 const error_handler = @import("../error_handler.zig");
 
@@ -26,7 +25,7 @@ pub const GenError = error{
     InvalidLvalue,
 };
 
-const Error = GenError || interner.Error || Allocator.Error;
+const Error = GenError || Allocator.Error;
 
 // for allocating instrutions and data that lasts the lifetime of the compiler
 // or at least, as long as the driver cares about it
@@ -38,10 +37,10 @@ insts: std.MultiArrayList(Inst.Data),
 locs: std.ArrayListUnmanaged(Inst.Loc),
 extra: std.ArrayListUnmanaged(u32),
 scratch: std.ArrayListUnmanaged(u32),
-interner: Interner,
+pool: *InternPool,
 errors: std.ArrayListUnmanaged(error_handler.SourceError),
 
-pub fn lowerAst(gpa: Allocator, tree: *const Ast) !Fir {
+pub fn lowerAst(gpa: Allocator, pool: *InternPool, tree: *const Ast) !Fir {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
@@ -53,7 +52,7 @@ pub fn lowerAst(gpa: Allocator, tree: *const Ast) !Fir {
         .locs = .{},
         .extra = .{},
         .scratch = .{},
-        .interner = Interner.init(gpa),
+        .pool = pool,
         .errors = .{},
     };
 
@@ -67,7 +66,7 @@ pub fn lowerAst(gpa: Allocator, tree: *const Ast) !Fir {
         .locs = try fg.locs.toOwnedSlice(gpa),
         .extra = try fg.extra.toOwnedSlice(gpa),
         .module_index = module_index,
-        .interner = fg.interner,
+        .pool = pool,
     };
 }
 
@@ -270,7 +269,7 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
         }
     }
 
-    const id = try fg.interner.intern(ident_str);
+    const id = try fg.pool.getOrPutString(ident_str);
     const ident_scope = (try scope.resolveIdent(id)) orelse {
         // try fg.errors.append(fg.gpa, .{
         //     .tag = .invalid_identifier,
@@ -482,7 +481,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
         const data = b.tree.data(param).param;
         const param_token = b.tree.mainToken(param);
         const param_str = b.tree.tokenString(param_token);
-        const param_id = try fg.interner.intern(param_str);
+        const param_id = try fg.pool.getOrPutString(param_str);
 
         const ty_ref = try typeExpr(b, scope, data);
         const param_index = try b.addUnlinked(.{
@@ -848,14 +847,14 @@ fn block(b: *Block, scope: *Scope, node: Node.Index, comptime add_unlinked: bool
         switch (b.tree.data(stmt)) {
             .const_decl, .const_decl_attr => {
                 const ident = b.tree.tokenString(b.tree.mainToken(stmt) + 1);
-                const id = try fg.interner.intern(ident);
+                const id = try fg.pool.getOrPutString(ident);
                 const var_scope = try fg.arena.create(Scope.LocalVal);
                 var_scope.* = Scope.LocalVal.init(s, id, ref);
                 s = &var_scope.base;
             },
             .var_decl => {
                 const ident = b.tree.tokenString(b.tree.mainToken(stmt) + 2);
-                const id = try fg.interner.intern(ident);
+                const id = try fg.pool.getOrPutString(ident);
                 const var_scope = try fg.arena.create(Scope.LocalPtr);
                 var_scope.* = Scope.LocalPtr.init(s, id, ref);
                 s = &var_scope.base;
@@ -904,7 +903,7 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
 
     const ident_index = b.tree.mainToken(node);
     const ident_str = b.tree.tokenString(ident_index + 1);
-    const id = try fg.interner.intern(ident_str);
+    const id = try fg.pool.getOrPutString(ident_str);
     const ref = try valExpr(b, s, const_decl.val);
     _ = id;
     // _ = try b.addDebugValue(ref, id, node);
@@ -931,7 +930,7 @@ fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
 
     const ident_index = b.tree.mainToken(node);
     const ident_str = b.tree.tokenString(ident_index + 1);
-    const id = try fg.interner.intern(ident_str);
+    const id = try fg.pool.getOrPutString(ident_str);
     const ref = try valExpr(b, s, const_decl.val);
     _ = id;
     // _ = try b.addDebugValue(ref, id, node);
@@ -1375,7 +1374,7 @@ fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const ref = try statement(b, scope, signature.binding);
     var s: *Scope = var_scope: {
         const ident = b.tree.tokenString(b.tree.mainToken(signature.binding) + 2);
-        const id = try fg.interner.intern(ident);
+        const id = try fg.pool.getOrPutString(ident);
         var var_scope = Scope.LocalPtr.init(scope, id, ref);
         break :var_scope &var_scope.base;
     };
@@ -1432,12 +1431,12 @@ fn loopBreak(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn globalIdentId(fg: *FirGen, stmt: u32) !u32 {
+fn globalIdentId(fg: *FirGen, stmt: u32) !InternPool.StringIndex {
     const ident = switch (fg.tree.data(stmt)) {
         .const_decl, .const_decl_attr => fg.tree.tokenString(fg.tree.mainToken(stmt) + 1),
         .var_decl => fg.tree.tokenString(fg.tree.mainToken(stmt) + 2),
         else => unreachable,
     };
 
-    return fg.interner.intern(ident);
+    return fg.pool.getOrPutString(ident);
 }

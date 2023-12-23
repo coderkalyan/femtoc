@@ -561,7 +561,7 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 
             switch (fir.get(inst).data) {
                 .global => |global| {
-                    const ident = try fir.interner.get(global.name);
+                    const ident = fir.pool.getString(global.name).?;
                     try writer.print("[global] {s}: ", .{ident});
                     try self.renderInst(global.block);
                 },
@@ -633,12 +633,12 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 .load_global => |load_global| {
                     // const inst = ir.untyped_decls.get(pl).?;
                     // try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
-                    const ident = try fir.interner.get(load_global.name);
+                    const ident = fir.pool.getString(load_global.name).?;
                     try writer.print("load_global({s})", .{ident});
                     try self.stream.newline();
                 },
                 .param => |param| {
-                    const param_str = try fir.interner.get(param.name);
+                    const param_str = fir.pool.getString(param.name).?;
                     try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
                     try self.stream.newline();
                 },

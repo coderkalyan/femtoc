@@ -1,6 +1,6 @@
 const std = @import("std");
 const Ast = @import("../Ast.zig");
-const Interner = @import("../interner.zig").Interner;
+const InternPool = @import("../InternPool.zig");
 
 const Fir = @This();
 const NodeIndex = Ast.Node.Index;
@@ -13,7 +13,7 @@ insts: std.MultiArrayList(Inst.Data).Slice,
 locs: std.ArrayListUnmanaged(Inst.Loc).Slice,
 extra: []const u32,
 module_index: Index,
-interner: Interner,
+pool: *InternPool,
 
 // index into the instructions array (pointer to an instruction)
 pub const Index = enum(u32) { _ };
@@ -185,8 +185,7 @@ pub const Inst = struct {
         // that is, ref is not available during generation but
         // will be by the time the entire fir is generated
         load_global: struct {
-            // TODO: change this to a intern pool string index
-            name: u32,
+            name: InternPool.StringIndex,
         },
 
         // pushes a value onto the stack and returns the memory address
@@ -263,7 +262,7 @@ pub const Inst = struct {
         },
         // marks a parameter in a function body, which is referred to
         param: struct {
-            name: u32,
+            name: InternPool.StringIndex,
             ty: Index,
         },
 
@@ -289,7 +288,7 @@ pub const Inst = struct {
         global_set_linkage_external: Index,
         // names a global
         global: struct {
-            name: u32,
+            name: InternPool.StringIndex,
             block: Index,
         },
 
