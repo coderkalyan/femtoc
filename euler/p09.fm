@@ -1,0 +1,14 @@
+@import let print_answer: fn (ans: u64) void;
+
+@export let main = fn () u32 {
+    let mut sum_squares: u64 = 0;
+    let mut sum: u64 = 0;
+    for let mut i: u32 = 1; i <= 100; i += 1 {
+        sum += i;
+        sum_squares += i * i;
+    }
+
+    let ans = (sum * sum) - sum_squares;
+    print_answer(ans);
+    return 0;
+};

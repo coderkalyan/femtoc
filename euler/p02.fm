@@ -1,0 +1,17 @@
+@export let solve = fn () u32 {
+    let mut ans: u32 = 0;
+    
+    let mut a: u32 = 1;
+    let mut b: u32 = 1;
+    for let mut i: u32 = 2; b <= 4_000_000; i += 1 {
+        let tmp = a;
+        a = b;
+        b = tmp + b;
+        
+        if b % 2 == 0 {
+            ans += b;
+        }
+    }
+    
+    return ans;
+};

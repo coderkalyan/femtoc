@@ -1,0 +1,27 @@
+let is_divisible = fn (n: u64) bool {
+    // yes, we can use sqrt but we don't have an implementation yet
+    // and calling into libc is still in progress
+    for let mut i: u64 = 2; i < n / 2; i += 1 {
+        if n % i == 0 {
+            return false;
+        }
+    };
+
+    return true;
+};
+
+@export let solve = fn () u64 {
+    let mut n: u64 = 600851475143;
+    let mut factor: u64 = 2;
+
+    for n != 1 {
+        if n % factor == 0 {
+            n /= factor;
+        } else {
+            factor += 1;
+            for !is_prime(factor) { factor += 1; }
+        }
+    }
+
+    return factor;
+};

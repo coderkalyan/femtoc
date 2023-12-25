@@ -1,0 +1,14 @@
+@import let print_answer: fn (ans: u64) void;
+
+@export let main = fn () u32 {
+    for let mut a: u32 = 1; a <= 998; a += 1 {
+        for let mut b: u32 = 1; b <= 999 - a; b += 1 {
+            let c = 1000 - a - b;
+            if (a * a + b * b) == c * c {
+                print_answer(a * b * c);
+            }
+        }
+    }
+
+    return 0;
+};
