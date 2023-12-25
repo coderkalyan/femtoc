@@ -32,6 +32,10 @@ pub const Inst = struct {
         float: f64,
         // "none" void literal (immediate)
         none,
+        // string literal
+        string: InternPool.StringIndex,
+        // array literal (list of possibly untyped items)
+        array: ExtraIndex,
 
         // type expressions
         // builtin type, figure out what it is using the node location
@@ -179,6 +183,20 @@ pub const Inst = struct {
             function: Index,
             // list of arguments
             args: ExtraIndex,
+        },
+        // indexes into an array, slice, or many pointer, yielding
+        // a pointer to the element (not the value), independent of
+        // whether the array is passed by value or reference
+        index_ref: struct {
+            base: Index,
+            index: Index,
+        },
+        // indexes into an array, slice, or many pointer, yielding
+        // the value of the element, independent of
+        // whether the array is passed by value or reference
+        index_val: struct {
+            base: Index,
+            index: Index,
         },
 
         // loads a module decl that is forward declared

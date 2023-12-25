@@ -1,54 +1,105 @@
-// const std = @import("std");
-// const InternPool = @import("../InternPool.zig");
-// const math = std.math;
-// const Allocator = std.mem.Allocator;
+const std = @import("std");
+const InternPool = @import("../InternPool.zig");
+const math = std.math;
+const Allocator = std.mem.Allocator;
+
+pub const Type = union(enum) {
+    void,
+    comptime_int: struct { sign: Sign },
+    int: struct { sign: Sign, width: u8 },
+    comptime_float,
+    float: struct { width: u8 },
+    pointer: struct { pointee: InternPool.Index },
+    many_pointer: struct { pointee: InternPool.Index },
+    slice: struct { element: InternPool.Index },
+    array: struct { element: InternPool.Index, count: u32 },
+    function: struct {
+        params: InternPool.ExtraSlice,
+        @"return": InternPool.Index,
+    },
+
+    pub const Sign = enum {
+        signed,
+        unsigned,
+    };
+
+    pub fn fromInterned(pool: *InternPool, index: InternPool.Index) Type {
+        const item = pool.items.get(@intFromEnum(index));
+        const data = item.data;
+        return switch (item.tag) {
+            .void_type => .{ .void = {} },
+            .comptime_uint_type => .{ .comptime_int = .{ .sign = .unsigned } },
+            .comptime_sint_type => .{ .comptime_int = .{ .sign = .signed } },
+            .uint_type => .{ .int = .{ .sign = .unsigned, .width = @intCast(data) } },
+            .sint_type => .{ .int = .{ .sign = .signed, .width = @intCast(data) } },
+            .comptime_float_type => .{ .comptime_float = {} },
+            .float_type => .{ .float = .{ .width = @intCast(data) } },
+            .pointer_type => .{ .pointer = .{ .pointee = @enumFromInt(data) } },
+            .many_pointer_type => .{ .many_pointer = .{ .pointee = @enumFromInt(data) } },
+            .slice_type => .{ .slice = .{ .element = @enumFromInt(data) } },
+            .array_type => {
+                const array = pool.extraData(InternPool.Array, data);
+                return .{ .array = .{ .element = array.element, .count = array.count } };
+            },
+            .function_type => {
+                const function = pool.extraData(InternPool.FunctionType, data);
+                return .{ .function = .{
+                    .params = .{ .start = function.params_start, .end = function.params_end },
+                    .@"return" = function.@"return",
+                } };
+            },
+            else => unreachable,
+        };
+    }
+};
+
+// pub fn kind(ty: Type, pool: *InternPool) Kind {
+//     const i = @intFromEnum(ty.ip_index);
+//     switch (pool.items.items(.tags)[i]) {
+//         .comptime_uint_type =>
+//     }
+// }
+// pub const Pointer = struct {
+//     pub fn init(pool: *InternPool, pointee: Type) !Type {
+//         // try pool.
+//         const pointer = try allocator.create(Pointer);
+//         pointer.* = .{ .pointee = pointee };
+//         std.debug.print("creating pointer: {x}\n", .{@intFromPtr(&pointer.base)});
+//         return .{ .extended = &pointer.base };
+//     }
+// };
 //
-// pub const Error = error{UnspecificType};
+// pub const ManyPointer = struct {
+//     const base_kind: Kind = .many_pointer;
+//     base: Extended = .{ .kind = base_kind },
+//     pointee: Type,
 //
-// pub const Type = struct {
-//     ip_index: InternPool.Index,
+//     pub fn init(allocator: Allocator, pointee: Type) !Type {
+//         const pointer = try allocator.create(ManyPointer);
+//         pointer.* = .{ .pointee = pointee };
+//         return .{ .extended = &pointer.base };
+//     }
+// };
 //
-//     pub const Pointer = struct {
-//         pub fn init(pool: *InternPool, pointee: Type) !Type {
-//             // try pool.
-//             const pointer = try allocator.create(Pointer);
-//             pointer.* = .{ .pointee = pointee };
-//             std.debug.print("creating pointer: {x}\n", .{@intFromPtr(&pointer.base)});
-//             return .{ .extended = &pointer.base };
-//         }
-//     };
+// pub const Array = struct {
+//     const base_kind: Kind = .array;
+//     base: Extended = .{ .kind = base_kind },
+//     element: Type,
+//     count: u32,
 //
-//     pub const ManyPointer = struct {
-//         const base_kind: Kind = .many_pointer;
-//         base: Extended = .{ .kind = base_kind },
-//         pointee: Type,
+//     pub fn init(allocator: Allocator, element: Type, count: u32) !Type {
+//         const array = try allocator.create(Array);
+//         array.* = .{ .element = element, .count = count };
+//         return .{ .extended = &array.base };
+//     }
+// };
 //
-//         pub fn init(allocator: Allocator, pointee: Type) !Type {
-//             const pointer = try allocator.create(ManyPointer);
-//             pointer.* = .{ .pointee = pointee };
-//             return .{ .extended = &pointer.base };
-//         }
-//     };
+// pub const Slice = struct {
+//     const base_kind: Kind = .slice;
+//     base: Extended = .{ .kind = base_kind },
+//     element: Type,
 //
-//     pub const Array = struct {
-//         const base_kind: Kind = .array;
-//         base: Extended = .{ .kind = base_kind },
-//         element: Type,
-//         count: u32,
-//
-//         pub fn init(allocator: Allocator, element: Type, count: u32) !Type {
-//             const array = try allocator.create(Array);
-//             array.* = .{ .element = element, .count = count };
-//             return .{ .extended = &array.base };
-//         }
-//     };
-//
-//     pub const Slice = struct {
-//         const base_kind: Kind = .slice;
-//         base: Extended = .{ .kind = base_kind },
-//         element: Type,
-//
-//         pub fn init(allocator: Allocator, element: Type) !Type {
+//     pub fn init(allocator: Allocator, element: Type) !Type {
 //             const slice = try allocator.create(Slice);
 //             slice.* = .{ .element = element };
 //             return .{ .extended = &slice.base };

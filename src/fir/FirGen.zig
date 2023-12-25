@@ -247,6 +247,46 @@ fn charLiteral(b: *Block, node: Node.Index) !Fir.Index {
     });
 }
 
+// fn stringLiteral(b: *Block, node: Node.Index) !Fir.Index {
+//     const hg = b.hg;
+//     const string_token = hg.tree.mainToken(node);
+//     const string_text = hg.tree.tokenString(string_token);
+//     const string_literal = string_text[1 .. string_text.len - 1];
+//     const id = try hg.interner.intern(string_literal);
+//
+//     const len: u32 = @intCast(string_literal.len);
+//     const buffer_type: Type = .{ .basic = .{ .kind = Type.Kind.string, .width = 0 } };
+//     const buffer_value = try hg.pool.internValue(.{ .string = id });
+//
+//     // underlying string buffer, gets emitted to .rodata as a global
+//     _ = try b.add(.constant, .{
+//         .ty = try b.add(.ty, .{ .ty = buffer_type }),
+//         .val = buffer_value,
+//         .node = node,
+//     });
+//
+//     const len_value = try hg.pool.internValue(.{ .integer = len });
+//     const slice = try Value.createSlice(hg.pool.arena, buffer_value, len_value);
+//     const slice_value = try hg.pool.internValue(slice);
+//     const string_type = try Type.Slice.init(hg.gpa, Type.Common.u8_type);
+//
+//     return b.add(.constant, .{
+//         .ty = try b.add(.ty, .{ .ty = string_type }),
+//         .val = slice_value,
+//         .node = node,
+//     });
+//
+//     // const inner_slice = try hg.gpa.create(Value.Slice);
+//     // inner_slice.* = .{ .ptr = string, .len = string_literal.len };
+//     // const slice = Value{ .extended = &inner_slice.base };
+//     // // comptime slice to that string
+//     // return try b.add(.constant, .{
+//     //     .ty = try b.add(.ty, .{ .ty = string_type }),
+//     //     .val = try b.addValue(slice),
+//     //     .node = node,
+//     // });
+// }
+
 fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     const ident_token = b.tree.mainToken(node);
@@ -520,21 +560,25 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-// fn arrayInit(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
-//     const fg = b.fg;
-//     const array_init = b.tree.data(node).array_init;
-//
-//     const scratch_top = fg.scratch.items.len;
-//     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-//     const elements = b.tree.extra_data[array_init.elements_start..array_init.elements_end];
-//     try fg.scratch.ensureUnusedCapacity(fg.arena, elements.len);
-//     for (elements) |element| {
-//         const element_index = try valExpr(b, scope, element);
-//         fg.scratch.appendAssumeCapacity(@intFromEnum(element_index));
-//     }
-//
-//     return b.addArray(fg.scratch.items[scratch_top..], node);
-// }
+fn arrayInit(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+    const fg = b.fg;
+    const array_init = b.tree.data(node).array_init;
+
+    const scratch_top = fg.scratch.items.len;
+    defer fg.scratch.shrinkRetainingCapacity(scratch_top);
+    const elements = b.tree.extra_data[array_init.elements_start..array_init.elements_end];
+    try fg.scratch.ensureUnusedCapacity(fg.arena, elements.len);
+    for (elements) |element| {
+        const element_index = try valExpr(b, scope, element);
+        fg.scratch.appendAssumeCapacity(@intFromEnum(element_index));
+    }
+
+    const pl = try fg.addSlice(fg.scratch.items[scratch_top..]);
+    return b.add(.{
+        .data = .{ .array = pl },
+        .loc = .{ .node = node },
+    });
+}
 
 fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
     return switch (ri.semantics) {
@@ -549,8 +593,8 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .binary => try binary(b, scope, node),
             .unary => try unary(b, scope, ri, node),
             .fn_decl => try fnDecl(b, scope, node),
-            // .array_init => try arrayInit(b, scope, node),
-            // .index => try indexAccess(b, scope, ri, node),
+            .array_init => try arrayInit(b, scope, node),
+            .index => try indexAccess(b, scope, ri, node),
             // .field => try fieldAccess(b, scope, ri, node),
             // .get_slice => try getSlice(b, scope, node),
             .paren => try expr(b, scope, ri, b.tree.data(node).paren),
@@ -575,7 +619,7 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .call => try call(b, scope, node),
             .binary => try binary(b, scope, node),
             .unary => try unary(b, scope, ri, node),
-            // .index => try indexAccess(b, scope, ri, node),
+            .index => try indexAccess(b, scope, ri, node),
             // .field => try fieldAccess(b, scope, ri, node),
             .paren => try expr(b, scope, ri, b.tree.data(node).paren),
             else => {
@@ -696,30 +740,34 @@ fn arrayType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-// fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
-//     // const fg = b.fg;
-//     const index_access = b.tree.data(node).index;
-//
-//     const operand = try anyExpr(b, scope, index_access.operand);
-//     const index = access: {
-//         const inner = try valExpr(b, scope, index_access.index);
-//         // TODO: actual variable length usize
-//         // TODO: add back the coerce
-//         // const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
-//         // break :access try b.add(.coerce, .{
-//         //     .ty = usize_type,
-//         //     .val = inner,
-//         //     .node = index_access.index,
-//         // });
-//         break :access inner;
-//     };
-//     switch (ri.semantics) {
-//         .val => return b.add(.{})
-//         .val => return b.add(.index_val, .{ .array = operand, .index = index, .node = node }),
-//         .ref => return b.add(.index_ref, .{ .array = operand, .index = index, .node = node }),
-//         .any, .ty => unreachable,
-//     }
-// }
+fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
+    const index_access = b.tree.data(node).index;
+
+    const operand = try anyExpr(b, scope, index_access.operand);
+    const index = access: {
+        const inner = try valExpr(b, scope, index_access.index);
+        // TODO: actual variable length usize
+        // TODO: add back the coerce
+        // const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
+        // break :access try b.add(.coerce, .{
+        //     .ty = usize_type,
+        //     .val = inner,
+        //     .node = index_access.index,
+        // });
+        break :access inner;
+    };
+    switch (ri.semantics) {
+        .val => return b.add(.{
+            .data = .{ .index_val = .{ .base = operand, .index = index } },
+            .loc = .{ .node = node },
+        }),
+        .ref => return b.add(.{
+            .data = .{ .index_ref = .{ .base = operand, .index = index } },
+            .loc = .{ .node = node },
+        }),
+        .any, .ty => unreachable,
+    }
+}
 
 // fn getSlice(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
 //     const fg = b.fg;

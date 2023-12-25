@@ -2,6 +2,7 @@ const std = @import("std");
 const parse = @import("parse.zig");
 // const HirGen = @import("HirGen.zig");
 const FirGen = @import("fir/FirGen.zig");
+const Sema = @import("air/Sema.zig");
 // const LlvmBackend = @import("_llvm/Backend.zig");
 const error_handler = @import("error_handler.zig");
 const render = @import("render.zig");
@@ -198,6 +199,7 @@ pub fn main() !void {
         try buffered_out.flush();
     }
 
+    try Sema.analyzeModule(gpa, &pool, &fir);
     // if (stage_bits & CODEGEN == 0) std.os.exit(0);
     // var backend = LlvmBackend.init(gpa, arena.allocator());
     // defer backend.deinit();
