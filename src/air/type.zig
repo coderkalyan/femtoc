@@ -51,6 +51,29 @@ pub const Type = union(enum) {
             else => unreachable,
         };
     }
+
+    pub fn maxInt(ty: Type) u64 {
+        std.debug.assert(@as(std.meta.Tag(Type), ty) == .int);
+        const width = ty.int.width;
+        std.debug.assert(width <= 64);
+        if (ty.int.sign == .unsigned) {
+            if (width == 64) return std.math.maxInt(u64);
+            return @shlExact(@as(u64, @intCast(1)), @intCast(width)) - 1;
+        } else {
+            return @shlExact(@as(u64, @intCast(1)), @intCast(width - 1)) - 1;
+        }
+    }
+
+    pub fn minInt(ty: Type) i64 {
+        std.debug.assert(@as(std.meta.Tag(Type), ty) == .int);
+        std.debug.assert(ty.int.width <= 64);
+        const width: u6 = @intCast(ty.int.width - 1);
+        if (ty.int.sign == .unsigned) {
+            return 0;
+        } else {
+            return (@as(i64, @intCast(-1)) << width);
+        }
+    }
 };
 
 // pub fn kind(ty: Type, pool: *InternPool) Kind {

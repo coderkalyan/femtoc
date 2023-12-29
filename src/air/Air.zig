@@ -19,135 +19,57 @@ pub const Inst = union(enum) {
     // binary expressions take in two operands, all of these behave the same
     // they work on any type, type checking is done during semantic analysis
     // addition +
-    add: struct {
-        l: Index,
-        r: Index,
-    },
+    add: BinaryOp,
     // subtraction -
-    sub: struct {
-        l: Index,
-        r: Index,
-    },
+    sub: BinaryOp,
     // multiplication *
-    mul: struct {
-        l: Index,
-        r: Index,
-    },
+    mul: BinaryOp,
     // division /
-    div: struct {
-        l: Index,
-        r: Index,
-    },
+    div: BinaryOp,
     // modulo %
-    mod: struct {
-        l: Index,
-        r: Index,
-    },
+    mod: BinaryOp,
     // bitwise or |
-    bitwise_or: struct {
-        l: Index,
-        r: Index,
-    },
+    bitwise_or: BinaryOp,
     // bitwise and &
-    bitwise_and: struct {
-        l: Index,
-        r: Index,
-    },
+    bitwise_and: BinaryOp,
     // bitwise xor ^
-    bitwise_xor: struct {
-        l: Index,
-        r: Index,
-    },
+    bitwise_xor: BinaryOp,
     // integer compare equal ==
-    icmp_eq: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_eq: BinaryOp,
     // integer compare not equal !=
-    icmp_ne: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_ne: BinaryOp,
     // integer compare unsigned greater than >
-    icmp_ugt: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_ugt: BinaryOp,
     // integer compare greater unsigned than equal >=
-    icmp_uge: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_uge: BinaryOp,
     // integer compare unsigned less than <
-    icmp_ult: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_ult: BinaryOp,
     // integer compare unsigned less than equal <=
-    icmp_ule: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_ule: BinaryOp,
     // integer compare signed greater than >
-    icmp_sgt: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_sgt: BinaryOp,
     // integer compare signed greater than equal >=
-    icmp_sge: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_sge: BinaryOp,
     // integer compare signed less than <
-    icmp_slt: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_slt: BinaryOp,
     // integer compare signed less than equal <=
-    icmp_sle: struct {
-        l: Index,
-        r: Index,
-    },
+    icmp_sle: BinaryOp,
     // float compare greater than >
-    fcmp_gt: struct {
-        l: Index,
-        r: Index,
-    },
+    fcmp_gt: BinaryOp,
     // float compare greater than equal >=
-    fcmp_ge: struct {
-        l: Index,
-        r: Index,
-    },
+    fcmp_ge: BinaryOp,
     // float compare less than <
-    fcmp_lt: struct {
-        l: Index,
-        r: Index,
-    },
+    fcmp_lt: BinaryOp,
     // float compare less than equal <=
-    fcmp_le: struct {
-        l: Index,
-        r: Index,
-    },
+    fcmp_le: BinaryOp,
     // logical shift left <<
-    lsl: struct {
-        l: Index,
-        r: Index,
-    },
+    lsl: BinaryOp,
     // logical shift right >>
-    lsr: struct {
-        l: Index,
-        r: Index,
-    },
+    lsr: BinaryOp,
     // arithmetic shift left <<
-    asl: struct {
-        l: Index,
-        r: Index,
-    },
+    asl: BinaryOp,
     // arithmetic shift right >>
-    asr: struct {
-        l: Index,
-        r: Index,
-    },
+    asr: BinaryOp,
     // unary expressions
     // negate -
     neg: Index,
@@ -251,9 +173,10 @@ pub const Inst = union(enum) {
     // marks a parameter in a function body, which is referred to
     param: struct {
         name: InternPool.StringIndex,
-        ty: Index,
+        ty: InternPool.Index,
     },
 
+    // TODO: it would be better to store a decl index
     load_decl: InternPool.Index,
 
     // represents a "slice" to an "array" stored as a span of elements in extra data
@@ -262,32 +185,33 @@ pub const Inst = union(enum) {
         end: ExtraIndex,
     };
 
+    // not actually stored as extra data, but used to avoid duplicating switching logic
+    pub const BinaryOp = struct {
+        l: Index,
+        r: Index,
+    };
+
     pub const BranchDouble = struct {
         exec_true: Index,
         exec_false: Index,
     };
 };
 
-pub const Ref = enum(u32) {
-    _,
+pub const Decl = struct {
+    name: ?InternPool.StringIndex,
+    ty: InternPool.Index,
+    initializer: ?InternPool.Index,
+    mutable: bool,
+    linkage: Linkage,
 
-    pub fn toIndex(ref: Ref) ?Index {
-        const raw: u32 = @intFromEnum(ref);
-        if (raw >> 31 != 0) {
-            return @enumFromInt(@as(u31, @truncate(raw)));
-        } else {
-            return null;
-        }
-    }
+    pub const Linkage = enum {
+        internal,
+        external,
+    };
+};
 
-    pub fn toInterned(ref: Ref) ?InternPool.Index {
-        const raw: u32 = @intFromEnum(ref);
-        if (raw >> 31 == 0) {
-            return @enumFromInt(@as(u31, @truncate(raw)));
-        } else {
-            return null;
-        }
-    }
+pub const FunctionBody = struct {
+    air: InternPool.Index,
 };
 
 pub fn extraData(air: *const Air, comptime T: type, index: Air.ExtraIndex) T {
@@ -308,10 +232,86 @@ pub fn extraSlice(air: *const Air, slice: Inst.ExtraSlice) []const u32 {
     return air.extra[start..end];
 }
 
-// pub fn typeOf(air: *const Air, pool: *const InternPool, index: Index) error{OutOfMemory}!InternPool.Index {
-//     const i = @intFromEnum(index);
-//     const data = air.insts.items(.data)[i];
-//     switch (air.insts.items(.tags)[i]) {
-//         .constant => return data.ty,
-//     }
-// }
+pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
+    const pool = air.pool;
+    const i = @intFromEnum(index);
+    switch (air.insts.get(i)) {
+        .constant => |constant| {
+            const tv = pool.indexToKey(constant).tv;
+            return tv.ty;
+        },
+        .add,
+        .sub,
+        .mul,
+        .div,
+        .mod,
+        .bitwise_or,
+        .bitwise_and,
+        .bitwise_xor,
+        .icmp_eq,
+        .icmp_ne,
+        .icmp_ugt,
+        .icmp_uge,
+        .icmp_ult,
+        .icmp_ule,
+        .icmp_sgt,
+        .icmp_sge,
+        .icmp_slt,
+        .icmp_sle,
+        .fcmp_gt,
+        .fcmp_ge,
+        .fcmp_lt,
+        .fcmp_le,
+        .lsl,
+        .lsr,
+        .asl,
+        .asr,
+        => |bin| return air.typeOf(bin.l),
+        .neg,
+        .bitwise_inv,
+        => |un| return air.typeOf(un),
+        .call => |call| {
+            const ty = air.typeOf(call.function);
+            const function_type = pool.indexToKey(ty).ty;
+            return function_type.function.@"return";
+        },
+        inline .zext, .sext, .fpext => |cast| return cast.ty,
+        .index_ref => unreachable, // TODO
+        .index_val => |index_val| {
+            const ty = air.typeOf(index_val.base);
+            const base_type = pool.indexToKey(ty).ty;
+            switch (base_type) {
+                .array => |array| return array.element,
+                .many_pointer => |many_pointer| return many_pointer.pointee,
+                .slice => |slice| return slice.element,
+                else => unreachable,
+            }
+        },
+        .alloc => |alloc| return alloc.pointer_type,
+        .load => |load| {
+            const ty = air.typeOf(load.ptr);
+            const pointer_type = pool.indexToKey(ty).ty;
+            switch (pointer_type) {
+                .pointer => |pointer| return pointer.pointee,
+                .many_pointer => |many_pointer| return many_pointer.pointee,
+                else => unreachable,
+            }
+        },
+        .store => unreachable, // should not be referenced
+        .branch_single => unreachable, // should not be referenced
+        .branch_double => unreachable, // TODO
+        .loop,
+        .@"return",
+        .yield,
+        .@"break",
+        .@"continue",
+        => unreachable, // should not be referenced
+        .block => unreachable, // TODO
+        .param => |param| return param.ty,
+        .load_decl => |load_decl| {
+            const decl_index = pool.indexToKey(load_decl).decl;
+            const decl = pool.decls.at(@intFromEnum(decl_index));
+            return decl.ty;
+        },
+    }
+}

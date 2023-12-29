@@ -200,6 +200,15 @@ pub fn main() !void {
     }
 
     try Sema.analyzeModule(gpa, &pool, &fir);
+
+    var air_arena = std.heap.ArenaAllocator.init(gpa);
+    defer air_arena.deinit();
+
+    const air_renderer = render.AirRenderer(2, @TypeOf(writer));
+    var renderer = air_renderer.init(writer, air_arena.allocator(), &pool);
+    try renderer.renderAllDecls();
+    try buffered_out.flush();
+
     // if (stage_bits & CODEGEN == 0) std.os.exit(0);
     // var backend = LlvmBackend.init(gpa, arena.allocator());
     // defer backend.deinit();

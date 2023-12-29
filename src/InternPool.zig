@@ -1,6 +1,8 @@
 const std = @import("std");
-const Decl = @import("air/Decl.zig");
+const Air = @import("air/Air.zig");
 const Type = @import("air/type.zig").Type;
+const TypedValue = @import("air/TypedValue.zig");
+const Decl = Air.Decl;
 const Allocator = std.mem.Allocator;
 
 const InternPool = @This();
@@ -27,6 +29,9 @@ string_table: std.HashMapUnmanaged(u32, void, StringIndexContext, max_load_perce
 // use of segmented list allows us to access either by pointer (segmented lists have
 // pointer stability across resizes) or by index (storing a smaller 32 bit value in items)
 decls: std.SegmentedList(Decl, 0),
+// function bodies in the final object
+// similar to decls, but stores a list of Air instruction bodies (associated with decls)
+bodies: std.SegmentedList(Air, 0),
 
 const Item = struct {
     tag: Tag,
@@ -34,6 +39,7 @@ const Item = struct {
 };
 
 const Tag = enum(u8) {
+    // types
     void_type,
     comptime_uint_type,
     comptime_sint_type,
@@ -47,14 +53,17 @@ const Tag = enum(u8) {
     array_type,
     function_type,
 
-    int,
-    float,
+    // typed values
+    integer_tv,
+    float_tv,
+    body_tv,
 
     decl,
 };
 
 const ValueIndex = enum(u32) { _ };
 const DeclIndex = enum(u32) { _ };
+pub const AirIndex = enum(u32) { _ };
 
 pub const Array = struct {
     element: Index,
@@ -67,106 +76,25 @@ pub const FunctionType = struct {
     @"return": Index,
 };
 
-const Int = struct {
+pub const IntegerTypedValue = struct {
     ty: Index,
     value: ValueIndex,
 };
 
-const Float = struct {
+pub const FloatTypedValue = struct {
     ty: Index,
     value: ValueIndex,
+};
+
+pub const BodyTypedValue = struct {
+    ty: Index,
+    body: AirIndex,
 };
 
 pub const Key = union(enum) {
     ty: Type,
-    // void_type: VoidType,
-    // int_type: IntType,
-    // float_type: FloatType,
-    // pointer_type: PointerType,
-    // many_pointer_type: ManyPointerType,
-    // slice_type: SliceType,
-    // array_type: ArrayType,
-    // function_type: Key.FunctionType,
-    int: Key.Int,
-    float: Key.Float,
+    tv: TypedValue,
     decl: DeclIndex,
-
-    pub const VoidType = struct {
-        magic: u32 = 0xcafeb0ba,
-    };
-
-    pub const IntType = struct {
-        is_comptime: bool,
-        sign: Sign,
-        width: u8,
-
-        pub const Sign = enum {
-            signed,
-            unsigned,
-        };
-    };
-
-    pub const FloatType = struct {
-        is_comptime: bool,
-        width: u8,
-    };
-
-    pub const PointerType = struct {
-        pointee: Index,
-    };
-
-    pub const ManyPointerType = struct {
-        pointee: Index,
-    };
-
-    pub const SliceType = struct {
-        element: Index,
-    };
-
-    pub const ArrayType = struct {
-        element: Index,
-        count: u32,
-    };
-
-    pub const FunctionType = struct {
-        params: Slice,
-        @"return": Index,
-
-        const Slice = struct {
-            start: u32,
-            end: u32,
-        };
-    };
-
-    pub const Int = struct {
-        value: u64,
-        ty: Index,
-    };
-
-    pub const Float = struct {
-        value: f64,
-        ty: Index,
-    };
-
-    pub fn initVoidType() Key {
-        return .{ .void_type = .{} };
-    }
-
-    pub fn initIntType(sign: IntType.Sign, width: u8) Key {
-        return .{ .int_type = .{
-            .is_comptime = false,
-            .sign = sign,
-            .width = width,
-        } };
-    }
-
-    pub fn initComptimeIntType(sign: IntType.Sign) Key {
-        return .{ .int_type = .{
-            .is_comptime = true,
-            .sign = sign,
-            .width = 64,
-        } };
-    }
 
     const Adapter = struct {
         pool: *InternPool,
@@ -192,24 +120,20 @@ pub const Key = union(enum) {
         const asBytes = std.mem.asBytes;
         const seed = @intFromEnum(key);
         return switch (key) {
-            // inline .void_type,
-            // .int_type,
-            // .float_type,
-            // .pointer_type,
-            // .many_pointer_type,
-            // .slice_type,
-            // .array_type,
-            // .function_type,
             inline .ty,
-            .int,
+            .tv,
             .decl,
             => |data| Hash.hash(seed, asBytes(&data)),
-            .float => |float| {
-                var hasher = Hash.init(seed);
-                std.hash.autoHash(&hasher, float.ty);
-                std.hash.autoHash(&hasher, @as(u64, @bitCast(float.value)));
-                return hasher.final();
-            },
+            // .tv => |data| switch (key.tv.val) {
+            //     .none => unreachable,
+            //     .integer => Hash.hash(seed, asBytes(&data)),
+            //     .float => {
+            //         var hasher = Hash.init(seed);
+            //         std.hash.autoHash(&hasher, data.ty);
+            //         std.hash.autoHash(&hasher, @as(u64, @bitCast(data.value)));
+            //         return hasher.final();
+            //     },
+            // },
         };
     }
 
@@ -220,7 +144,6 @@ pub const Key = union(enum) {
         const b_tag = @as(KeyTag, b);
         if (a_tag != b_tag) return false;
         switch (a_tag) {
-            // .void_type => return true,
             inline else => |tag| {
                 const a_data = @field(a, @tagName(tag));
                 const b_data = @field(b, @tagName(tag));
@@ -247,20 +170,10 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .array_type,
         .function_type,
         => .{ .ty = Type.fromInterned(pool, index) },
-        .int => {
-            const int = pool.extraData(Int, data);
-            return .{ .int = .{
-                .ty = int.ty,
-                .value = pool.values.items[@intFromEnum(int.value)],
-            } };
-        },
-        .float => {
-            const float = pool.extraData(Float, data);
-            return .{ .float = .{
-                .ty = float.ty,
-                .value = @bitCast(pool.values.items[@intFromEnum(float.value)]),
-            } };
-        },
+        .integer_tv,
+        .float_tv,
+        .body_tv,
+        => .{ .tv = TypedValue.fromInterned(pool, index) },
         .decl => .{ .decl = @enumFromInt(data) },
     };
 }
@@ -305,99 +218,7 @@ pub fn getOrPut(pool: *InternPool, key: Key) Allocator.Error!Index {
     try pool.items.ensureUnusedCapacity(pool.gpa, 1);
     switch (key) {
         .ty => try pool.putType(key),
-        // .void_type => |void_type| pool.items.appendAssumeCapacity(.{
-        //     .tag = .void_type,
-        //     .data = void_type.magic,
-        // }),
-        // .int_type => |int_type| switch (int_type.is_comptime) {
-        //     true => switch (int_type.sign) {
-        //         .unsigned => pool.items.appendAssumeCapacity(.{
-        //             .tag = .comptime_uint_type,
-        //             .data = @intCast(int_type.width),
-        //         }),
-        //         .signed => pool.items.appendAssumeCapacity(.{
-        //             .tag = .comptime_sint_type,
-        //             .data = @intCast(int_type.width),
-        //         }),
-        //     },
-        //     false => switch (int_type.sign) {
-        //         .unsigned => pool.items.appendAssumeCapacity(.{
-        //             .tag = .uint_type,
-        //             .data = @intCast(int_type.width),
-        //         }),
-        //         .signed => pool.items.appendAssumeCapacity(.{
-        //             .tag = .sint_type,
-        //             .data = @intCast(int_type.width),
-        //         }),
-        //     },
-        // },
-        // .float_type => |float_type| switch (float_type.is_comptime) {
-        //     true => pool.items.appendAssumeCapacity(.{
-        //         .tag = .comptime_float_type,
-        //         .data = @intCast(float_type.width),
-        //     }),
-        //     false => pool.items.appendAssumeCapacity(.{
-        //         .tag = .float_type,
-        //         .data = @intCast(float_type.width),
-        //     }),
-        // },
-        // .pointer_type => |pointer_type| pool.items.appendAssumeCapacity(.{
-        //     .tag = .pointer_type,
-        //     .data = @intFromEnum(pointer_type.pointee),
-        // }),
-        // .many_pointer_type => |many_pointer_type| pool.items.appendAssumeCapacity(.{
-        //     .tag = .many_pointer_type,
-        //     .data = @intFromEnum(many_pointer_type.pointee),
-        // }),
-        // .slice_type => |slice_type| pool.items.appendAssumeCapacity(.{
-        //     .tag = .slice_type,
-        //     .data = @intFromEnum(slice_type.element),
-        // }),
-        // .array_type => |array_type| {
-        //     const pl = try pool.addExtra(Array{
-        //         .element = array_type.element,
-        //         .count = array_type.count,
-        //     });
-        //     pool.items.appendAssumeCapacity(.{
-        //         .tag = .array_type,
-        //         .data = pl,
-        //     });
-        // },
-        // .function_type => |function_type| {
-        //     const pl = try pool.addExtra(FunctionType{
-        //         .params_start = function_type.params.start,
-        //         .params_end = function_type.params.end,
-        //         .@"return" = function_type.@"return",
-        //     });
-        //     pool.items.appendAssumeCapacity(.{
-        //         .tag = .function_type,
-        //         .data = pl,
-        //     });
-        // },
-        .int => |int| {
-            try pool.values.append(pool.gpa, int.value);
-            const value_index: u32 = @intCast(pool.values.items.len - 1);
-            const pl = try pool.addExtra(Int{
-                .ty = int.ty,
-                .value = @enumFromInt(value_index),
-            });
-            pool.items.appendAssumeCapacity(.{
-                .tag = .int,
-                .data = pl,
-            });
-        },
-        .float => |float| {
-            try pool.values.append(pool.gpa, @bitCast(float.value));
-            const value_index: u32 = @intCast(pool.values.items.len - 1);
-            const pl = try pool.addExtra(Float{
-                .ty = float.ty,
-                .value = @enumFromInt(value_index),
-            });
-            pool.items.appendAssumeCapacity(.{
-                .tag = .int,
-                .data = pl,
-            });
-        },
+        .tv => try pool.putTypedValue(key),
         .decl => |decl| pool.items.appendAssumeCapacity(.{
             .tag = .decl,
             .data = @intFromEnum(decl),
@@ -445,6 +266,39 @@ fn putType(pool: *InternPool, key: Key) !void {
     }
 }
 
+fn putTypedValue(pool: *InternPool, key: Key) !void {
+    const tv = key.tv;
+    try pool.items.ensureUnusedCapacity(pool.gpa, 1);
+    switch (tv.val) {
+        .none => unreachable,
+        .integer => |int| {
+            try pool.values.append(pool.gpa, int);
+            const value_index: u32 = @intCast(pool.values.items.len - 1);
+            const pl = try pool.addExtra(IntegerTypedValue{
+                .ty = tv.ty,
+                .value = @enumFromInt(value_index),
+            });
+            pool.items.appendAssumeCapacity(.{ .tag = .integer_tv, .data = pl });
+        },
+        .float => |float| {
+            try pool.values.append(pool.gpa, @bitCast(float));
+            const value_index: u32 = @intCast(pool.values.items.len - 1);
+            const pl = try pool.addExtra(FloatTypedValue{
+                .ty = tv.ty,
+                .value = @enumFromInt(value_index),
+            });
+            pool.items.appendAssumeCapacity(.{ .tag = .float_tv, .data = pl });
+        },
+        .body => |body| {
+            const pl = try pool.addExtra(BodyTypedValue{
+                .ty = tv.ty,
+                .body = body,
+            });
+            pool.items.appendAssumeCapacity(.{ .tag = .body_tv, .data = pl });
+        },
+    }
+}
+
 pub fn putDecl(pool: *InternPool, decl: Decl) !Index {
     try pool.decls.append(pool.gpa, decl);
     const index: u32 = @intCast(pool.decls.len - 1);
@@ -454,6 +308,22 @@ pub fn putDecl(pool: *InternPool, decl: Decl) !Index {
 pub fn addOneDecl(pool: *InternPool) !DeclIndex {
     _ = try pool.decls.addOne(pool.gpa);
     const index: u32 = @intCast(pool.decls.len - 1);
+    return @enumFromInt(index);
+}
+
+pub fn putBody(pool: *InternPool, ty: InternPool.Index, body: Air) !Index {
+    try pool.bodies.append(pool.gpa, body);
+    const index: u32 = @intCast(pool.bodies.len - 1);
+    return pool.getOrPut(.{ .tv = .{
+        .ty = ty,
+        .val = .{ .body = @enumFromInt(index) },
+    } });
+}
+
+pub fn addOneBody(pool: *InternPool, ty: InternPool.Index) !AirIndex {
+    _ = ty;
+    _ = try pool.bodies.addOne(pool.gpa);
+    const index: u32 = @intCast(pool.bodies.len - 1);
     return @enumFromInt(index);
 }
 
@@ -500,6 +370,7 @@ pub fn init(gpa: Allocator) InternPool {
         .extra = .{},
         .values = .{},
         .decls = .{},
+        .bodies = .{},
         .string_bytes = .{},
         .string_table = .{},
     };

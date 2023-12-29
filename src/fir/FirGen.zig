@@ -546,7 +546,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
         try body_scope.linkInst(@enumFromInt(param));
     }
 
-    const return_type = try typeExpr(&body_scope, &body_scope.base, signature.return_ty);
+    const return_type = try typeExpr(b, scope, signature.return_ty);
     const pl = try fg.addSlice(fg.scratch.items[scratch_top_new..]);
     const sig = try b.add(.{
         .data = .{ .function_type = .{ .params = pl, .@"return" = return_type } },

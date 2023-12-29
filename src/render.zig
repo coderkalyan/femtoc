@@ -3,8 +3,11 @@ const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
 const Hir = @import("Hir.zig");
 const Fir = @import("fir/Fir.zig");
+const Air = @import("air/Air.zig");
+const InternPool = @import("InternPool.zig");
 const Type = @import("hir/type.zig").Type;
 const Value = @import("value.zig").Value;
+const Decl = Air.Decl;
 const Allocator = std.mem.Allocator;
 
 const io = std.io;
@@ -639,7 +642,7 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 },
                 .param => |param| {
                     const param_str = fir.pool.getString(param.name).?;
-                    try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
+                    try writer.print("param(%{}, \"{s}\")", .{ @intFromEnum(param.ty), param_str });
                     try self.stream.newline();
                 },
                 .call => |call| {
@@ -712,183 +715,200 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
 pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
     return struct {
         stream: IndentingWriter(width, WriterType),
-        fir: *const Fir,
+        pool: *InternPool,
         arena: Allocator,
 
         pub const Self = @This();
 
-        pub fn init(writer: anytype, arena: Allocator, fir: *const Fir) Self {
+        pub fn init(writer: anytype, arena: Allocator, pool: *InternPool) Self {
             return .{
                 .stream = indentingWriter(width, writer),
                 .arena = arena,
-                .fir = fir,
+                .pool = pool,
             };
         }
 
-        pub fn render(self: *Self) !void {
-            const fir = self.fir;
-
-            const module_pl = fir.insts.items(.data)[@intFromEnum(fir.module_index)].module.insts;
-            const slice = fir.extraData(Fir.Inst.ExtraSlice, module_pl);
-            const globals = fir.extraSlice(slice);
-            for (globals) |global| {
-                try self.renderInst(@enumFromInt(global));
+        pub fn renderAllDecls(self: *Self) !void {
+            var iterator = self.pool.decls.iterator(0);
+            while (iterator.next()) |decl| {
+                try self.renderDecl(decl);
             }
         }
 
-        pub fn renderInst(self: *Self, inst: Fir.Index) !void {
-            const fir = self.fir;
+        fn renderDecl(self: *Self, decl: *const Decl) !void {
             const writer = self.stream.writer();
 
-            try writer.print("%{} = ", .{@intFromEnum(inst)});
-
-            switch (fir.get(inst).data) {
-                .global => |global| {
-                    const ident = fir.pool.getString(global.name).?;
-                    try writer.print("[global] {s}: ", .{ident});
-                    try self.renderInst(global.block);
-                },
-                .function => |function| {
-                    try writer.print("function(%{}) body: ", .{@intFromEnum(function.signature)});
-                    try self.renderInst(function.body);
-                },
-                .block => |block| {
-                    try writer.print("block {{", .{});
-                    self.stream.indent();
-                    try self.stream.newline();
-
-                    const slice = fir.extraData(Fir.Inst.ExtraSlice, block.insts);
-                    const insts = fir.extraSlice(slice);
-                    for (insts) |block_inst| {
-                        try self.renderInst(@enumFromInt(block_inst));
-                    }
-
-                    self.stream.dedent();
-                    try writer.print("}}", .{});
-                    try self.stream.newline();
-                },
-                .block_inline => |block| {
-                    try writer.print("block_inline {{", .{});
-                    self.stream.indent();
-                    try self.stream.newline();
-
-                    const slice = fir.extraData(Fir.Inst.ExtraSlice, block.insts);
-                    const insts = fir.extraSlice(slice);
-                    for (insts) |block_inst| {
-                        try self.renderInst(@enumFromInt(block_inst));
-                    }
-
-                    self.stream.dedent();
-                    try writer.print("}}", .{});
-                    try self.stream.newline();
-                },
-                .branch_single => |branch_single| {
-                    const cond = @intFromEnum(branch_single.cond);
-                    try writer.print("branch_single(%{}) true: ", .{cond});
-                    try self.renderInst(branch_single.exec_true);
-                },
-                .branch_double => |data| {
-                    const cond = @intFromEnum(data.cond);
-                    const branch_double = fir.extraData(Fir.Inst.BranchDouble, data.pl);
-                    try writer.print("branch_double(%{}) {{", .{cond});
-                    self.stream.indent();
-                    try self.stream.newline();
-                    try writer.print("true: ", .{});
-                    try self.renderInst(branch_double.exec_true);
-                    try writer.print("false: ", .{});
-                    try self.renderInst(branch_double.exec_false);
-                    self.stream.dedent();
-                    try writer.print("}}", .{});
-                    try self.stream.newline();
-                },
-                .loop => |loop| {
-                    try writer.print("loop {{", .{});
-                    self.stream.indent();
-                    try self.stream.newline();
-                    try writer.print("condition: ", .{});
-                    try self.renderInst(loop.cond);
-                    try writer.print("body: ", .{});
-                    try self.renderInst(loop.body);
-                    self.stream.dedent();
-                    try writer.print("}}", .{});
-                    try self.stream.newline();
-                },
-                .load_global => |load_global| {
-                    // const inst = ir.untyped_decls.get(pl).?;
-                    // try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
-                    const ident = fir.pool.getString(load_global.name).?;
-                    try writer.print("load_global({s})", .{ident});
-                    try self.stream.newline();
-                },
-                .param => |param| {
-                    const param_str = fir.pool.getString(param.name).?;
-                    try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
-                    try self.stream.newline();
-                },
-                .call => |call| {
-                    try writer.print("call(%{}", .{@intFromEnum(call.function)});
-                    const slice = fir.extraData(Fir.Inst.ExtraSlice, call.args);
-                    const args = fir.extraSlice(slice);
-                    for (args) |arg| {
-                        try writer.print(", %{}", .{arg});
-                    }
-                    try writer.print(")", .{});
-                    try self.stream.newline();
-                },
-                .function_type => |function_type| {
-                    try writer.print("function_type((", .{});
-                    const slice = fir.extraData(Fir.Inst.ExtraSlice, function_type.params);
-                    const params = fir.extraSlice(slice);
-                    for (params, 0..) |param, i| {
-                        try writer.print("%{}", .{param});
-                        if (i < params.len - 1) try writer.print(", ", .{});
-                    }
-                    try writer.print(") %{})", .{@intFromEnum(function_type.@"return")});
-                    try self.stream.newline();
-                },
-                .builtin_type => {
-                    const node = fir.locs[@intFromEnum(inst)].node;
-                    const main_token = fir.tree.mainToken(node);
-                    const type_str = fir.tree.tokenString(main_token);
-                    try writer.print("builtin_type({s})", .{type_str});
-                    try self.stream.newline();
-                },
-                .array => |array| {
-                    const slice = fir.extraData(Fir.Inst.ExtraSlice, array);
-                    const elements = fir.extraSlice(slice);
-                    try writer.print("array(", .{});
-                    for (elements, 0..) |element, i| {
-                        try writer.print("%{}", .{element});
-                        if (i < elements.len - 1) try writer.print(", ", .{});
-                    }
-                    try writer.print(")", .{});
-                    try self.stream.newline();
-                },
-                inline else => |data| {
-                    try writer.print("{s}(", .{@tagName(fir.tag(inst))});
-                    switch (@TypeOf(data)) {
-                        void => {},
-                        inline u32, u64, f64 => try writer.print("{}", .{data}),
-                        Fir.Index => try writer.print("%{}", .{@intFromEnum(data)}),
-                        else => {
-                            const fields = std.meta.fields(@TypeOf(data));
-                            inline for (fields, 0..) |field, i| {
-                                const arg = @field(data, field.name);
-                                switch (field.type) {
-                                    u32 => try writer.print("{}", .{arg}),
-                                    Fir.Index => try writer.print("%{}", .{@intFromEnum(arg)}),
-                                    else => try writer.print("format error", .{}),
-                                }
-
-                                if (i < fields.len - 1) try writer.print(", ", .{});
-                            }
-                        },
-                    }
-                    try writer.print(")", .{});
-                    try self.stream.newline();
-                },
-            }
+            // const name = self.pool.getString(decl.name);
+            // _ = name;
+            _ = decl;
+            _ = writer;
+            // try writer.print("{}", .);
         }
+
+        //     pub fn render(self: *Self) !void {
+        //         const air = self.air;
+        //
+        //         const module_pl = air.insts.items(.data)[@intFromEnum(air.module_index)].module.insts;
+        //         const slice = air.extraData(Fir.Inst.ExtraSlice, module_pl);
+        //         const globals = air.extraSlice(slice);
+        //         for (globals) |global| {
+        //             try self.renderInst(@enumFromInt(global));
+        //         }
+        //     }
+        //
+        //     pub fn renderInst(self: *Self, inst: Fir.Index) !void {
+        //         const air = self.air;
+        //         const writer = self.stream.writer();
+        //
+        //         try writer.print("%{} = ", .{@intFromEnum(inst)});
+        //
+        //         switch (air.get(inst).data) {
+        //             .global => |global| {
+        //                 const ident = air.pool.getString(global.name).?;
+        //                 try writer.print("[global] {s}: ", .{ident});
+        //                 try self.renderInst(global.block);
+        //             },
+        //             .function => |function| {
+        //                 try writer.print("function(%{}) body: ", .{@intFromEnum(function.signature)});
+        //                 try self.renderInst(function.body);
+        //             },
+        //             .block => |block| {
+        //                 try writer.print("block {{", .{});
+        //                 self.stream.indent();
+        //                 try self.stream.newline();
+        //
+        //                 const slice = air.extraData(Fir.Inst.ExtraSlice, block.insts);
+        //                 const insts = air.extraSlice(slice);
+        //                 for (insts) |block_inst| {
+        //                     try self.renderInst(@enumFromInt(block_inst));
+        //                 }
+        //
+        //                 self.stream.dedent();
+        //                 try writer.print("}}", .{});
+        //                 try self.stream.newline();
+        //             },
+        //             .block_inline => |block| {
+        //                 try writer.print("block_inline {{", .{});
+        //                 self.stream.indent();
+        //                 try self.stream.newline();
+        //
+        //                 const slice = air.extraData(Fir.Inst.ExtraSlice, block.insts);
+        //                 const insts = air.extraSlice(slice);
+        //                 for (insts) |block_inst| {
+        //                     try self.renderInst(@enumFromInt(block_inst));
+        //                 }
+        //
+        //                 self.stream.dedent();
+        //                 try writer.print("}}", .{});
+        //                 try self.stream.newline();
+        //             },
+        //             .branch_single => |branch_single| {
+        //                 const cond = @intFromEnum(branch_single.cond);
+        //                 try writer.print("branch_single(%{}) true: ", .{cond});
+        //                 try self.renderInst(branch_single.exec_true);
+        //             },
+        //             .branch_double => |data| {
+        //                 const cond = @intFromEnum(data.cond);
+        //                 const branch_double = air.extraData(Fir.Inst.BranchDouble, data.pl);
+        //                 try writer.print("branch_double(%{}) {{", .{cond});
+        //                 self.stream.indent();
+        //                 try self.stream.newline();
+        //                 try writer.print("true: ", .{});
+        //                 try self.renderInst(branch_double.exec_true);
+        //                 try writer.print("false: ", .{});
+        //                 try self.renderInst(branch_double.exec_false);
+        //                 self.stream.dedent();
+        //                 try writer.print("}}", .{});
+        //                 try self.stream.newline();
+        //             },
+        //             .loop => |loop| {
+        //                 try writer.print("loop {{", .{});
+        //                 self.stream.indent();
+        //                 try self.stream.newline();
+        //                 try writer.print("condition: ", .{});
+        //                 try self.renderInst(loop.cond);
+        //                 try writer.print("body: ", .{});
+        //                 try self.renderInst(loop.body);
+        //                 self.stream.dedent();
+        //                 try writer.print("}}", .{});
+        //                 try self.stream.newline();
+        //             },
+        //             .load_global => |load_global| {
+        //                 // const inst = ir.untyped_decls.get(pl).?;
+        //                 // try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
+        //                 const ident = air.pool.getString(load_global.name).?;
+        //                 try writer.print("load_global({s})", .{ident});
+        //                 try self.stream.newline();
+        //             },
+        //             .param => |param| {
+        //                 const param_str = air.pool.getString(param.name).?;
+        //                 try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
+        //                 try self.stream.newline();
+        //             },
+        //             .call => |call| {
+        //                 try writer.print("call(%{}", .{@intFromEnum(call.function)});
+        //                 const slice = air.extraData(Fir.Inst.ExtraSlice, call.args);
+        //                 const args = air.extraSlice(slice);
+        //                 for (args) |arg| {
+        //                     try writer.print(", %{}", .{arg});
+        //                 }
+        //                 try writer.print(")", .{});
+        //                 try self.stream.newline();
+        //             },
+        //             .function_type => |function_type| {
+        //                 try writer.print("function_type((", .{});
+        //                 const slice = air.extraData(Fir.Inst.ExtraSlice, function_type.params);
+        //                 const params = air.extraSlice(slice);
+        //                 for (params, 0..) |param, i| {
+        //                     try writer.print("%{}", .{param});
+        //                     if (i < params.len - 1) try writer.print(", ", .{});
+        //                 }
+        //                 try writer.print(") %{})", .{@intFromEnum(function_type.@"return")});
+        //                 try self.stream.newline();
+        //             },
+        //             .builtin_type => {
+        //                 const node = air.locs[@intFromEnum(inst)].node;
+        //                 const main_token = air.tree.mainToken(node);
+        //                 const type_str = air.tree.tokenString(main_token);
+        //                 try writer.print("builtin_type({s})", .{type_str});
+        //                 try self.stream.newline();
+        //             },
+        //             .array => |array| {
+        //                 const slice = air.extraData(Fir.Inst.ExtraSlice, array);
+        //                 const elements = air.extraSlice(slice);
+        //                 try writer.print("array(", .{});
+        //                 for (elements, 0..) |element, i| {
+        //                     try writer.print("%{}", .{element});
+        //                     if (i < elements.len - 1) try writer.print(", ", .{});
+        //                 }
+        //                 try writer.print(")", .{});
+        //                 try self.stream.newline();
+        //             },
+        //             inline else => |data| {
+        //                 try writer.print("{s}(", .{@tagName(air.tag(inst))});
+        //                 switch (@TypeOf(data)) {
+        //                     void => {},
+        //                     inline u32, u64, f64 => try writer.print("{}", .{data}),
+        //                     Fir.Index => try writer.print("%{}", .{@intFromEnum(data)}),
+        //                     else => {
+        //                         const fields = std.meta.fields(@TypeOf(data));
+        //                         inline for (fields, 0..) |field, i| {
+        //                             const arg = @field(data, field.name);
+        //                             switch (field.type) {
+        //                                 u32 => try writer.print("{}", .{arg}),
+        //                                 Fir.Index => try writer.print("%{}", .{@intFromEnum(arg)}),
+        //                                 else => try writer.print("format error", .{}),
+        //                             }
+        //
+        //                             if (i < fields.len - 1) try writer.print(", ", .{});
+        //                         }
+        //                     },
+        //                 }
+        //                 try writer.print(")", .{});
+        //                 try self.stream.newline();
+        //             },
+        //         }
+        //     }
     };
 }
 
