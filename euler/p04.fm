@@ -6,38 +6,38 @@
 // let print_answer = fn (ans: u64) void @import;
 // let print_answer = @import fn (ans: u64) void;
 
-// let reverse = fn (n: u64) u64 {
-//     let mut src: u64 = n;
-//     let mut ans: u64 = 0;
-//     for src > 0 {
-//         let digit = src % 10;
-//         src /= 10;
-//         ans = (10 * ans) + digit;
-//     }
-//
-//     return ans;
-// };
-//
-// let solve = fn () u64 {
-//     let mut ans: u32 = 0;
-//     for let mut a: u32 = 999; a >= 1; a -= 1 {
-//         for let mut b: u32 = 999; b >= 1; b -= 1 {
-//             let product = a * b;
-//             if product > ans {
-//                 if product == reverse(product) {
-//                     ans = product;
-//                 }
-//             }
-//         }
-//     }
-//
-//     return ans;
-// };
-//
-// @export let main = fn () u32 {
-//     let ans = solve();
-//     let foo = print_answer(ans);
-//     // let bar = exit(0);
-//
-//     return 0;
-// };
+let reverse = fn (n: u64) u64 {
+    let mut src: u64 = n;
+    let mut ans: u64 = 0;
+    for src > 0 {
+        let digit = src % 10;
+        src /= 10;
+        ans = (10 * ans) + digit;
+    }
+
+    return ans;
+};
+
+let solve = fn () u64 {
+    let mut ans: u32 = 0;
+    for let mut a: u32 = 999; a >= 1; a -= 1 {
+        for let mut b: u32 = 999; b >= 1; b -= 1 {
+            let product = a * b;
+            if product > ans {
+                if product == reverse(product) {
+                    ans = product;
+                }
+            }
+        }
+    }
+
+    return ans;
+};
+
+@export let main = fn () u32 {
+    let ans = solve();
+    let foo = print_answer(ans);
+    // let bar = exit(0);
+
+    return 0;
+};
