@@ -63,7 +63,7 @@ const Tag = enum(u8) {
 };
 
 const ValueIndex = enum(u32) { _ };
-const DeclIndex = enum(u32) { _ };
+pub const DeclIndex = enum(u32) { _ };
 pub const AirIndex = enum(u32) { _ };
 
 pub const Array = struct {

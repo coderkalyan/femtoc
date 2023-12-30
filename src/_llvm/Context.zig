@@ -1,23 +1,27 @@
 const std = @import("std");
-const Hir = @import("../Hir.zig");
-const Type = @import("../hir/type.zig").Type;
+const InternPool = @import("../InternPool.zig");
+const Air = @import("../air/Air.zig");
+const Type = @import("../air/type.zig").Type;
+const TypedValue = @import("../air/TypedValue.zig");
+const Allocator = std.mem.Allocator;
+const Decl = Air.Decl;
 
 pub const c = @cImport({
     @cInclude("llvm-c/Core.h");
 });
 
-const Allocator = std.mem.Allocator;
 const Context = @This();
 
 arena: Allocator,
 context: c.LLVMContextRef,
 module: c.LLVMModuleRef,
+pool: *InternPool,
 
 pub const Error = error{
     VerificationError,
 };
 
-pub fn init(arena: Allocator, name: [:0]const u8) Context {
+pub fn init(arena: Allocator, name: [:0]const u8, pool: *InternPool) Context {
     const context = c.LLVMContextCreate();
     const module = c.LLVMModuleCreateWithNameInContext(name.ptr, context);
 
@@ -25,6 +29,7 @@ pub fn init(arena: Allocator, name: [:0]const u8) Context {
         .arena = arena,
         .context = context,
         .module = module,
+        .pool = pool,
     };
 }
 
@@ -33,6 +38,7 @@ pub fn deinit(context: *Context) void {
     c.LLVMContextDispose(context.context);
 }
 
+// prints to stderr
 pub fn dump(context: *Context) void {
     c.LLVMDumpModule(context.module);
 }
@@ -60,60 +66,119 @@ pub fn verify(context: *Context) void {
     }
 }
 
-// converts an internal HIR type to a (uniqued) LLVM type reference
-pub fn convertType(context: *Context, ty: Type) !c.LLVMTypeRef {
-    return switch (ty.kind()) {
+// converts an internal Air type to a (uniqued) LLVM type reference
+pub fn resolveType(context: *Context, ty: Type) !c.LLVMTypeRef {
+    return switch (ty) {
         .void => c.LLVMVoidTypeInContext(context.context),
-        .comptime_uint,
-        .comptime_sint,
+        .comptime_int,
         .comptime_float,
-        .comptime_array,
+        // .comptime_array,
         => unreachable,
-        .uint, .sint => c.LLVMIntTypeInContext(context.context, ty.basic.width),
-        .float => switch (ty.basic.width) {
+        .int => |int| c.LLVMIntTypeInContext(context.context, int.width),
+        .float => |float| switch (float.width) {
             32 => c.LLVMFloatTypeInContext(context.context),
             64 => c.LLVMDoubleTypeInContext(context.context),
             else => unreachable,
         },
-        .function => {
-            const function = ty.extended.cast(Type.Function).?;
-            const params = try context.arena.alloc(c.LLVMTypeRef, function.param_types.len);
+        .function => |function| {
+            const src_params = context.pool.extra.items[function.params.start..function.params.end];
+            const params = try context.arena.alloc(c.LLVMTypeRef, src_params.len);
             defer context.arena.free(params);
 
-            for (function.param_types, 0..) |param, i| {
-                params[i] = try context.convertType(param);
+            for (src_params, 0..) |param, i| {
+                const param_ty = context.pool.indexToKey(@enumFromInt(param)).ty;
+                params[i] = try context.resolveType(param_ty);
             }
 
-            const return_type = try context.convertType(function.return_type);
+            const return_type = ty: {
+                const src = context.pool.indexToKey(function.@"return").ty;
+                break :ty try context.resolveType(src);
+            };
             return c.LLVMFunctionType(return_type, params.ptr, @intCast(params.len), 0);
         },
         .pointer, .many_pointer => return c.LLVMPointerTypeInContext(context.context, 0),
-        .array => {
-            const array = ty.extended.cast(Type.Array).?;
-            const element_type = try context.convertType(array.element);
+        .array => |array| {
+            const element_type = try context.resolveType(context.pool.indexToKey(array.element).ty);
             return c.LLVMArrayType(element_type, array.count);
         },
-        .string => unreachable,
         .slice => {
-            var elements: [2]c.LLVMTypeRef = [1]c.LLVMTypeRef{undefined} ** 2;
-            elements[0] = c.LLVMPointerTypeInContext(context.context, 0);
-            elements[1] = c.LLVMInt64TypeInContext(context.context);
-            return c.LLVMStructTypeInContext(context.context, &elements, elements.len, 0);
+            // wide pointer consisting of pointer and usize len
+            const ptr = c.LLVMPointerTypeInContext(context.context, 0);
+            const len = c.LLVMInt64TypeInContext(context.context);
+            var fields = .{ ptr, len };
+            return c.LLVMStructTypeInContext(context.context, @ptrCast(&fields), 2, 0);
         },
-        .structure => unreachable,
     };
 }
 
-pub fn addFunction(context: *Context, name: [:0]const u8, ty: c.LLVMTypeRef) c.LLVMValueRef {
-    return c.LLVMAddFunction(context.module, name.ptr, ty);
+pub fn resolveTv(context: *Context, tv: TypedValue) !c.LLVMValueRef {
+    const ty = context.pool.indexToKey(tv.ty).ty;
+    const llvm_type = try context.resolveType(ty);
+    return switch (ty) {
+        .void,
+        .comptime_int,
+        .comptime_float,
+        .function,
+        => unreachable,
+        .int => |int| c.LLVMConstInt(llvm_type, @intCast(tv.val.integer), @intFromBool(int.sign == .signed)),
+        .float => c.LLVMConstReal(llvm_type, tv.val.float),
+        .pointer,
+        .many_pointer,
+        .slice,
+        .array,
+        => unreachable, // TODO
+    };
 }
 
-pub fn getNamedFunction(context: *Context, name: [:0]const u8) c.LLVMValueRef {
-    return c.LLVMGetNamedFunction(context.module, name.ptr);
+pub fn generateDecl(context: *Context, decl: *const Decl) !c.LLVMValueRef {
+    const pool = context.pool;
+    const name = pool.getString(decl.name.?).?;
+
+    const ty = pool.indexToKey(decl.ty).ty;
+    const llvm_decl = switch (ty) {
+        .void, .comptime_int, .comptime_float => unreachable,
+        .function => try context.addFunction(name, ty),
+        else => decl: {
+            const global = try context.addGlobal(name, ty);
+            c.LLVMSetGlobalConstant(global, @intFromBool(decl.mutable));
+            if (decl.initializer) |initializer| {
+                const initializer_tv = pool.indexToKey(initializer).tv;
+                const value = try context.resolveTv(initializer_tv);
+                c.LLVMSetInitializer(global, value);
+            }
+            break :decl global;
+        },
+    };
+
+    switch (decl.linkage) {
+        .internal => c.LLVMSetLinkage(llvm_decl, c.LLVMInternalLinkage),
+        .external => c.LLVMSetLinkage(llvm_decl, c.LLVMExternalLinkage),
+    }
+
+    return llvm_decl;
 }
 
-pub fn addGlobal(context: *Context, name: [:0]const u8, ty: c.LLVMTypeRef) c.LLVMValueRef {
-    return c.LLVMAddGlobal(context.module, ty, name.ptr);
+pub fn addFunction(context: *Context, name: [:0]const u8, ty: Type) !c.LLVMValueRef {
+    const llvm_type = try context.resolveType(ty);
+    return c.LLVMAddFunction(context.module, name.ptr, llvm_type);
+}
+
+pub fn addGlobal(context: *Context, name: [:0]const u8, ty: Type) !c.LLVMValueRef {
+    const llvm_type = try context.resolveType(ty);
+    return c.LLVMAddGlobal(context.module, llvm_type, name.ptr);
+}
+
+// given a decl (by index into the intern pool), returns an LLVMValueRef to that decl
+// works on both globals and functions
+pub fn resolveDecl(context: *Context, decl: *const Decl) c.LLVMValueRef {
+    // TODO: what happens when the name is unavailable
+    const name = context.pool.getString(decl.name.?).?;
+    const ty = context.pool.indexToKey(decl.ty).ty;
+    if (@as(std.meta.Tag(Type), ty) == .function) {
+        return c.LLVMGetNamedFunction(context.module, name);
+    } else {
+        return c.LLVMGetNamedGlobal(context.module, name);
+    }
 }
 
 pub fn addConstString(context: *Context, string: []const u8) !c.LLVMValueRef {
@@ -160,33 +225,33 @@ pub const Builder = struct {
     }
 
     pub fn addUint(builder: *Builder, ty: Type, val: u64) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMConstInt(llvm_type, @intCast(val), 0);
     }
 
     pub fn addSint(builder: *Builder, ty: Type, val: u64) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMConstInt(llvm_type, @intCast(val), 1);
     }
 
     pub fn addFloat(builder: *Builder, ty: Type, val: f64) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMConstReal(llvm_type, val);
     }
 
     pub fn addConstArray(builder: *Builder, ty: Type, vals: []c.LLVMValueRef) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMConstArray(llvm_type, vals.ptr, @intCast(vals.len));
     }
 
     // memory
     pub fn addAlloca(builder: *Builder, ty: Type) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildAlloca(builder.builder, llvm_type, "");
     }
 
     pub fn addLoad(builder: *Builder, addr: c.LLVMValueRef, ty: Type) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildLoad2(builder.builder, llvm_type, addr, "");
     }
 
@@ -218,7 +283,7 @@ pub const Builder = struct {
         cmp_fgt,
     };
 
-    pub fn addCmp(builder: *Builder, comptime tag: Hir.Inst.Tag, lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
+    pub fn addCmp(builder: *Builder, comptime tag: std.meta.Tag(Air.Inst), lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
         return switch (tag) {
             .icmp_eq => c.LLVMBuildICmp(builder.builder, c.LLVMIntEQ, lref, rref, ""),
             .icmp_ne => c.LLVMBuildICmp(builder.builder, c.LLVMIntNE, lref, rref, ""),
@@ -238,14 +303,6 @@ pub const Builder = struct {
             .fcmp_lt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOLT, lref, rref, ""),
             .fcmp_gt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOGT, lref, rref, ""),
 
-            .cmp_eq,
-            .cmp_ne,
-            .cmp_gt,
-            .cmp_ge,
-            .cmp_lt,
-            .cmp_le,
-            => @compileError("can't lower untyped comparison"),
-
             else => unreachable,
         };
     }
@@ -260,7 +317,7 @@ pub const Builder = struct {
     }
 
     pub fn addCall(builder: *Builder, ty: Type, addr: c.LLVMValueRef, args: []c.LLVMValueRef) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildCall2(builder.builder, llvm_type, addr, args.ptr, @intCast(args.len), "");
     }
 
@@ -274,27 +331,27 @@ pub const Builder = struct {
 
     // casting
     pub fn addZext(builder: *Builder, ty: Type, val: c.LLVMValueRef) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildZExt(builder.builder, val, llvm_type, "");
     }
 
     pub fn addSext(builder: *Builder, ty: Type, val: c.LLVMValueRef) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildSExt(builder.builder, val, llvm_type, "");
     }
 
     pub fn addFpext(builder: *Builder, ty: Type, val: c.LLVMValueRef) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildFPExt(builder.builder, val, llvm_type, "");
     }
 
     pub fn addGetElementPtr(builder: *Builder, ty: Type, ptr: c.LLVMValueRef, indices: []c.LLVMValueRef) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildGEP2(builder.builder, llvm_type, ptr, indices.ptr, @intCast(indices.len), "");
     }
 
     pub fn addPhi(builder: *Builder, ty: Type) !c.LLVMValueRef {
-        const llvm_type = try builder.convertType(ty);
+        const llvm_type = try builder.resolveType(ty);
         return c.LLVMBuildPhi(builder.builder, llvm_type, "");
     }
 
@@ -312,12 +369,8 @@ pub const Builder = struct {
     pub fn addExtractValue(builder: *Builder, agg: c.LLVMValueRef, index: u32) !c.LLVMValueRef {
         return c.LLVMBuildExtractValue(builder.builder, agg, index, "");
     }
-    // basic types are guaranteed not to allocate, so they won't throw errors
-    // pub fn getBasicType(builder: *Builder, ty: Type) c.LLVMTypeRef {
-    //     return llvm.getBasicType(builder.context, ty);
-    // }
 
-    pub inline fn convertType(builder: *Builder, ty: Type) !c.LLVMTypeRef {
-        return builder.context.convertType(ty);
+    pub inline fn resolveType(builder: *Builder, ty: Type) !c.LLVMTypeRef {
+        return builder.context.resolveType(ty);
     }
 };

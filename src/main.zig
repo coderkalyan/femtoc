@@ -3,7 +3,7 @@ const parse = @import("parse.zig");
 // const HirGen = @import("HirGen.zig");
 const FirGen = @import("fir/FirGen.zig");
 const Sema = @import("air/Sema.zig");
-// const LlvmBackend = @import("_llvm/Backend.zig");
+const LlvmBackend = @import("_llvm/Backend.zig");
 const error_handler = @import("error_handler.zig");
 const render = @import("render.zig");
 const InternPool = @import("InternPool.zig");
@@ -210,16 +210,16 @@ pub fn main() !void {
     try renderer.renderAllBodies();
     try buffered_out.flush();
 
-    // if (stage_bits & CODEGEN == 0) std.os.exit(0);
-    // var backend = LlvmBackend.init(gpa, arena.allocator());
-    // defer backend.deinit();
-    // try backend.generate(&hir);
-    //
-    // if (verbose_llvm) {
-    //     try backend.dumpToStdout();
-    // }
-    // if (stage == .llvm) {
-    //     try backend.printToFile(output_filename.?);
-    //     std.os.exit(0);
-    // }
+    if (stage_bits & CODEGEN == 0) std.os.exit(0);
+    var backend = LlvmBackend.init(gpa, arena.allocator(), &pool);
+    defer backend.deinit();
+    try backend.generate();
+
+    if (verbose_llvm) {
+        try backend.dumpToStdout();
+    }
+    if (stage == .llvm) {
+        try backend.printToFile(output_filename.?);
+        std.os.exit(0);
+    }
 }

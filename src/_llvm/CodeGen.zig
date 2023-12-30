@@ -1,8 +1,7 @@
 const std = @import("std");
 const Context = @import("Context.zig");
-const Value = @import("../value.zig").Value;
-const Hir = @import("../Hir.zig");
-const Type = @import("../hir/type.zig").Type;
+const Air = @import("../air/Air.zig");
+const Type = @import("../air/type.zig").Type;
 const InternPool = @import("../InternPool.zig");
 const Allocator = std.mem.Allocator;
 const c = Context.c;
@@ -12,72 +11,68 @@ const CodeGen = @This();
 
 arena: Allocator,
 builder: *Context.Builder,
-hir: *const Hir,
-func: *const Value.Function,
+pool: *InternPool,
+air: *const Air,
 scratch: std.ArrayListUnmanaged(c.LLVMValueRef),
-// TODO: is LLVM thread safe?
-map: std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
-global_map: *std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef),
-value_map: std.AutoHashMapUnmanaged(ValueHandle, c.LLVMValueRef),
+// inst_map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
+map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
+// alloca_loc: c.LLVM
+// ip_map: std.AutoHashMapUnmanaged(InternPool.Index, c.LLVMValueRef),
 
-const Error = Allocator.Error || @import("../interner.zig").Error || error{NotImplemented};
+const Error = Allocator.Error || error{NotImplemented};
 
-pub fn generate(codegen: *CodeGen) !void {
-    var builder = codegen.builder;
+pub fn generate(self: *CodeGen) !void {
+    var builder = self.builder;
 
     const entry = builder.appendBlock("entry");
     builder.positionAtEnd(entry);
-    _ = try codegen.block(codegen.func.body);
+    _ = try self.block(self.air.toplevel);
 }
 
-pub fn deinit(codegen: *CodeGen) void {
-    codegen.builder.deinit();
-    codegen.scratch.deinit(codegen.arena);
+pub fn deinit(self: *CodeGen) void {
+    self.builder.deinit();
+    self.scratch.deinit(self.arena);
+    self.map.deinit(self.arena);
 }
 
-fn resolveInst(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    switch (hir.insts.items(.tag)[inst]) {
-        .load_global => {
-            const load_global = hir.get(inst, .load_global);
-            // TODO: we can probably remove global map and just use llvm to look it up
-            // via the name
-            // but should we?
-            return codegen.global_map.get(load_global.operand).?;
+fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
+    const i = @intFromEnum(inst);
+    const air = self.air;
+    switch (air.insts.items(.tags)[i]) {
+        // dereference through the load decl and return the decl itself
+        .load_decl => {
+            const load_decl = air.insts.items(.data)[i].load_decl;
+            const decl_index = self.pool.indexToKey(load_decl).decl;
+            const decl = self.pool.decls.at(@intFromEnum(decl_index));
+            return self.builder.context.resolveDecl(decl);
         },
-        // .constant => {
-        //     // constants aren't generated until someone uses them, so
-        //     // take the time to emit them now and then return
-        //     // this is actually out of date
-        //     const ref = try codegen.constant(inst);
-        //     try codegen.map.put(codegen.arena, inst, ref);
-        //     return ref;
-        // },
         else => {
             // the instruction should exist
-            if (codegen.map.get(inst)) |ref| {
+            if (self.map.get(inst)) |ref| {
                 return ref;
             } else {
-                std.log.err("codegen: unable to resolve instruction %{}\n", .{inst});
+                std.log.err("self: unable to resolve instruction %{}\n", .{inst});
                 unreachable;
             }
         },
     }
 }
 
-fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.insts.items(.data)[block_inst];
-    const block_data = hir.extraData(data.pl_node.pl, Hir.Inst.Block);
+fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(block_inst)].block;
+    const slice = air.extraData(Air.Inst.ExtraSlice, data.insts);
+    const insts = air.extraSlice(slice);
 
-    const after_block = codegen.builder.appendBlock("yield.exit");
+    const after_block = self.builder.appendBlock("yield.exit");
     var yield_val: c.LLVMValueRef = null;
     var yield_jump: bool = false;
 
-    const insts = hir.block_slices[block_data.head];
-    for (insts, 0..) |inst, i| {
-        const ref = switch (hir.insts.items(.tag)[inst]) {
-            .constant => try codegen.constant(inst),
+    for (insts) |i| {
+        const inst: Air.Index = @enumFromInt(i);
+        _ = switch (air.insts.items(.tags)[i]) {
+            .constant => try self.constant(inst),
+
             inline .add,
             .sub,
             .mul,
@@ -90,11 +85,7 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .lsr,
             .asl,
             .asr,
-            => |tag| try codegen.binaryOp(inst, tag),
-            inline .ret_node, .ret_implicit => |tag| try codegen.ret(inst, tag),
-            .alloca => try codegen.alloca(inst),
-            .load => try codegen.load(inst),
-            .store => try codegen.store(inst),
+            => |tag| try self.binaryOp(inst, tag),
             inline .icmp_eq,
             .icmp_ne,
             .icmp_ugt,
@@ -109,363 +100,364 @@ fn block(codegen: *CodeGen, block_inst: Hir.Index) Error!c.LLVMValueRef {
             .fcmp_ge,
             .fcmp_lt,
             .fcmp_le,
-            => |tag| try codegen.cmp(inst, tag),
-            .cmp_eq,
-            .cmp_ne,
-            .cmp_le,
-            .cmp_ge,
-            .cmp_lt,
-            .cmp_gt,
-            => unreachable,
-            .push => unreachable,
-            .zext => try codegen.zext(inst),
-            .sext => try codegen.sext(inst),
-            .fpext => try codegen.fpext(inst),
-            .param => try codegen.param(inst, @intCast(i)),
-            .call => try codegen.call(inst),
-            .index_ref => try codegen.indexRef(inst),
-            .index_val => try codegen.indexVal(inst),
-            .slice_ptr_ref => try codegen.slicePtrRef(inst),
-            .slice_len_ref => try codegen.sliceLenRef(inst),
-            .slice_ptr_val => try codegen.slicePtrVal(inst),
-            .slice_len_val => try codegen.sliceLenVal(inst),
-            .branch_single => {
-                try codegen.branchSingle(inst);
+            => |tag| try self.cmp(inst, tag),
+            .neg, .bitwise_inv => unreachable, // TODO
+
+            .call => try self.call(inst),
+
+            .zext => try self.zext(inst),
+            .sext => try self.sext(inst),
+            .fpext => try self.fpext(inst),
+            //
+            // .index_ref => unreachable, // TODO try self.indexRef(inst),
+            // .index_val => unreachable, // TODO try self.indexVal(inst),
+            //
+            .alloc => try self.alloc(inst),
+            .load => try self.load(inst),
+            // .store => try self.store(inst),
+            //
+            .branch_single => try self.branchSingle(inst),
+            .branch_double => try self.branchDouble(inst),
+            .loop => try self.loop(inst),
+            .@"return" => try self.ret(inst),
+            .yield => {
+                yield_val = try self.yield(inst);
                 continue;
             },
-            .branch_double => try codegen.branchDouble(inst),
-            .ty, .load_global, .array => continue,
-            // .array_init => try codegen.arrayInit(inst),
-            .array_init => continue,
-            .slice_init => continue,
-            inline .yield_implicit, .yield_node => |tag| {
-                yield_val = try codegen.yield(inst, tag);
-                break;
-            },
-            .loop => {
-                try codegen.loop(inst);
-                continue;
-            },
-            .block => try codegen.block(inst),
-            .none => continue,
-            else => {
-                std.log.err("codegen: unexpected inst: {}", .{hir.insts.items(.tag)[inst]});
-                continue;
-            },
+            // .@"break", .@"@continue" => unreachable, // TODO
+            .block => try self.block(inst),
+
+            .param => try self.param(inst, @intCast(i)),
+            .load_decl => {},
+            else => {},
+            // .slice_ptr_ref => try self.slicePtrRef(inst),
+            // .slice_len_ref => try self.sliceLenRef(inst),
+            // .slice_ptr_val => try self.slicePtrVal(inst),
+            // .slice_len_val => try self.sliceLenVal(inst),
         };
-        try codegen.map.put(codegen.arena, inst, ref);
     }
 
     if (yield_jump) {
-        codegen.builder.addBranch(after_block);
-        codegen.builder.positionAtEnd(after_block);
+        self.builder.addBranch(after_block);
+        self.builder.positionAtEnd(after_block);
     } else {
-        codegen.builder.deleteBlock(after_block);
+        self.builder.deleteBlock(after_block);
     }
 
     return yield_val;
 }
 
-fn constant(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const pl = hir.insts.items(.data)[inst].pl_node.pl;
-    const data = hir.extraData(pl, Hir.Inst.Constant);
-    const ty = try hir.resolveType(codegen.arena, data.ty);
-
-    const ref = try codegen.constantInner(ty, hir.pool.getValue(data.val));
-    try codegen.value_map.put(codegen.arena, data.val, ref);
-    return ref;
-}
-
-fn constantInner(codegen: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    var builder = codegen.builder;
-    switch (ty.kind()) {
-        .comptime_uint,
-        .comptime_sint,
-        .comptime_float,
-        .comptime_array,
-        => return null,
-        .uint => return builder.addUint(ty, value.integer),
-        .sint => return builder.addSint(ty, value.integer),
-        .float => return builder.addFloat(ty, @bitCast(value.float)),
-        .array => {
-            const element_type = ty.extended.cast(Type.Array).?.element;
-            const src_elements = value.array.elements;
-
-            const scratch_top = codegen.scratch.items.len;
-            defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
-            try codegen.scratch.ensureUnusedCapacity(codegen.arena, src_elements.len);
-            for (src_elements) |element| {
-                const element_value = hir.pool.getValue(element);
-                const dest_element = try codegen.constantInner(element_type, element_value);
-                codegen.scratch.appendAssumeCapacity(dest_element);
-            }
-
-            const dest_elements = codegen.scratch.items[scratch_top..];
-            const llvm_type = try builder.convertType(ty);
-            const llvm_array = try builder.addConstArray(ty, dest_elements);
-            const global = builder.context.addGlobal(".data", llvm_type);
-            c.LLVMSetInitializer(global, llvm_array);
-            c.LLVMSetGlobalConstant(global, 1);
-            c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-            c.LLVMSetUnnamedAddr(global, 1);
-            return global;
-        },
-        .string => {
-            const string = value.string;
-            const literal = try hir.interner.get(string);
-            const llvm_string = try builder.context.addConstString(literal);
-            const llvm_type = c.LLVMTypeOf(llvm_string);
-            const global = builder.context.addGlobal(".data", llvm_type);
-            c.LLVMSetInitializer(global, llvm_string);
-            c.LLVMSetGlobalConstant(global, 1);
-            c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-            c.LLVMSetUnnamedAddr(global, 1);
-            return global;
-        },
-        .slice => {
-            // generate a slice value by starting with an undef
-            // and inserting 2 values into it (ptr and len)
-            const slice = value.slice;
-            const llvm_type = try codegen.builder.convertType(ty);
-            const undef = c.LLVMGetUndef(llvm_type);
-            const ptr_value = codegen.value_map.get(slice.ptr).?;
-            const len_type = Type.Common.u64_type;
-            const len = hir.pool.getValue(slice.len);
-            const len_value = try codegen.constantInner(len_type, len);
-            const ptr = try codegen.builder.addInsertValue(undef, ptr_value, 0);
-            return codegen.builder.addInsertValue(ptr, len_value, 1);
-        },
-        // switch (value) {
-        //     .string => {
-        //         const string = value.string;
-        //         const literal = try hir.interner.get(string);
-        //         const llvm_string = try builder.context.addConstString(literal);
-        //         const llvm_type = c.LLVMTypeOf(llvm_string);
-        //         const global = builder.context.addGlobal(".str", llvm_type);
-        //         c.LLVMSetInitializer(global, llvm_string);
-        //         c.LLVMSetGlobalConstant(global, 1);
-        //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-        //         c.LLVMSetUnnamedAddr(global, 1);
-        //         return global;
-        //     },
-        //     .slice => {
-        //         const slice = value.slice;
-        //         var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-        //         const len_type = Type.Common.u64_type;
-        //         const len = hir.pool.getValue(slice.len);
-        //         elements[0] = codegen.value_map.get(slice.ptr).?;
-        //         elements[1] = try codegen.constantInner(len_type, len);
-        //         const llvm_slice = try builder.context.addConstStruct(&elements);
-        //         const llvm_type = try builder.convertType(ty);
-        //         const global = builder.context.addGlobal(".slice", llvm_type);
-        //         c.LLVMSetInitializer(global, llvm_slice);
-        //         c.LLVMSetGlobalConstant(global, 1);
-        //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-        //         c.LLVMSetUnnamedAddr(global, 1);
-        //         return global;
-        //     },
-        //     else => unreachable,
-        // }
-        // },
-        else => unreachable,
+fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].constant;
+    const tv = self.pool.indexToKey(data).tv;
+    // TODO: we should have a better way to either mark as unused or complete discard
+    // these intermediate instructions, but for now we just skip them
+    switch (self.pool.indexToKey(tv.ty).ty) {
+        .comptime_int, .comptime_float => return null,
+        else => {},
     }
+    const val = try self.builder.context.resolveTv(tv);
+    try self.map.put(self.arena, inst, val);
+    return val;
 }
 
-fn binaryOp(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, tag);
-    const lref = try codegen.resolveInst(data.lref);
-    const rref = try codegen.resolveInst(data.rref);
-    var builder = codegen.builder;
+// fn constantInner(self: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
+//     const air = self.air;
+//     var builder = self.builder;
+//     switch (ty.kind()) {
+//         .comptime_uint,
+//         .comptime_sint,
+//         .comptime_float,
+//         .comptime_array,
+//         => return null,
+//         .uint => return builder.addUint(ty, value.integer),
+//         .sint => return builder.addSint(ty, value.integer),
+//         .float => return builder.addFloat(ty, @bitCast(value.float)),
+//         .array => {
+//             const element_type = ty.extended.cast(Type.Array).?.element;
+//             const src_elements = value.array.elements;
+//
+//             const scratch_top = self.scratch.items.len;
+//             defer self.scratch.shrinkRetainingCapacity(scratch_top);
+//             try self.scratch.ensureUnusedCapacity(self.arena, src_elements.len);
+//             for (src_elements) |element| {
+//                 const element_value = air.pool.getValue(element);
+//                 const dest_element = try self.constantInner(element_type, element_value);
+//                 self.scratch.appendAssumeCapacity(dest_element);
+//             }
+//
+//             const dest_elements = self.scratch.items[scratch_top..];
+//             const llvm_type = try builder.convertType(ty);
+//             const llvm_array = try builder.addConstArray(ty, dest_elements);
+//             const global = builder.context.addGlobal(".data", llvm_type);
+//             c.LLVMSetInitializer(global, llvm_array);
+//             c.LLVMSetGlobalConstant(global, 1);
+//             c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+//             c.LLVMSetUnnamedAddr(global, 1);
+//             return global;
+//         },
+//         .string => {
+//             const string = value.string;
+//             const literal = try air.interner.get(string);
+//             const llvm_string = try builder.context.addConstString(literal);
+//             const llvm_type = c.LLVMTypeOf(llvm_string);
+//             const global = builder.context.addGlobal(".data", llvm_type);
+//             c.LLVMSetInitializer(global, llvm_string);
+//             c.LLVMSetGlobalConstant(global, 1);
+//             c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+//             c.LLVMSetUnnamedAddr(global, 1);
+//             return global;
+//         },
+//         .slice => {
+//             // generate a slice value by starting with an undef
+//             // and inserting 2 values into it (ptr and len)
+//             const slice = value.slice;
+//             const llvm_type = try self.builder.convertType(ty);
+//             const undef = c.LLVMGetUndef(llvm_type);
+//             const ptr_value = self.value_map.get(slice.ptr).?;
+//             const len_type = Type.Common.u64_type;
+//             const len = air.pool.getValue(slice.len);
+//             const len_value = try self.constantInner(len_type, len);
+//             const ptr = try self.builder.addInsertValue(undef, ptr_value, 0);
+//             return self.builder.addInsertValue(ptr, len_value, 1);
+//         },
+//         // switch (value) {
+//         //     .string => {
+//         //         const string = value.string;
+//         //         const literal = try air.interner.get(string);
+//         //         const llvm_string = try builder.context.addConstString(literal);
+//         //         const llvm_type = c.LLVMTypeOf(llvm_string);
+//         //         const global = builder.context.addGlobal(".str", llvm_type);
+//         //         c.LLVMSetInitializer(global, llvm_string);
+//         //         c.LLVMSetGlobalConstant(global, 1);
+//         //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+//         //         c.LLVMSetUnnamedAddr(global, 1);
+//         //         return global;
+//         //     },
+//         //     .slice => {
+//         //         const slice = value.slice;
+//         //         var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
+//         //         const len_type = Type.Common.u64_type;
+//         //         const len = air.pool.getValue(slice.len);
+//         //         elements[0] = self.value_map.get(slice.ptr).?;
+//         //         elements[1] = try self.constantInner(len_type, len);
+//         //         const llvm_slice = try builder.context.addConstStruct(&elements);
+//         //         const llvm_type = try builder.convertType(ty);
+//         //         const global = builder.context.addGlobal(".slice", llvm_type);
+//         //         c.LLVMSetInitializer(global, llvm_slice);
+//         //         c.LLVMSetGlobalConstant(global, 1);
+//         //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
+//         //         c.LLVMSetUnnamedAddr(global, 1);
+//         //         return global;
+//         //     },
+//         //     else => unreachable,
+//         // }
+//         // },
+//         else => unreachable,
+//     }
+// }
+
+fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c.LLVMValueRef {
+    const air = self.air;
+    const data = @field(air.insts.items(.data)[@intFromEnum(inst)], @tagName(tag));
+    const l = self.resolveInst(data.l);
+    const r = self.resolveInst(data.r);
+    var builder = self.builder;
 
     // C (clang 17) emits urem for all integer modulo
     // in the long term, we need to decide what behavior we want for
     // negative numbers and 0
-    const lty = try hir.resolveType(codegen.arena, data.lref);
-    return switch (lty.kind()) {
-        .uint => switch (tag) {
-            .add => c.LLVMBuildAdd(builder.builder, lref, rref, ""),
-            .sub => c.LLVMBuildSub(builder.builder, lref, rref, ""),
-            .mul => c.LLVMBuildMul(builder.builder, lref, rref, ""),
-            .div => c.LLVMBuildUDiv(builder.builder, lref, rref, ""),
-            .mod => return c.LLVMBuildURem(builder.builder, lref, rref, ""),
-            .lsl, .asl => return c.LLVMBuildShl(builder.builder, lref, rref, ""),
-            .lsr => return c.LLVMBuildLShr(builder.builder, lref, rref, ""),
-            .asr => return c.LLVMBuildAShr(builder.builder, lref, rref, ""),
-            .bitwise_or => return c.LLVMBuildOr(builder.builder, lref, rref, ""),
-            .bitwise_and => return c.LLVMBuildAnd(builder.builder, lref, rref, ""),
-            .bitwise_xor => return c.LLVMBuildXor(builder.builder, lref, rref, ""),
-            else => unreachable,
-        },
-        .sint => switch (tag) {
-            .add => c.LLVMBuildAdd(builder.builder, lref, rref, ""),
-            .sub => c.LLVMBuildSub(builder.builder, lref, rref, ""),
-            .mul => c.LLVMBuildMul(builder.builder, lref, rref, ""),
-            .div => c.LLVMBuildSDiv(builder.builder, lref, rref, ""),
-            .mod => return c.LLVMBuildURem(builder.builder, lref, rref, ""),
-            .lsl, .asl => return c.LLVMBuildShl(builder.builder, lref, rref, ""),
-            .lsr => return c.LLVMBuildLShr(builder.builder, lref, rref, ""),
-            .asr => return c.LLVMBuildAShr(builder.builder, lref, rref, ""),
-            .bitwise_or => return c.LLVMBuildOr(builder.builder, lref, rref, ""),
-            .bitwise_and => return c.LLVMBuildAnd(builder.builder, lref, rref, ""),
-            .bitwise_xor => return c.LLVMBuildXor(builder.builder, lref, rref, ""),
-            else => unreachable,
+    const lty = self.air.typeOf(data.l);
+    const ref = switch (self.pool.indexToKey(lty).ty) {
+        .int => |int| switch (int.sign) {
+            .unsigned => switch (tag) {
+                .add => c.LLVMBuildAdd(builder.builder, l, r, ""),
+                .sub => c.LLVMBuildSub(builder.builder, l, r, ""),
+                .mul => c.LLVMBuildMul(builder.builder, l, r, ""),
+                .div => c.LLVMBuildUDiv(builder.builder, l, r, ""),
+                .mod => c.LLVMBuildURem(builder.builder, l, r, ""),
+                .lsl, .asl => c.LLVMBuildShl(builder.builder, l, r, ""),
+                .lsr => c.LLVMBuildLShr(builder.builder, l, r, ""),
+                .asr => c.LLVMBuildAShr(builder.builder, l, r, ""),
+                .bitwise_or => c.LLVMBuildOr(builder.builder, l, r, ""),
+                .bitwise_and => c.LLVMBuildAnd(builder.builder, l, r, ""),
+                .bitwise_xor => c.LLVMBuildXor(builder.builder, l, r, ""),
+                else => unreachable,
+            },
+            .signed => switch (tag) {
+                .add => c.LLVMBuildAdd(builder.builder, l, r, ""),
+                .sub => c.LLVMBuildSub(builder.builder, l, r, ""),
+                .mul => c.LLVMBuildMul(builder.builder, l, r, ""),
+                .div => c.LLVMBuildSDiv(builder.builder, l, r, ""),
+                .mod => c.LLVMBuildURem(builder.builder, l, r, ""),
+                .lsl, .asl => c.LLVMBuildShl(builder.builder, l, r, ""),
+                .lsr => c.LLVMBuildLShr(builder.builder, l, r, ""),
+                .asr => c.LLVMBuildAShr(builder.builder, l, r, ""),
+                .bitwise_or => c.LLVMBuildOr(builder.builder, l, r, ""),
+                .bitwise_and => c.LLVMBuildAnd(builder.builder, l, r, ""),
+                .bitwise_xor => c.LLVMBuildXor(builder.builder, l, r, ""),
+                else => unreachable,
+            },
         },
         .float => switch (tag) {
-            .add => c.LLVMBuildFAdd(builder.builder, lref, rref, ""),
-            .sub => c.LLVMBuildFSub(builder.builder, lref, rref, ""),
-            .mul => c.LLVMBuildFMul(builder.builder, lref, rref, ""),
-            .div => c.LLVMBuildFDiv(builder.builder, lref, rref, ""),
-            .mod => c.LLVMBuildFRem(builder.builder, lref, rref, ""),
+            .add => c.LLVMBuildFAdd(builder.builder, l, r, ""),
+            .sub => c.LLVMBuildFSub(builder.builder, l, r, ""),
+            .mul => c.LLVMBuildFMul(builder.builder, l, r, ""),
+            .div => c.LLVMBuildFDiv(builder.builder, l, r, ""),
+            .mod => c.LLVMBuildFRem(builder.builder, l, r, ""),
             else => unreachable,
         },
         else => unreachable,
     };
+
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn alloca(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .alloca);
-    return codegen.builder.addAlloca(try hir.resolveType(codegen.arena, data.operand));
+fn alloc(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].alloc;
+    const ty = self.pool.indexToKey(data.slot_type).ty;
+    const ref = try self.builder.addAlloca(ty);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn load(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .load);
-    const pointer_type = try hir.resolveType(codegen.arena, data.operand);
-    const pointee_type = pointer_type.extended.cast(Type.Pointer).?.pointee;
-    const ptr = try codegen.resolveInst(data.operand);
-    return codegen.builder.addLoad(ptr, pointee_type);
+fn load(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].load;
+    const ptr = self.resolveInst(data.ptr);
+    const pointer_type = self.pool.indexToKey(air.typeOf(data.ptr)).ty;
+    const pointee_type = self.pool.indexToKey(pointer_type.pointer.pointee).ty;
+    const ref = try self.builder.addLoad(ptr, pointee_type);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn store(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .store);
-    // TODO: better way to check for comptime data
-    const addr = try codegen.resolveInst(data.ptr);
-    const ptr_inner_type = try hir.resolveType(codegen.arena, data.ptr);
-    const ptr_type = ptr_inner_type.extended.cast(Type.Pointer).?.pointee;
-    // const ty = try hir.resolveType(codegen.arena, data.val);
-    // we lower different "stores" differently to avoid
-    // creating a large store to an aggregate type
-    switch (ptr_type.kind()) {
-        .array => {
-            // arrays can either be initialized from a comptime known Value
-            // or runtime known .array_init instruction
-            // for the former, we prefer to emit a memcpy from a static global
-            // into the ptr
-            // for the latter, we generate a series of insertvalue instructions
-            switch (hir.insts.items(.tag)[data.val]) {
-                // to initialize an array from a set of comptime values, the best
-                // solution is to emit an unnamed constant global in the data section
-                // (done by resolveInst above) and memcpy from it to the array pointer
-                .constant => {
-                    var val = try codegen.resolveInst(data.val);
-                    return codegen.builder.addMemcpy(ptr_type, addr, val);
-                },
-                // to initialize an array from a set of runtime values, we loop
-                // over each index in the array and emit a GEP + store
-                // to avoid doing a large store to the entire array
-                .array_init => {
-                    const array_init = hir.get(data.val, .array_init);
-                    const start = array_init.elements_start;
-                    const end = array_init.elements_end;
-                    const src_elements = hir.extra_data[start..end];
-
-                    const scratch_top = codegen.scratch.items.len;
-                    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
-                    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
-
-                    for (src_elements, 0..) |src_element, i| {
-                        indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
-                        indices[1] = try codegen.builder.addUint(Type.Common.u32_type, i);
-                        const element = try codegen.resolveInst(src_element);
-                        const gep = try codegen.builder.addGetElementPtr(ptr_type, addr, indices);
-                        c.LLVMSetIsInBounds(gep, 1);
-                        _ = codegen.builder.addStore(gep, element);
-                    }
-
-                    return null;
-                },
-                else => unreachable,
-            }
-        },
-        .slice => {
-            // slices are initialized by adding two GEP + stores, even if the data
-            // is comptime known, because it doesn't make sense to emit a 64/128 bit
-            // "wide pointer" constant global and then memcpy from it
-            switch (hir.insts.items(.tag)[data.val]) {
-                .constant => {
-                    const slice_constant = hir.get(data.val, .constant);
-                    const slice = hir.pool.values.items(.data)[slice_constant.val].slice;
-
-                    const scratch_top = codegen.scratch.items.len;
-                    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
-                    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
-                    indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
-
-                    // ptr
-                    const ptr = codegen.value_map.get(slice.ptr).?;
-                    indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 0);
-                    const gep1 = try codegen.builder.addGetElementPtr(ptr_type, addr, indices);
-                    c.LLVMSetIsInBounds(gep1, 1);
-                    _ = codegen.builder.addStore(gep1, ptr);
-
-                    // len
-                    const slice_len = hir.pool.getValue(slice.len);
-                    const len = try codegen.constantInner(Type.Common.u64_type, slice_len);
-                    indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 1);
-                    const gep2 = try codegen.builder.addGetElementPtr(ptr_type, addr, indices);
-                    c.LLVMSetIsInBounds(gep2, 1);
-                    _ = codegen.builder.addStore(gep2, len);
-
-                    return null;
-                },
-                .slice_init => {
-                    const slice_init = hir.get(data.val, .slice_init);
-                    const ptr_value = try codegen.resolveInst(slice_init.ptr);
-                    const len_value = try codegen.resolveInst(slice_init.len);
-
-                    // generate a slice value by starting with an undef
-                    // and inserting 2 values into it (ptr and len)
-                    const ty = try hir.resolveType(codegen.arena, data.val);
-                    const llvm_type = try codegen.builder.convertType(ty);
-                    const undef = c.LLVMGetUndef(llvm_type);
-                    const ptr = try codegen.builder.addInsertValue(undef, ptr_value, 0);
-                    return codegen.builder.addInsertValue(ptr, len_value, 1);
-                },
-                else => unreachable,
-            }
-        },
-        else => {
-            var val = try codegen.resolveInst(data.val);
-            return codegen.builder.addStore(addr, val);
-        },
-    }
+// fn store(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+//     const air = self.air;
+//     const data = air.get(inst, .store);
+//     // TODO: better way to check for comptime data
+//     const addr = self.resolveInst(data.ptr);
+//     const ptr_inner_type = try air.resolveType(self.arena, data.ptr);
+//     const ptr_type = ptr_inner_type.extended.cast(Type.Pointer).?.pointee;
+//     // const ty = try air.resolveType(self.arena, data.val);
+//     // we lower different "stores" differently to avoid
+//     // creating a large store to an aggregate type
+//     switch (ptr_type.kind()) {
+//         .array => {
+//             // arrays can either be initialized from a comptime known Value
+//             // or runtime known .array_init instruction
+//             // for the former, we prefer to emit a memcpy from a static global
+//             // into the ptr
+//             // for the latter, we generate a series of insertvalue instructions
+//             switch (air.insts.items(.tag)[data.val]) {
+//                 // to initialize an array from a set of comptime values, the best
+//                 // solution is to emit an unnamed constant global in the data section
+//                 // (done by resolveInst above) and memcpy from it to the array pointer
+//                 .constant => {
+//                     var val = self.resolveInst(data.val);
+//                     return self.builder.addMemcpy(ptr_type, addr, val);
+//                 },
+//                 // to initialize an array from a set of runtime values, we loop
+//                 // over each index in the array and emit a GEP + store
+//                 // to avoid doing a large store to the entire array
+//                 .array_init => {
+//                     const array_init = air.get(data.val, .array_init);
+//                     const start = array_init.elements_start;
+//                     const end = array_init.elements_end;
+//                     const src_elements = air.extra_data[start..end];
+//
+//                     const scratch_top = self.scratch.items.len;
+//                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
+//                     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
+//
+//                     for (src_elements, 0..) |src_element, i| {
+//                         indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
+//                         indices[1] = try self.builder.addUint(Type.Common.u32_type, i);
+//                         const element = self.resolveInst(src_element);
+//                         const gep = try self.builder.addGetElementPtr(ptr_type, addr, indices);
+//                         c.LLVMSetIsInBounds(gep, 1);
+//                         _ = self.builder.addStore(gep, element);
+//                     }
+//
+//                     return null;
+//                 },
+//                 else => unreachable,
+//             }
+//         },
+//         .slice => {
+//             // slices are initialized by adding two GEP + stores, even if the data
+//             // is comptime known, because it doesn't make sense to emit a 64/128 bit
+//             // "wide pointer" constant global and then memcpy from it
+//             switch (air.insts.items(.tag)[data.val]) {
+//                 .constant => {
+//                     const slice_constant = air.get(data.val, .constant);
+//                     const slice = air.pool.values.items(.data)[slice_constant.val].slice;
+//
+//                     const scratch_top = self.scratch.items.len;
+//                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
+//                     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
+//                     indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
+//
+//                     // ptr
+//                     const ptr = self.value_map.get(slice.ptr).?;
+//                     indices[1] = try self.builder.addUint(Type.Common.u32_type, 0);
+//                     const gep1 = try self.builder.addGetElementPtr(ptr_type, addr, indices);
+//                     c.LLVMSetIsInBounds(gep1, 1);
+//                     _ = self.builder.addStore(gep1, ptr);
+//
+//                     // len
+//                     const slice_len = air.pool.getValue(slice.len);
+//                     const len = try self.constantInner(Type.Common.u64_type, slice_len);
+//                     indices[1] = try self.builder.addUint(Type.Common.u32_type, 1);
+//                     const gep2 = try self.builder.addGetElementPtr(ptr_type, addr, indices);
+//                     c.LLVMSetIsInBounds(gep2, 1);
+//                     _ = self.builder.addStore(gep2, len);
+//
+//                     return null;
+//                 },
+//                 .slice_init => {
+//                     const slice_init = air.get(data.val, .slice_init);
+//                     const ptr_value = self.resolveInst(slice_init.ptr);
+//                     const len_value = self.resolveInst(slice_init.len);
+//
+//                     // generate a slice value by starting with an undef
+//                     // and inserting 2 values into it (ptr and len)
+//                     const ty = try air.resolveType(self.arena, data.val);
+//                     const llvm_type = try self.builder.convertType(ty);
+//                     const undef = c.LLVMGetUndef(llvm_type);
+//                     const ptr = try self.builder.addInsertValue(undef, ptr_value, 0);
+//                     return self.builder.addInsertValue(ptr, len_value, 1);
+//                 },
+//                 else => unreachable,
+//             }
+//         },
+//         else => {
+//             var val = self.resolveInst(data.val);
+//             return self.builder.addStore(addr, val);
+//         },
+//     }
+// }
+//
+fn cmp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c.LLVMValueRef {
+    const data = @field(self.air.insts.items(.data)[@intFromEnum(inst)], @tagName(tag));
+    const l = self.resolveInst(data.l);
+    const r = self.resolveInst(data.r);
+    const ref = self.builder.addCmp(tag, l, r);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn cmp(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, tag);
-    const lref = try codegen.resolveInst(data.lref);
-    const rref = try codegen.resolveInst(data.rref);
-    return codegen.builder.addCmp(tag, lref, rref);
-}
+fn branchSingle(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
+    var builder = self.builder;
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].branch_single;
 
-fn branchSingle(codegen: *CodeGen, inst: Hir.Index) Error!void {
-    const hir = codegen.hir;
-    var builder = codegen.builder;
-    const data = hir.get(inst, .branch_single);
-
-    const condition = try codegen.resolveInst(data.condition);
+    const condition = self.resolveInst(data.cond);
     const exec_true = builder.appendBlock("if.true");
     const prev = builder.getInsertBlock();
     builder.positionAtEnd(exec_true);
 
-    // TODO: branch expressions
-    _ = try codegen.block(data.exec_true);
+    _ = try self.block(data.exec_true);
     const exit = builder.appendBlock("if.exit");
     if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null) {
         builder.addBranch(exit);
@@ -474,27 +466,28 @@ fn branchSingle(codegen: *CodeGen, inst: Hir.Index) Error!void {
     builder.positionAtEnd(prev);
     builder.addCondBranch(condition, exec_true, exit);
     builder.positionAtEnd(exit);
+    return undefined;
 }
 
-fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!c.LLVMValueRef {
-    const hir = codegen.hir;
-    var builder = codegen.builder;
-    const data = hir.get(inst, .branch_double);
+fn branchDouble(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
+    const air = self.air;
+    var builder = self.builder;
+    const branch_double = air.insts.items(.data)[@intFromEnum(inst)].branch_double;
+    const data = air.extraData(Air.Inst.BranchDouble, branch_double.pl);
 
-    const condition = try codegen.resolveInst(data.condition);
+    const condition = self.resolveInst(branch_double.cond);
 
-    // TODO: branch expressions
     const prev = builder.getInsertBlock();
     const exec_true = builder.appendBlock("ifelse.true");
     builder.positionAtEnd(exec_true);
-    const yield_true = try codegen.block(data.exec_true);
+    const yield_true = try self.block(data.exec_true);
 
     const false_prev = builder.getInsertBlock();
     const exec_false = builder.appendBlock("ifelse.false");
     builder.positionAtEnd(prev);
     builder.addCondBranch(condition, exec_true, exec_false);
     builder.positionAtEnd(exec_false);
-    const yield_false = try codegen.block(data.exec_false);
+    const yield_false = try self.block(data.exec_false);
 
     const exit = builder.appendBlock("ifelse.exit");
     if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null)
@@ -507,78 +500,79 @@ fn branchDouble(codegen: *CodeGen, inst: Hir.Index) Error!c.LLVMValueRef {
     builder.positionAtEnd(exit);
     if ((yield_true == null) or (yield_false == null)) return null;
 
-    const phi_type = try hir.resolveType(codegen.arena, data.exec_true);
-    const phi = try builder.addPhi(phi_type);
-    var incoming_values: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-    var incoming_blocks: [2]c.LLVMBasicBlockRef = [1]c.LLVMBasicBlockRef{undefined} ** 2;
-    incoming_values[0] = yield_true;
-    incoming_values[1] = yield_false;
-    incoming_blocks[0] = exec_true;
-    incoming_blocks[1] = exec_false;
-    c.LLVMAddIncoming(phi, (&incoming_values).ptr, (&incoming_blocks).ptr, incoming_values.len);
+    const yield_type = self.pool.indexToKey(air.typeOf(data.exec_true)).ty;
+    const phi = try builder.addPhi(yield_type);
+    var values = .{ yield_true, yield_false };
+    var blocks = .{ exec_true, exec_false };
+    c.LLVMAddIncoming(phi, @ptrCast(&values), @ptrCast(&blocks), 2);
     return phi;
 }
 
-fn param(codegen: *CodeGen, inst: Hir.Index, index: u32) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .param);
-    const param_str = try hir.interner.get(data.name);
-    const param_ref = c.LLVMGetParam(codegen.builder.function, index);
-    c.LLVMSetValueName2(param_ref, param_str.ptr, param_str.len);
-    return param_ref;
+fn param(self: *CodeGen, inst: Air.Index, index: u32) !c.LLVMValueRef {
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].param;
+    const param_str = self.pool.getString(data.name).?;
+    const ref = c.LLVMGetParam(self.builder.function, index);
+    c.LLVMSetValueName2(ref, param_str.ptr, param_str.len);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn zext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .zext);
-    const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = try codegen.resolveInst(data.val);
-    return codegen.builder.addZext(ty, ref);
+fn zext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].zext;
+    const ty = self.pool.indexToKey(data.ty).ty;
+    const operand = self.resolveInst(data.operand);
+    const ref = try self.builder.addZext(ty, operand);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn sext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .sext);
-    const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = try codegen.resolveInst(data.val);
-    return codegen.builder.addSext(ty, ref);
+fn sext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].sext;
+    const ty = self.pool.indexToKey(data.ty).ty;
+    const operand = self.resolveInst(data.operand);
+    const ref = try self.builder.addSext(ty, operand);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn fpext(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .fpext);
-    const ty = try hir.resolveType(codegen.arena, data.ty);
-    const ref = try codegen.resolveInst(data.val);
-    return codegen.builder.addFpext(ty, ref);
+fn fpext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].fpext;
+    const ty = self.pool.indexToKey(data.ty).ty;
+    const operand = self.resolveInst(data.operand);
+    const ref = try self.builder.addFpext(ty, operand);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn yield(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, tag);
-    return try codegen.resolveInst(data.operand);
+fn yield(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    // TODO: this doesn't actually work with yields in the middle
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].yield;
+    return self.resolveInst(data);
 }
 
-fn loop(codegen: *CodeGen, inst: Hir.Index) !void {
+fn loop(self: *CodeGen, inst: Air.Index) !void {
     // the canonical form of a loop in LLVM is a do-while
     // where the body is placed first, and then the condition, which
     // results in a branch back to the body or to the exit
     // finally, a jump is placed at the top (entry) that jumps unconditionally
     // to the branch to create "while" behavior rather than "do" while
-    const hir = codegen.hir;
-    var builder = codegen.builder;
-    const data = hir.get(inst, .loop);
+    var builder = self.builder;
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].loop;
 
     const prev = builder.getInsertBlock();
     const entry_block = builder.appendBlock("loop.entry");
     builder.positionAtEnd(entry_block);
-    _ = try codegen.block(data.body);
+    _ = try self.block(data.body);
 
     const condition_block = builder.appendBlock("loop.cond");
     builder.addBranch(condition_block);
     builder.positionAtEnd(prev);
     builder.addBranch(condition_block);
     builder.positionAtEnd(condition_block);
-    const condition_ref = try codegen.block(data.condition);
+    const condition_ref = try self.block(data.cond);
 
     const exit_block = builder.appendBlock("loop.exit");
     builder.addCondBranch(condition_ref, entry_block, exit_block);
@@ -586,131 +580,137 @@ fn loop(codegen: *CodeGen, inst: Hir.Index) !void {
     builder.positionAtEnd(exit_block);
 }
 
-fn call(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const pl = hir.insts.items(.data)[inst].pl_node.pl;
-    const data = hir.extraData(pl, Hir.Inst.Call);
+fn call(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const call_inst = air.insts.items(.data)[@intFromEnum(inst)].call;
+    const slice = air.extraData(Air.Inst.ExtraSlice, call_inst.args);
+    const air_args = air.extraSlice(slice);
+    const function = self.resolveInst(call_inst.function);
 
-    const addr = try codegen.resolveInst(data.ptr);
-    const hir_args = hir.extra_data[data.args_start..data.args_end];
-
-    const scratch_top = codegen.scratch.items.len;
-    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
-    try codegen.scratch.ensureUnusedCapacity(codegen.arena, hir_args.len);
-    for (hir_args) |arg| {
-        codegen.scratch.appendAssumeCapacity(try codegen.resolveInst(arg));
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    try self.scratch.ensureUnusedCapacity(self.arena, air_args.len);
+    for (air_args) |air_arg| {
+        const arg = self.resolveInst(@enumFromInt(air_arg));
+        self.scratch.appendAssumeCapacity(arg);
     }
 
-    const args = codegen.scratch.items[scratch_top..];
-    const ty = try hir.resolveType(codegen.arena, data.ptr);
-    return codegen.builder.addCall(ty, addr, args);
+    const args = self.scratch.items[scratch_top..];
+    const ty = self.pool.indexToKey(air.typeOf(call_inst.function)).ty;
+    const ref = try self.builder.addCall(ty, function, args);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn ret(codegen: *CodeGen, inst: Hir.Index, comptime tag: Hir.Inst.Tag) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, tag);
-
-    const is_none = hir.insts.items(.tag)[data.operand] == .none;
-    const ref = if (is_none) null else try codegen.resolveInst(data.operand);
-    return codegen.builder.addReturn(ref);
+fn ret(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].@"return";
+    const ty = self.pool.indexToKey(air.typeOf(data)).ty;
+    const val = switch (ty) {
+        .void => null,
+        else => self.resolveInst(data),
+    };
+    const ref = self.builder.addReturn(val);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
 }
 
-fn indexRef(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .index_ref);
-
-    const ty = try hir.resolveType(codegen.arena, data.array);
-    const pointer_type = ty.extended.cast(Type.Pointer).?;
-    const array_type = pointer_type.pointee;
-    const array = try codegen.resolveInst(data.array);
-    const access_index = try codegen.resolveInst(data.index);
-    var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-    indices[0] = try codegen.builder.addUint(Type.Common.u64_type, 0);
-    indices[1] = access_index;
-    const gep = try codegen.builder.addGetElementPtr(array_type, array, &indices);
-    if (hir.insts.items(.tag)[data.index] == .constant) {
-        // comptime known, so inbounds
-        // TODO: better check and also make sure this is correct
-        // and actually inbound
-        c.LLVMSetIsInBounds(gep, 1);
-    }
-    return gep;
-}
-
-fn indexVal(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .index_val);
-
-    const array_type = try hir.resolveType(codegen.arena, data.array);
-    const array = try codegen.resolveInst(data.array);
-    const element_type = array_type.extended.cast(Type.Array).?.element;
-    const access_index = try codegen.resolveInst(data.index);
-
-    const scratch_top = codegen.scratch.items.len;
-    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
-    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
-    indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
-    indices[1] = access_index;
-    const gep = try codegen.builder.addGetElementPtr(array_type, array, indices);
-    if (hir.insts.items(.tag)[data.index] == .constant) {
-        // comptime known, so inbounds
-        // TODO: better check and also make sure this is correct
-        // and actually inbound
-        c.LLVMSetIsInBounds(gep, 1);
-    }
-    return codegen.builder.addLoad(gep, element_type);
-}
-
-fn slicePtrRef(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .slice_ptr_ref);
-
-    const ty = try hir.resolveType(codegen.arena, data.operand);
-    const slice_type = ty.extended.cast(Type.Pointer).?.pointee;
-    const slice = try codegen.resolveInst(data.operand);
-
-    const scratch_top = codegen.scratch.items.len;
-    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
-    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
-    indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
-    indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 0);
-
-    const gep = try codegen.builder.addGetElementPtr(slice_type, slice, indices);
-    c.LLVMSetIsInBounds(gep, 1);
-    return gep;
-}
-
-fn sliceLenRef(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .slice_len_ref);
-
-    const ty = try hir.resolveType(codegen.arena, data.operand);
-    const slice_type = ty.extended.cast(Type.Pointer).?.pointee;
-    const slice = try codegen.resolveInst(data.operand);
-
-    const scratch_top = codegen.scratch.items.len;
-    defer codegen.scratch.shrinkRetainingCapacity(scratch_top);
-    const indices = try codegen.scratch.addManyAsSlice(codegen.arena, 2);
-    indices[0] = try codegen.builder.addUint(Type.Common.u32_type, 0);
-    indices[1] = try codegen.builder.addUint(Type.Common.u32_type, 1);
-
-    const gep = try codegen.builder.addGetElementPtr(slice_type, slice, indices);
-    c.LLVMSetIsInBounds(gep, 1);
-    return gep;
-}
-
-fn slicePtrVal(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .slice_ptr_val);
-
-    const slice = try codegen.resolveInst(data.operand);
-    return codegen.builder.addExtractValue(slice, 0);
-}
-
-fn sliceLenVal(codegen: *CodeGen, inst: Hir.Index) !c.LLVMValueRef {
-    const hir = codegen.hir;
-    const data = hir.get(inst, .slice_ptr_val);
-
-    const slice = try codegen.resolveInst(data.operand);
-    return codegen.builder.addExtractValue(slice, 1);
-}
+// fn indexRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+//     const air = self.air;
+//     const data = air.get(inst, .index_ref);
+//
+//     const ty = try air.resolveType(self.arena, data.array);
+//     const pointer_type = ty.extended.cast(Type.Pointer).?;
+//     const array_type = pointer_type.pointee;
+//     const array = self.resolveInst(data.array);
+//     const access_index = self.resolveInst(data.index);
+//     var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
+//     indices[0] = try self.builder.addUint(Type.Common.u64_type, 0);
+//     indices[1] = access_index;
+//     const gep = try self.builder.addGetElementPtr(array_type, array, &indices);
+//     if (air.insts.items(.tag)[data.index] == .constant) {
+//         // comptime known, so inbounds
+//         // TODO: better check and also make sure this is correct
+//         // and actually inbound
+//         c.LLVMSetIsInBounds(gep, 1);
+//     }
+//     return gep;
+// }
+//
+// fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+//     const air = self.air;
+//     const data = air.get(inst, .index_val);
+//
+//     const array_type = try air.resolveType(self.arena, data.array);
+//     const array = self.resolveInst(data.array);
+//     const element_type = array_type.extended.cast(Type.Array).?.element;
+//     const access_index = self.resolveInst(data.index);
+//
+//     const scratch_top = self.scratch.items.len;
+//     defer self.scratch.shrinkRetainingCapacity(scratch_top);
+//     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
+//     indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
+//     indices[1] = access_index;
+//     const gep = try self.builder.addGetElementPtr(array_type, array, indices);
+//     if (air.insts.items(.tag)[data.index] == .constant) {
+//         // comptime known, so inbounds
+//         // TODO: better check and also make sure this is correct
+//         // and actually inbound
+//         c.LLVMSetIsInBounds(gep, 1);
+//     }
+//     return self.builder.addLoad(gep, element_type);
+// }
+//
+// fn slicePtrRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+//     const air = self.air;
+//     const data = air.get(inst, .slice_ptr_ref);
+//
+//     const ty = try air.resolveType(self.arena, data.operand);
+//     const slice_type = ty.extended.cast(Type.Pointer).?.pointee;
+//     const slice = self.resolveInst(data.operand);
+//
+//     const scratch_top = self.scratch.items.len;
+//     defer self.scratch.shrinkRetainingCapacity(scratch_top);
+//     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
+//     indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
+//     indices[1] = try self.builder.addUint(Type.Common.u32_type, 0);
+//
+//     const gep = try self.builder.addGetElementPtr(slice_type, slice, indices);
+//     c.LLVMSetIsInBounds(gep, 1);
+//     return gep;
+// }
+//
+// fn sliceLenRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+//     const air = self.air;
+//     const data = air.get(inst, .slice_len_ref);
+//
+//     const ty = try air.resolveType(self.arena, data.operand);
+//     const slice_type = ty.extended.cast(Type.Pointer).?.pointee;
+//     const slice = self.resolveInst(data.operand);
+//
+//     const scratch_top = self.scratch.items.len;
+//     defer self.scratch.shrinkRetainingCapacity(scratch_top);
+//     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
+//     indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
+//     indices[1] = try self.builder.addUint(Type.Common.u32_type, 1);
+//
+//     const gep = try self.builder.addGetElementPtr(slice_type, slice, indices);
+//     c.LLVMSetIsInBounds(gep, 1);
+//     return gep;
+// }
+//
+// fn slicePtrVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+//     const air = self.air;
+//     const data = air.get(inst, .slice_ptr_val);
+//
+//     const slice = self.resolveInst(data.operand);
+//     return self.builder.addExtractValue(slice, 0);
+// }
+//
+// fn sliceLenVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+//     const air = self.air;
+//     const data = air.get(inst, .slice_ptr_val);
+//
+//     const slice = self.resolveInst(data.operand);
+//     return self.builder.addExtractValue(slice, 1);
+// }

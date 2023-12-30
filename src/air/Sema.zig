@@ -1,7 +1,6 @@
 const std = @import("std");
 const Fir = @import("../fir/Fir.zig");
 const Air = @import("Air.zig");
-const Module = @import("Module.zig");
 const InternPool = @import("../InternPool.zig");
 const Coercion = @import("Coercion.zig");
 const Type = @import("type.zig").Type;
@@ -110,7 +109,13 @@ fn registerGlobal(fir: *const Fir, pool: *InternPool, globals: *GlobalMap, globa
     const decl_index = try pool.addOneDecl();
     const decl_ip_index = try pool.getOrPut(.{ .decl = decl_index });
     const decl = pool.decls.at(@intFromEnum(decl_index));
-    decl.name = global.name;
+    decl.* = .{
+        .name = global.name,
+        .ty = undefined, // must be set
+        .initializer = null,
+        .mutable = false,
+        .linkage = .internal,
+    };
     try globals.put(global.name, decl_ip_index);
 }
 

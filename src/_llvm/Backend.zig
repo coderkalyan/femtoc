@@ -1,10 +1,14 @@
 const std = @import("std");
-const Hir = @import("../Hir.zig");
-const BackendInterface = @import("../codegen/Backend.zig");
-const DeclGen = @import("DeclGen.zig");
+const InternPool = @import("../InternPool.zig");
+const Air = @import("../air/Air.zig");
+const Type = @import("../air/type.zig").Type;
+const TypedValue = @import("../air/TypedValue.zig");
 const CodeGen = @import("CodeGen.zig");
-const DeclInfo = @import("../hir/DeclInfo.zig");
 const Context = @import("Context.zig");
+// const c = @cImport({
+//     @cInclude("femto_llvm.h");
+// });
+const Decl = Air.Decl;
 const Allocator = std.mem.Allocator;
 const c = Context.c;
 
@@ -13,59 +17,63 @@ const Backend = @This();
 gpa: Allocator,
 arena: Allocator,
 context: Context,
+// context: *c.Context,
+pool: *InternPool,
 
-pub fn init(gpa: Allocator, arena: Allocator) Backend {
+pub fn init(gpa: Allocator, arena: Allocator, pool: *InternPool) Backend {
     return .{
         .gpa = gpa,
         .arena = arena,
-        .context = Context.init(arena, "femto_main"),
+        .context = Context.init(arena, "femto_main", pool),
+        // .context = c.fm_context_init().?,
+        .pool = pool,
     };
 }
 
 pub fn deinit(self: *Backend) void {
     self.context.deinit();
+    // c.fm_context_deinit(self.context);
 }
 
-pub fn generate(self: *Backend, hir: *const Hir) !void {
-    const module_pl = hir.insts.items(.data)[hir.module_index].pl_node.pl;
-    const module = hir.extraData(module_pl, Hir.Inst.Module);
-
-    var codegens = std.ArrayList(CodeGen).init(self.arena);
-    defer codegens.deinit();
-    var global_map = std.AutoHashMapUnmanaged(Hir.Index, c.LLVMValueRef){};
-    defer global_map.deinit(self.arena);
-
-    var extra_index: u32 = 0;
-    while (extra_index < module.len * 2) : (extra_index += 2) {
-        const base = module_pl + 1;
-        const id = hir.extra_data[base + extra_index];
-        const inst = hir.extra_data[base + extra_index + 1];
-
-        const declinfo = try DeclInfo.generate(hir, self.gpa, inst, id);
-        var declgen = DeclGen{
-            .gpa = self.gpa,
-            .arena = self.arena,
-            .context = &self.context,
-            .hir = hir,
-            .name = id,
-            .inline_block = inst,
-            .global_map = &global_map,
-            .decl_info = declinfo,
-        };
-        const val = try declgen.generate(&codegens);
-        try global_map.put(self.arena, id, val);
+pub fn generate(self: *Backend) !void {
+    // first pass - forward declare
+    // TODO: we can probably just have a single pass and have a "generate or get decl" function
+    var pool_iterator = self.pool.decls.iterator(0);
+    while (pool_iterator.next()) |decl| {
+        _ = try self.context.generateDecl(decl);
     }
 
-    var i: u32 = 0;
-    while (i < codegens.items.len) : (i += 1) {
-        const codegen = &codegens.items[i];
-        defer self.gpa.destroy(codegen.builder);
-        defer codegen.deinit();
-        try codegen.generate();
+    // second pass - function body
+    pool_iterator = self.pool.decls.iterator(0);
+    while (pool_iterator.next()) |decl| {
+        // search for function bodies
+        if (decl.initializer) |initializer| {
+            std.debug.print("{}\n", .{initializer});
+            const tv = self.pool.indexToKey(initializer).tv;
+            switch (tv.val) {
+                .body => |body| {
+                    const function = self.context.resolveDecl(decl);
+                    const air = self.pool.bodies.at(@intFromEnum(body));
+                    var builder = Context.Builder.init(&self.context, function);
+                    var codegen: CodeGen = .{
+                        .arena = self.arena,
+                        .builder = &builder,
+                        .pool = self.pool,
+                        .air = air,
+                        .scratch = .{},
+                        .map = .{},
+                    };
+                    defer codegen.deinit();
+                    try codegen.generate();
+                },
+                else => {},
+            }
+        }
     }
 }
 
 pub fn dumpToStdout(self: *Backend) !void {
+    // c.fm_context_dump(self.context);
     self.context.dump();
 }
 
