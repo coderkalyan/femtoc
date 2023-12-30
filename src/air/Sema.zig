@@ -44,7 +44,9 @@ pub const Block = struct {
     }
 
     pub fn addConstant(b: *Block, key: InternPool.Key) !Air.Index {
-        return b.sema.addConstant(key);
+        const index = try b.sema.addConstant(key);
+        try b.insts.append(b.arena, index);
+        return index;
     }
 
     pub fn mapInst(b: *Block, fir_inst: Fir.Index, air_inst: Air.Index) !void {

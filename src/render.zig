@@ -813,6 +813,13 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("}}", .{});
                     try self.stream.newline();
                 },
+                .alloc => |alloc| {
+                    try writer.print("alloc({s}) [{s}]", .{
+                        try self.formatInterned(alloc.slot_type),
+                        try self.formatInterned(alloc.pointer_type),
+                    });
+                    try self.stream.newline();
+                },
                 // .load_global => |load_global| {
                 //     // const inst = ir.untyped_decls.get(pl).?;
                 //     // try writer.print("load_global(%{}) [{s}]", .{ inst, ident });
@@ -822,7 +829,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                 // },
                 .param => |param| {
                     const param_str = air.pool.getString(param.name).?;
-                    try writer.print("param(%{}, \"{s}\")", .{ param.ty, param_str });
+                    try writer.print("param(%{s}, \"{s}\")", .{ try self.formatInterned(param.ty), param_str });
                     try self.stream.newline();
                 },
                 .call => |call| {
@@ -852,6 +859,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         void => {},
                         inline u32, u64, f64 => try writer.print("{}", .{data}),
                         Air.Index => try writer.print("%{}", .{@intFromEnum(data)}),
+                        InternPool.Index => try writer.print("{s}", .{try self.formatInterned(data)}),
                         else => {
                             const fields = std.meta.fields(@TypeOf(data));
                             inline for (fields, 0..) |field, i| {
@@ -859,6 +867,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                                 switch (field.type) {
                                     u32 => try writer.print("{}", .{arg}),
                                     Air.Index => try writer.print("%{}", .{@intFromEnum(arg)}),
+                                    InternPool.Index => try writer.print("{s}", .{try self.formatInterned(arg)}),
                                     else => try writer.print("format error", .{}),
                                 }
 
@@ -870,6 +879,39 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.stream.newline();
                 },
             }
+        }
+
+        pub fn formatInterned(self: *Self, ip_index: InternPool.Index) ![]const u8 {
+            return switch (self.pool.indexToKey(ip_index)) {
+                .ty => |ty| switch (ty) {
+                    .void => "void",
+                    .comptime_int => |int| switch (int.sign) {
+                        .unsigned => "comptime_uint",
+                        .signed => "comptime_sint",
+                    },
+                    .int => |int| switch (int.sign) {
+                        .unsigned => std.fmt.allocPrint(self.arena, "u{}", .{int.width}),
+                        .signed => std.fmt.allocPrint(self.arena, "i{}", .{int.width}),
+                    },
+                    .comptime_float => "comptime_float",
+                    .float => |float| std.fmt.allocPrint(self.arena, "f{}", .{float.width}),
+                    .pointer => |pointer| std.fmt.allocPrint(self.arena, "{s}*", .{try self.formatInterned(pointer.pointee)}),
+                    .many_pointer => |pointer| std.fmt.allocPrint(self.arena, "{s}[*]", .{try self.formatInterned(pointer.pointee)}),
+                    .slice => |slice| std.fmt.allocPrint(self.arena, "{s}[]", .{try self.formatInterned(slice.element)}),
+                    .array => |array| std.fmt.allocPrint(self.arena, "{s}[{}]", .{ try self.formatInterned(array.element), array.count }),
+                    .function => |_| "function unimplemented",
+                },
+                .tv => |tv| {
+                    const ty = try self.formatInterned(tv.ty);
+                    const val = switch (tv.val) {
+                        .none => "none",
+                        inline .integer, .float => |num| try std.fmt.allocPrint(self.arena, "{}", .{num}),
+                        .body => "body unimplemented",
+                    };
+                    return std.fmt.allocPrint(self.arena, "{s}({s})", .{ ty, val });
+                },
+                else => "unimplemented",
+            };
         }
     };
 }
