@@ -177,7 +177,7 @@ pub fn main() !void {
     // try hirgen.semanticAnalysis();
     // const hir = try hirgen.toOwnedHir();
     // const hir = try HirGen.generate(gpa, &ast);
-    var pool = InternPool.init(gpa);
+    var pool = try InternPool.init(gpa);
     defer pool.deinit();
     const fir = try FirGen.lowerAst(gpa, &pool, &ast);
     // if (fir.errors.len > 0) {
@@ -207,6 +207,7 @@ pub fn main() !void {
     const air_renderer = render.AirRenderer(2, @TypeOf(writer));
     var renderer = air_renderer.init(writer, air_arena.allocator(), &pool);
     try renderer.renderAllDecls();
+    try renderer.renderAllBodies();
     try buffered_out.flush();
 
     // if (stage_bits & CODEGEN == 0) std.os.exit(0);

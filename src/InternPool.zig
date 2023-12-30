@@ -54,6 +54,7 @@ const Tag = enum(u8) {
     function_type,
 
     // typed values
+    none_tv,
     integer_tv,
     float_tv,
     body_tv,
@@ -170,6 +171,7 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .array_type,
         .function_type,
         => .{ .ty = Type.fromInterned(pool, index) },
+        .none_tv,
         .integer_tv,
         .float_tv,
         .body_tv,
@@ -270,7 +272,7 @@ fn putTypedValue(pool: *InternPool, key: Key) !void {
     const tv = key.tv;
     try pool.items.ensureUnusedCapacity(pool.gpa, 1);
     switch (tv.val) {
-        .none => unreachable,
+        .none => pool.items.appendAssumeCapacity(.{ .tag = .none_tv, .data = 0xcafeb0ba }),
         .integer => |int| {
             try pool.values.append(pool.gpa, int);
             const value_index: u32 = @intCast(pool.values.items.len - 1);
@@ -362,8 +364,8 @@ pub const ExtraSlice = struct {
     end: u32,
 };
 
-pub fn init(gpa: Allocator) InternPool {
-    return .{
+pub fn init(gpa: Allocator) !InternPool {
+    var ip: InternPool = .{
         .gpa = gpa,
         .map = .{},
         .items = .{},
@@ -374,6 +376,8 @@ pub fn init(gpa: Allocator) InternPool {
         .string_bytes = .{},
         .string_table = .{},
     };
+    _ = try ip.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } });
+    return ip;
 }
 
 pub fn deinit(pool: *InternPool) void {

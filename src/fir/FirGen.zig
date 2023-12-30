@@ -544,6 +544,8 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     try fg.scratch.ensureUnusedCapacity(fg.arena, fir_params.len);
     for (fir_params) |param| {
         try body_scope.linkInst(@enumFromInt(param));
+        const param_inst = fg.get(@enumFromInt(param));
+        fg.scratch.appendAssumeCapacity(@intFromEnum(param_inst.data.param.ty));
     }
 
     const return_type = try typeExpr(b, scope, signature.return_ty);

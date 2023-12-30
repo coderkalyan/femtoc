@@ -85,85 +85,37 @@ pub const Inst = struct {
         // binary expressions take in two operands, all of these behave the same
         // they work on any type, type checking is done during semantic analysis
         // addition +
-        add: struct {
-            l: Index,
-            r: Index,
-        },
+        add: BinaryOp,
         // subtraction -
-        sub: struct {
-            l: Index,
-            r: Index,
-        },
+        sub: BinaryOp,
         // multiplication *
-        mul: struct {
-            l: Index,
-            r: Index,
-        },
+        mul: BinaryOp,
         // division /
-        div: struct {
-            l: Index,
-            r: Index,
-        },
+        div: BinaryOp,
         // modulo %
-        mod: struct {
-            l: Index,
-            r: Index,
-        },
+        mod: BinaryOp,
         // bitwise or |
-        bitwise_or: struct {
-            l: Index,
-            r: Index,
-        },
+        bitwise_or: BinaryOp,
         // bitwise and &
-        bitwise_and: struct {
-            l: Index,
-            r: Index,
-        },
+        bitwise_and: BinaryOp,
         // bitwise xor ^
-        bitwise_xor: struct {
-            l: Index,
-            r: Index,
-        },
+        bitwise_xor: BinaryOp,
         // compare equal ==
-        cmp_eq: struct {
-            l: Index,
-            r: Index,
-        },
+        cmp_eq: BinaryOp,
         // compare not equal !=
-        cmp_ne: struct {
-            l: Index,
-            r: Index,
-        },
+        cmp_ne: BinaryOp,
         // compare greater than >
-        cmp_gt: struct {
-            l: Index,
-            r: Index,
-        },
+        cmp_gt: BinaryOp,
         // compare greater than equal >=
-        cmp_ge: struct {
-            l: Index,
-            r: Index,
-        },
+        cmp_ge: BinaryOp,
         // compare less than <
-        cmp_lt: struct {
-            l: Index,
-            r: Index,
-        },
+        cmp_lt: BinaryOp,
         // compare less than equal <=
-        cmp_le: struct {
-            l: Index,
-            r: Index,
-        },
+        cmp_le: BinaryOp,
         // shift left <<
-        sl: struct {
-            l: Index,
-            r: Index,
-        },
+        sl: BinaryOp,
         // shift right >>
-        sr: struct {
-            l: Index,
-            r: Index,
-        },
+        sr: BinaryOp,
 
         // unary expressions
         // negate -
@@ -314,6 +266,11 @@ pub const Inst = struct {
         module: struct {
             insts: ExtraIndex,
         },
+
+        pub const BinaryOp = struct {
+            l: Index,
+            r: Index,
+        };
     };
 
     pub const Loc = union {

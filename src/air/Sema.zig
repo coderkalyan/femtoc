@@ -28,6 +28,42 @@ function: ?struct {
     body_index: InternPool.AirIndex,
 },
 
+pub const Block = struct {
+    sema: *Sema,
+    arena: Allocator,
+    fir: *const Fir,
+    insts: std.ArrayListUnmanaged(Air.Index),
+    pool: *InternPool,
+    is_comptime: bool = false,
+    return_type: ?InternPool.Index,
+
+    pub fn add(b: *Block, inst: Air.Inst) !Air.Index {
+        const index = try b.sema.add(inst);
+        try b.insts.append(b.arena, index);
+        return index;
+    }
+
+    pub fn addConstant(b: *Block, key: InternPool.Key) !Air.Index {
+        return b.sema.addConstant(key);
+    }
+
+    pub fn mapInst(b: *Block, fir_inst: Fir.Index, air_inst: Air.Index) !void {
+        try b.sema.inst_map.put(b.arena, fir_inst, air_inst);
+    }
+
+    pub fn mapInterned(b: *Block, fir_inst: Fir.Index, ip_index: InternPool.Index) !void {
+        try b.sema.ip_map.put(b.arena, fir_inst, ip_index);
+    }
+
+    pub fn resolveInst(b: *Block, fir_inst: Fir.Index) Air.Index {
+        return b.sema.resolveInst(fir_inst);
+    }
+
+    pub fn resolveInterned(b: *Block, fir_inst: Fir.Index) InternPool.Index {
+        return b.sema.resolveInterned(fir_inst);
+    }
+};
+
 pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) !void {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
@@ -59,7 +95,7 @@ pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) !void {
             .globals = &globals,
             .function = null,
         };
-        try sema.analyzeGlobal(undefined, @enumFromInt(global)); // TODO: get rid of this parameter
+        try sema.analyzeGlobal(@enumFromInt(global));
 
         if (sema.function) |_| {
             try sema.analyzeFunctionBody();
@@ -76,39 +112,43 @@ fn registerGlobal(fir: *const Fir, pool: *InternPool, globals: *GlobalMap, globa
     try globals.put(global.name, decl_ip_index);
 }
 
-fn analyzeGlobal(sema: *Sema, decls: *std.ArrayList(InternPool.Index), global_inst: Fir.Index) !void {
-    _ = decls;
+fn analyzeGlobal(sema: *Sema, global_inst: Fir.Index) !void {
     const fir = sema.fir;
     const global = fir.insts.items(.data)[@intFromEnum(global_inst)].global;
     const block_pl = fir.insts.items(.data)[@intFromEnum(global.block)].block_inline.insts;
     const slice = fir.extraData(Fir.Inst.ExtraSlice, block_pl);
     const insts = fir.extraSlice(slice);
-    // const decl_index = try sema.pool.addOneDecl();
-    // const decl_ip_index = try sema.pool.getOrPut(.{ .decl = decl_index });
     const decl_ip_index = sema.globals.get(global.name).?;
-    // const decl_index = sema.pool.indexToKey(decl_ip_index).decl;
-    // const decl = sema.pool.decls.at(@intFromEnum(decl_index));
-    // decl.name = global.name;
+
+    var b: Block = .{
+        .sema = sema,
+        .arena = sema.arena,
+        .fir = sema.fir,
+        .insts = .{},
+        .pool = sema.pool,
+        .is_comptime = true,
+        .return_type = sema.return_type,
+    };
 
     for (insts) |i| {
         const inst: Fir.Index = @enumFromInt(i);
         switch (fir.insts.items(.tags)[i]) {
-            .int => try sema.integerLiteral(inst),
-            .float => try sema.floatLiteral(inst),
-            .builtin_type => try sema.builtinType(inst),
-            .bool_type => try sema.boolType(inst),
-            .pointer_type => try sema.pointerType(inst),
-            .many_pointer_type => try sema.manyPointerType(inst),
-            .slice_type => try sema.sliceType(inst),
-            .array_type => try sema.arrayType(inst),
-            .function_type => try sema.functionType(inst),
-            .type_of => try sema.firTypeOf(inst),
-            .function => try sema.firFunction(inst),
-            .global_handle => try sema.globalHandle(inst, decl_ip_index),
-            .global_set_mutable => try sema.globalSetMutable(inst),
-            .global_set_type => try sema.globalSetType(inst),
-            .global_set_init => try sema.globalSetInit(inst),
-            .global_set_linkage_external => try sema.globalSetLinkageExternal(inst),
+            .int => try integerLiteral(&b, inst),
+            .float => try floatLiteral(&b, inst),
+            .builtin_type => try builtinType(&b, inst),
+            .bool_type => try boolType(&b, inst),
+            .pointer_type => try pointerType(&b, inst),
+            .many_pointer_type => try manyPointerType(&b, inst),
+            .slice_type => try sliceType(&b, inst),
+            .array_type => try arrayType(&b, inst),
+            .function_type => try functionType(&b, inst),
+            .type_of => try firTypeOf(&b, inst),
+            .function => try firFunction(&b, inst),
+            .global_handle => try globalHandle(&b, inst, decl_ip_index),
+            .global_set_mutable => try globalSetMutable(&b, inst),
+            .global_set_type => try globalSetType(&b, inst),
+            .global_set_init => try globalSetInit(&b, inst),
+            .global_set_linkage_external => try globalSetLinkageExternal(&b, inst),
             .yield_inline => break,
             else => |tag| {
                 std.log.err("encountered invalid global instruction: {}\n", .{tag});
@@ -118,39 +158,101 @@ fn analyzeGlobal(sema: *Sema, decls: *std.ArrayList(InternPool.Index), global_in
     }
 }
 
-fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) !void {
+fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Truncated, InvalidCoercion, OutOfMemory, HandledUserError }!Air.Index {
     const fir = sema.fir;
     const block_pl = fir.insts.items(.data)[@intFromEnum(block)].block.insts;
     const slice = fir.extraData(Fir.Inst.ExtraSlice, block_pl);
     const insts = fir.extraSlice(slice);
+
+    var b: Block = .{
+        .sema = sema,
+        .arena = sema.arena,
+        .fir = sema.fir,
+        .pool = sema.pool,
+        .insts = .{},
+        .return_type = sema.return_type,
+    };
+
     for (insts) |i| {
         const inst: Fir.Index = @enumFromInt(i);
         switch (fir.insts.items(.tags)[i]) {
-            .int => try sema.integerLiteral(inst),
-            .float => try sema.floatLiteral(inst),
-            .builtin_type => try sema.builtinType(inst),
-            .bool_type => try sema.boolType(inst),
-            .pointer_type => try sema.pointerType(inst),
-            .many_pointer_type => try sema.manyPointerType(inst),
-            .slice_type => try sema.sliceType(inst),
-            .array_type => try sema.arrayType(inst),
-            .function_type => try sema.functionType(inst),
-            .type_of => try sema.firTypeOf(inst),
-            .param_type => try sema.paramType(inst),
-            .coerce => try sema.firCoerce(inst),
-            .param => try sema.firParam(inst),
-            .push => try sema.push(inst),
-            .load => try sema.load(inst),
-            .store => try sema.store(inst),
-            .return_type => try sema.returnType(inst),
-            .call => try sema.call(inst),
-            .load_global => try sema.loadGlobal(inst),
-            else => {},
-            // .none => unreachable, // TODO
-            // .string => unreachable,
-            // .array => unreachable,
+            .int => try integerLiteral(&b, inst),
+            .float => try floatLiteral(&b, inst),
+            .none => try voidLiteral(&b, inst),
+            .string => unreachable, // TODO
+            .array => unreachable, // TODO
+            .builtin_type => try builtinType(&b, inst),
+            .bool_type => try boolType(&b, inst),
+            .pointer_type => try pointerType(&b, inst),
+            .many_pointer_type => try manyPointerType(&b, inst),
+            .array_type => try arrayType(&b, inst),
+            .slice_type => try sliceType(&b, inst),
+            .function_type => try functionType(&b, inst),
+            .return_type => try returnType(&b, inst),
+            .param_type => try paramType(&b, inst),
+            .element_type => try elementType(&b, inst),
+            .type_of => try firTypeOf(&b, inst),
+
+            inline .add,
+            .sub,
+            .mul,
+            .div,
+            .mod,
+            .bitwise_or,
+            .bitwise_and,
+            .bitwise_xor,
+            => |tag| try binaryArithOp(&b, inst, tag),
+            .sl,
+            .sr,
+            => unreachable, // TODO
+            inline .cmp_eq,
+            .cmp_ne,
+            .cmp_gt,
+            .cmp_ge,
+            .cmp_lt,
+            .cmp_le,
+            // => {}, // TODO
+            => |tag| try binaryCmp(&b, inst, tag),
+            .neg => try unaryNeg(&b, inst),
+            .bitwise_inv => try bitwiseInv(&b, inst),
+
+            .coerce => try firCoerce(&b, inst),
+            .call => try call(&b, inst),
+            .index_ref, .index_val => unreachable, // TODO
+            .load_global => try loadGlobal(&b, inst),
+            .push => try push(&b, inst),
+            .load => try load(&b, inst),
+            .store => try store(&b, inst),
+
+            .branch_single => try branchSingle(&b, inst),
+            .branch_double => try branchDouble(&b, inst),
+            .loop => try loop(&b, inst),
+            .return_node => try returnNode(&b, inst),
+            .return_implicit => try returnImplicit(&b, inst),
+            .yield_node => try yieldNode(&b, inst),
+            .yield_implicit => try yieldImplicit(&b, inst),
+            .yield_inline => unreachable,
+            .@"break" => try firBreak(&b, inst),
+            .@"continue" => try firContinue(&b, inst),
+            .block => try firBlock(&b, inst),
+            .block_inline => unreachable,
+
+            .function => unreachable,
+            .param => try firParam(&b, inst),
+            .global_handle,
+            .global_set_mutable,
+            .global_set_type,
+            .global_set_init,
+            .global_set_linkage_external,
+            .global,
+            .module,
+            => unreachable,
         }
     }
+
+    const air_block = try sema.addBlockUnlinked(&b);
+    try b.mapInst(block, air_block);
+    return air_block;
 }
 
 pub fn addExtra(sema: *Sema, extra: anytype) !Air.ExtraIndex {
@@ -189,6 +291,18 @@ pub fn addSlice(sema: *Sema, slice: []const u32) !Air.ExtraIndex {
     });
 }
 
+pub fn addBlockUnlinked(sema: *Sema, inner: *Block) !Air.Index {
+    const scratch_top = sema.scratch.items.len;
+    defer sema.scratch.shrinkRetainingCapacity(scratch_top);
+    try sema.scratch.ensureUnusedCapacity(sema.arena, inner.insts.items.len);
+    for (inner.insts.items) |inst| {
+        sema.scratch.appendAssumeCapacity(@intFromEnum(inst));
+    }
+    const insts = sema.scratch.items[scratch_top..];
+    const pl = try sema.addSlice(insts);
+    return sema.add(.{ .block = .{ .insts = pl } });
+}
+
 fn resolveInst(sema: *Sema, fir_inst: Fir.Index) Air.Index {
     // TODO: globals
     return sema.inst_map.get(fir_inst).?;
@@ -219,57 +333,65 @@ pub fn addConstant(sema: *Sema, key: InternPool.Key) !Air.Index {
     // return @enumFromInt(raw & (1 << 31));
 }
 
-fn globalHandle(sema: *Sema, inst: Fir.Index, decl: InternPool.Index) !void {
-    // const decl_index = sema.pool.indexToKey(decl).decl;
-    // const decl_data = sema.pool.decls.at(@intFromEnum(decl_index));
-    const air_inst = try sema.add(.{ .load_decl = decl });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+fn globalHandle(b: *Block, inst: Fir.Index, decl: InternPool.Index) !void {
+    // const decl_index = b.pool.indexToKey(decl).decl;
+    // const decl_data = b.pool.decls.at(@intFromEnum(decl_index));
+    const air_inst = try b.add(.{ .load_decl = decl });
+    try b.mapInst(inst, air_inst);
 }
 
-fn globalSetMutable(sema: *Sema, inst: Fir.Index) !void {
-    const global_set_mutable = sema.fir.get(inst);
-    const decl = sema.resolveDecl(sema.resolveInst(global_set_mutable.data.global_set_mutable));
+fn globalSetMutable(b: *Block, inst: Fir.Index) !void {
+    const global_set_mutable = b.fir.get(inst);
+    const decl = b.sema.resolveDecl(b.resolveInst(global_set_mutable.data.global_set_mutable));
     decl.mutable = true;
 }
 
-fn globalSetType(sema: *Sema, inst: Fir.Index) !void {
-    const global_set_type = sema.fir.get(inst);
+fn globalSetType(b: *Block, inst: Fir.Index) !void {
+    const global_set_type = b.fir.get(inst);
     const data = global_set_type.data.global_set_type;
-    const decl = sema.resolveDecl(sema.resolveInst(data.handle));
-    decl.ty = sema.resolveInterned(data.ty);
+    const decl = b.sema.resolveDecl(b.resolveInst(data.handle));
+    decl.ty = b.resolveInterned(data.ty);
 }
 
-fn globalSetInit(sema: *Sema, inst: Fir.Index) !void {
-    const global_set_init = sema.fir.get(inst);
+fn globalSetInit(b: *Block, inst: Fir.Index) !void {
+    const global_set_init = b.fir.get(inst);
     const data = global_set_init.data.global_set_init;
-    const decl = sema.resolveDecl(sema.resolveInst(data.handle));
-    const air_inst = sema.resolveInst(data.val);
-    decl.initializer = sema.insts.items(.data)[@intFromEnum(air_inst)].constant;
+    const decl = b.sema.resolveDecl(b.resolveInst(data.handle));
+    const air_inst = b.resolveInst(data.val);
+    decl.initializer = b.sema.insts.items(.data)[@intFromEnum(air_inst)].constant;
 }
 
-fn globalSetLinkageExternal(sema: *Sema, inst: Fir.Index) !void {
-    const global_set_linkage_external = sema.fir.get(inst);
+fn globalSetLinkageExternal(b: *Block, inst: Fir.Index) !void {
+    const global_set_linkage_external = b.fir.get(inst);
     const data = global_set_linkage_external.data.global_set_linkage_external;
-    const decl = sema.resolveDecl(sema.resolveInst(data));
+    const decl = b.sema.resolveDecl(b.resolveInst(data));
     decl.linkage = .external;
 }
 
-fn integerLiteral(sema: *Sema, inst: Fir.Index) !void {
-    const int = sema.fir.get(inst);
-    const air_inst = try sema.addConstant(.{ .tv = .{
-        .ty = try sema.pool.getOrPut(.{ .ty = .{ .comptime_int = .{ .sign = .unsigned } } }),
+fn integerLiteral(b: *Block, inst: Fir.Index) !void {
+    const int = b.fir.get(inst);
+    const air_inst = try b.addConstant(.{ .tv = .{
+        .ty = try b.pool.getOrPut(.{ .ty = .{ .comptime_int = .{ .sign = .unsigned } } }),
         .val = .{ .integer = int.data.int },
     } });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    try b.mapInst(inst, air_inst);
 }
 
-fn floatLiteral(sema: *Sema, inst: Fir.Index) !void {
-    const float = sema.fir.get(inst);
-    const air_inst = try sema.addConstant(.{ .tv = .{
-        .ty = try sema.pool.getOrPut(.{ .ty = .{ .comptime_float = {} } }),
+fn floatLiteral(b: *Block, inst: Fir.Index) !void {
+    const float = b.fir.get(inst);
+    const air_inst = try b.addConstant(.{ .tv = .{
+        .ty = try b.pool.getOrPut(.{ .ty = .{ .comptime_float = {} } }),
         .val = .{ .float = float.data.float },
     } });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    try b.mapInst(inst, air_inst);
+}
+
+fn voidLiteral(b: *Block, inst: Fir.Index) !void {
+    const air_inst = try b.addConstant(.{ .tv = .{
+        .ty = try b.pool.getOrPut(.{ .ty = .{ .void = {} } }),
+        .val = .{ .none = {} },
+    } });
+    try b.mapInst(inst, air_inst);
 }
 
 const builtin_type_enum = enum {
@@ -302,139 +424,152 @@ const builtin_types = std.ComptimeStringMap(builtin_type_enum, .{
     .{ "void", .void_type },
 });
 
-fn builtinType(sema: *Sema, inst: Fir.Index) !void {
-    const fir = sema.fir;
+fn builtinType(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
     const node = fir.locs[@intFromEnum(inst)].node;
     const main_token = fir.tree.mainToken(node);
     const type_str = fir.tree.tokenString(main_token);
     const builtin_type = builtin_types.get(type_str).?;
-    const air_ref = switch (builtin_type) {
-        .u8_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 8 } } }),
-        .u16_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 16 } } }),
-        .u32_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 32 } } }),
-        .u64_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
-        .i8_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 8 } } }),
-        .i16_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 16 } } }),
-        .i32_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 32 } } }),
-        .i64_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 64 } } }),
-        .f32_type => try sema.pool.getOrPut(.{ .ty = .{ .float = .{ .width = 32 } } }),
-        .f64_type => try sema.pool.getOrPut(.{ .ty = .{ .float = .{ .width = 64 } } }),
-        .bool_type => try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } }),
-        .void_type => try sema.pool.getOrPut(.{ .ty = .{ .void = {} } }),
+    const ip_index = switch (builtin_type) {
+        .u8_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 8 } } }),
+        .u16_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 16 } } }),
+        .u32_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 32 } } }),
+        .u64_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
+        .i8_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 8 } } }),
+        .i16_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 16 } } }),
+        .i32_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 32 } } }),
+        .i64_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 64 } } }),
+        .f32_type => try b.pool.getOrPut(.{ .ty = .{ .float = .{ .width = 32 } } }),
+        .f64_type => try b.pool.getOrPut(.{ .ty = .{ .float = .{ .width = 64 } } }),
+        .bool_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } }),
+        .void_type => try b.pool.getOrPut(.{ .ty = .{ .void = {} } }),
     };
-    // const air_inst = try sema.add(.{ .constant = ip_index });
-    try sema.ip_map.put(sema.arena, inst, air_ref);
+    try b.mapInterned(inst, ip_index);
 }
 
-fn pointerType(sema: *Sema, inst: Fir.Index) !void {
-    const pointer_type = sema.fir.get(inst);
+fn pointerType(b: *Block, inst: Fir.Index) !void {
+    const pointer_type = b.fir.get(inst);
     const data = pointer_type.data.pointer_type;
-    const pointee = sema.resolveInterned(data.pointee);
-    const ip_index = try sema.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = pointee } } });
-    try sema.ip_map.put(sema.arena, inst, ip_index);
+    const pointee = b.resolveInterned(data.pointee);
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = pointee } } });
+    try b.mapInterned(inst, ip_index);
 }
 
-fn manyPointerType(sema: *Sema, inst: Fir.Index) !void {
-    const many_pointer_type = sema.fir.get(inst);
+fn manyPointerType(b: *Block, inst: Fir.Index) !void {
+    const many_pointer_type = b.fir.get(inst);
     const data = many_pointer_type.data.many_pointer_type;
-    const pointee = sema.resolveInterned(data.pointee);
-    const ip_index = try sema.pool.getOrPut(.{ .ty = .{ .many_pointer = .{ .pointee = pointee } } });
-    try sema.ip_map.put(sema.arena, inst, ip_index);
+    const pointee = b.resolveInterned(data.pointee);
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .many_pointer = .{ .pointee = pointee } } });
+    try b.mapInterned(inst, ip_index);
 }
 
-fn sliceType(sema: *Sema, inst: Fir.Index) !void {
-    const slice_type = sema.fir.get(inst);
+fn sliceType(b: *Block, inst: Fir.Index) !void {
+    const slice_type = b.fir.get(inst);
     const data = slice_type.data.slice_type;
-    const element = sema.resolveInterned(data.element);
-    const ip_index = try sema.pool.getOrPut(.{ .ty = .{ .slice = .{ .element = element } } });
-    try sema.ip_map.put(sema.arena, inst, ip_index);
+    const element = b.resolveInterned(data.element);
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .slice = .{ .element = element } } });
+    try b.mapInterned(inst, ip_index);
 }
 
-fn arrayType(sema: *Sema, inst: Fir.Index) !void {
-    const array_type = sema.fir.get(inst);
+fn arrayType(b: *Block, inst: Fir.Index) !void {
+    const array_type = b.fir.get(inst);
     const data = array_type.data.array_type;
-    const element = sema.resolveInterned(data.element);
+    const element = b.resolveInterned(data.element);
     const count = count: {
-        const ip_index = sema.resolveInterned(data.element);
-        const tv = sema.pool.indexToKey(ip_index).tv;
-        const ty = sema.pool.indexToKey(tv.ty).ty;
+        const ip_index = b.resolveInterned(data.element);
+        const tv = b.pool.indexToKey(ip_index).tv;
+        const ty = b.pool.indexToKey(tv.ty).ty;
         // TODO: emit error
         std.debug.assert(@as(std.meta.Tag(Type), ty) == .comptime_int);
         break :count tv.val.integer;
     };
-    const ip_index = try sema.pool.getOrPut(.{ .ty = .{ .array = .{ .element = element, .count = @intCast(count) } } });
-    try sema.ip_map.put(sema.arena, inst, ip_index);
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .array = .{ .element = element, .count = @intCast(count) } } });
+    try b.mapInterned(inst, ip_index);
 }
 
-fn boolType(sema: *Sema, inst: Fir.Index) !void {
-    const ip_index = try sema.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } });
-    try sema.ip_map.put(sema.arena, inst, ip_index);
+fn boolType(b: *Block, inst: Fir.Index) !void {
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } });
+    try b.mapInterned(inst, ip_index);
 }
 
-fn functionType(sema: *Sema, inst: Fir.Index) !void {
-    const fir = sema.fir;
+fn functionType(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
     const function_type = fir.get(inst);
     const data = function_type.data.function_type;
-    const return_type = sema.resolveInterned(data.@"return");
+    const return_type = b.resolveInterned(data.@"return");
 
     const slice = fir.extraData(Fir.Inst.ExtraSlice, data.params);
     const params = fir.extraSlice(slice);
-    const scratch_top = sema.scratch.items.len;
-    defer sema.scratch.shrinkRetainingCapacity(scratch_top);
-    try sema.scratch.ensureUnusedCapacity(sema.arena, params.len);
+    const scratch_top = b.sema.scratch.items.len;
+    defer b.sema.scratch.shrinkRetainingCapacity(scratch_top);
+    try b.sema.scratch.ensureUnusedCapacity(b.arena, params.len);
     for (params) |param| {
-        const ip_index = sema.resolveInterned(@enumFromInt(param));
-        sema.scratch.appendAssumeCapacity(@intFromEnum(ip_index));
+        const ip_index = b.resolveInterned(@enumFromInt(param));
+        b.sema.scratch.appendAssumeCapacity(@intFromEnum(ip_index));
     }
 
-    const params_start: u32 = @intCast(sema.pool.extra.items.len);
-    try sema.pool.extra.appendSlice(sema.pool.gpa, sema.scratch.items[scratch_top..]);
-    const params_end: u32 = @intCast(sema.pool.extra.items.len);
-    const air_inst = try sema.pool.getOrPut(.{ .ty = .{ .function = .{
+    const params_start: u32 = @intCast(b.pool.extra.items.len);
+    try b.pool.extra.appendSlice(b.pool.gpa, b.sema.scratch.items[scratch_top..]);
+    const params_end: u32 = @intCast(b.pool.extra.items.len);
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .function = .{
         .params = .{ .start = params_start, .end = params_end },
         .@"return" = return_type,
     } } });
-    try sema.ip_map.put(sema.arena, inst, air_inst);
+    try b.mapInterned(inst, ip_index);
 }
 
-fn firTypeOf(sema: *Sema, inst: Fir.Index) !void {
-    const type_of = sema.fir.get(inst);
-    const operand = sema.resolveInst(type_of.data.type_of);
-    const ty = sema.tempAir().typeOf(operand);
-    try sema.ip_map.put(sema.arena, inst, ty);
+fn firTypeOf(b: *Block, inst: Fir.Index) !void {
+    const type_of = b.fir.get(inst);
+    const operand = b.resolveInst(type_of.data.type_of);
+    const ty = b.sema.tempAir().typeOf(operand);
+    try b.mapInterned(inst, ty);
 }
 
-fn returnType(sema: *Sema, inst: Fir.Index) !void {
-    const ty = sema.return_type.?;
-    try sema.ip_map.put(sema.arena, inst, ty);
+fn returnType(b: *Block, inst: Fir.Index) !void {
+    const ty = b.return_type.?;
+    try b.mapInterned(inst, ty);
 }
 
-fn paramType(sema: *Sema, inst: Fir.Index) !void {
-    const param_type = sema.fir.get(inst);
+fn paramType(b: *Block, inst: Fir.Index) !void {
+    const param_type = b.fir.get(inst);
     const data = param_type.data.param_type;
-    const function = sema.resolveInst(data.function);
-    const ty = sema.tempAir().typeOf(function);
-    const function_type = sema.pool.indexToKey(ty).ty.function;
-    const params = sema.pool.extra.items[function_type.params.start..function_type.params.end];
-    try sema.ip_map.put(sema.arena, inst, @enumFromInt(params[data.index]));
+    const function = b.resolveInst(data.function);
+    const ty = b.sema.tempAir().typeOf(function);
+    const function_type = b.pool.indexToKey(ty).ty.function;
+    const params = b.pool.extra.items[function_type.params.start..function_type.params.end];
+    try b.mapInterned(inst, @enumFromInt(params[data.index]));
 }
 
-fn firFunction(sema: *Sema, inst: Fir.Index) !void {
-    const fir = sema.fir;
+fn elementType(b: *Block, inst: Fir.Index) !void {
+    const element_type = b.fir.get(inst);
+    const data = element_type.data.element_type;
+    const parent = b.resolveInst(data.parent);
+    const ty = b.sema.tempAir().typeOf(parent);
+    const element = switch (b.pool.indexToKey(ty).ty) {
+        .array => |array| array.element,
+        .slice => |slice| slice.element,
+        .many_pointer => |many_pointer| many_pointer.pointee,
+        else => unreachable,
+    };
+    try b.mapInterned(inst, element);
+}
+
+fn firFunction(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
     const function = fir.get(inst);
     const data = function.data.function;
-    const signature = sema.resolveInterned(data.signature);
-    // const function_type = sema.pool.indexToKey(signature).ty.function;
+    const signature = b.resolveInterned(data.signature);
+    // const function_type = b.pool.indexToKey(signature).ty.function;
 
-    // const ip_index = try sema.pool.putBody(signature, air);
-    const air_index = try sema.pool.addOneBody(signature);
-    const ip_index = try sema.pool.getOrPut(.{ .tv = .{
+    // const ip_index = try b.pool.putBody(signature, air);
+    const air_index = try b.pool.addOneBody(signature);
+    const ip_index = try b.pool.getOrPut(.{ .tv = .{
         .ty = signature,
         .val = .{ .body = air_index },
     } });
-    const air_inst = try sema.add(.{ .constant = ip_index });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
-    sema.function = .{
+    const air_inst = try b.add(.{ .constant = ip_index });
+    try b.mapInst(inst, air_inst);
+    b.sema.function = .{
         .inst = inst,
         .body_index = air_index,
     };
@@ -462,120 +597,504 @@ fn analyzeFunctionBody(sema: *Sema) !void {
         .globals = sema.globals,
         .function = null,
     };
-    try body_sema.analyzeBodyBlock(data.body);
+    const toplevel = try body_sema.analyzeBodyBlock(data.body);
 
     const air: Air = .{
         .insts = body_sema.insts.toOwnedSlice(),
         .extra = try body_sema.extra.toOwnedSlice(sema.gpa),
         .pool = body_sema.pool,
+        .toplevel = toplevel,
     };
     const body = sema.pool.bodies.at(@intFromEnum(sema.function.?.body_index));
     body.* = air;
 }
 
-fn firCoerce(sema: *Sema, inst: Fir.Index) !void {
-    const fir = sema.fir;
+fn firCoerce(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
     const coerce = fir.get(inst);
     const data = coerce.data.coerce;
 
-    const src = sema.resolveInst(data.src);
-    const dest_type = sema.resolveInterned(data.ty);
+    const src = b.resolveInst(data.src);
+    const dest_type = b.resolveInterned(data.ty);
 
     var info: Coercion = .{
-        .sema = sema,
+        .b = b,
         .src = src,
         .dest_type = dest_type,
     };
     const air_inst = try info.coerce();
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    try b.mapInst(inst, air_inst);
 }
 
-fn firParam(sema: *Sema, inst: Fir.Index) !void {
-    const param = sema.fir.get(inst);
+fn firParam(b: *Block, inst: Fir.Index) !void {
+    const param = b.fir.get(inst);
     const data = param.data.param;
-    const ty = sema.resolveInterned(data.ty);
+    const ty = b.resolveInterned(data.ty);
 
-    const air_inst = try sema.add(.{ .param = .{
+    const air_inst = try b.add(.{ .param = .{
         .name = data.name,
         .ty = ty,
     } });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    try b.mapInst(inst, air_inst);
 }
 
-fn push(sema: *Sema, inst: Fir.Index) !void {
-    const push_inst = sema.fir.get(inst);
+fn push(b: *Block, inst: Fir.Index) !void {
+    const push_inst = b.fir.get(inst);
     const data = push_inst.data.push;
 
-    const operand = sema.resolveInst(data);
-    const ty = sema.tempAir().typeOf(operand);
-    const pointer_type = try sema.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
-    const alloc = try sema.add(.{ .alloc = .{
+    const operand = b.resolveInst(data);
+    const ty = b.sema.tempAir().typeOf(operand);
+    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
+    const alloc = try b.add(.{ .alloc = .{
         .slot_type = ty,
         .pointer_type = pointer_type,
     } });
-    _ = try sema.add(.{ .store = .{
+    _ = try b.add(.{ .store = .{
         .ptr = alloc,
         .val = operand,
     } });
-    try sema.inst_map.put(sema.arena, inst, alloc);
+    try b.mapInst(inst, alloc);
 }
 
-fn load(sema: *Sema, inst: Fir.Index) !void {
-    const load_inst = sema.fir.get(inst);
+fn load(b: *Block, inst: Fir.Index) !void {
+    const load_inst = b.fir.get(inst);
     const data = load_inst.data.load;
 
-    const ptr = sema.resolveInst(data.ptr);
-    const air_inst = try sema.add(.{ .load = .{
+    const ptr = b.resolveInst(data.ptr);
+    const air_inst = try b.add(.{ .load = .{
         .ptr = ptr,
     } });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    try b.mapInst(inst, air_inst);
 }
 
-fn store(sema: *Sema, inst: Fir.Index) !void {
-    const store_inst = sema.fir.get(inst);
+fn store(b: *Block, inst: Fir.Index) !void {
+    const store_inst = b.fir.get(inst);
     const data = store_inst.data.store;
 
-    const ptr = sema.resolveInst(data.ptr);
-    const val = sema.resolveInst(data.val);
-    const air_inst = try sema.add(.{ .store = .{
+    const ptr = b.resolveInst(data.ptr);
+    const val = b.resolveInst(data.val);
+    const air_inst = try b.add(.{ .store = .{
         .ptr = ptr,
         .val = val,
     } });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    try b.mapInst(inst, air_inst);
 }
 
-fn call(sema: *Sema, inst: Fir.Index) !void {
-    const fir = sema.fir;
+fn call(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
     const call_inst = fir.get(inst);
     const data = call_inst.data.call;
-    const function = sema.resolveInst(data.function);
+    const function = b.resolveInst(data.function);
     const slice = fir.extraData(Fir.Inst.ExtraSlice, data.args);
     const fir_args = fir.extraSlice(slice);
 
-    const scratch_top = sema.scratch.items.len;
-    defer sema.scratch.shrinkRetainingCapacity(scratch_top);
-    try sema.scratch.ensureUnusedCapacity(sema.arena, fir_args.len);
+    const scratch_top = b.sema.scratch.items.len;
+    defer b.sema.scratch.shrinkRetainingCapacity(scratch_top);
+    try b.sema.scratch.ensureUnusedCapacity(b.arena, fir_args.len);
     for (fir_args) |fir_arg| {
-        const arg = sema.resolveInst(@enumFromInt(fir_arg));
-        sema.scratch.appendAssumeCapacity(@intFromEnum(arg));
+        const arg = b.resolveInst(@enumFromInt(fir_arg));
+        b.sema.scratch.appendAssumeCapacity(@intFromEnum(arg));
     }
 
-    const args = sema.scratch.items[scratch_top..];
-    const pl = try sema.addSlice(args);
-    const air_inst = try sema.add(.{ .call = .{
+    const args = b.sema.scratch.items[scratch_top..];
+    const pl = try b.sema.addSlice(args);
+    const air_inst = try b.add(.{ .call = .{
         .function = function,
         .args = pl,
     } });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    try b.mapInst(inst, air_inst);
 }
 
-fn loadGlobal(sema: *Sema, inst: Fir.Index) !void {
-    const load_global = sema.fir.get(inst);
+fn loadGlobal(b: *Block, inst: Fir.Index) !void {
+    const load_global = b.fir.get(inst);
     const data = load_global.data.load_global;
 
-    const ip_index = sema.globals.get(data.name).?;
-    const air_inst = try sema.add(.{ .load_decl = ip_index });
-    try sema.inst_map.put(sema.arena, inst, air_inst);
+    const ip_index = b.sema.globals.get(data.name).?;
+    const air_inst = try b.add(.{ .load_decl = ip_index });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn coerceInnerImplicit(b: *Block, src: Air.Index, dest_type: Type) !Air.Index {
+    var info: Coercion = .{
+        .b = b,
+        .src = src,
+        .dest_type = try b.pool.getOrPut(.{ .ty = dest_type }),
+    };
+    return info.coerce();
+}
+
+fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Data)) !void {
+    const fir = b.fir;
+    const binary = fir.get(inst);
+    const data = @field(binary.data, @tagName(tag));
+    // const op_token = b.tree.mainToken(binary.node);
+
+    const temp_air = b.sema.tempAir();
+    const l = b.resolveInst(data.l);
+    const r = b.resolveInst(data.r);
+    const lty_index = temp_air.typeOf(l);
+    const rty_index = temp_air.typeOf(r);
+    const lty = b.pool.indexToKey(lty_index).ty;
+    const rty = b.pool.indexToKey(rty_index).ty;
+
+    const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+        .add => .add,
+        .sub => .sub,
+        .mul => .mul,
+        .div => .div,
+        .mod => .mod,
+        .bitwise_or => .bitwise_or,
+        .bitwise_and => .bitwise_and,
+        .bitwise_xor => .bitwise_xor,
+        .sl, .sr => unreachable,
+        else => undefined,
+    };
+
+    // pending a discussion on arithmetic overflow semantics,
+    // femto only allows addition between variables of the same sign
+    // comptime literals coerce to the fixed type of the other value
+    // if both are comptime literals, the arithmetic is evaluated at
+    // compile time (constant folding)
+    switch (lty) {
+        .int => |lty_int| switch (lty_int.sign) {
+            .unsigned => switch (rty) {
+                .int => |rty_int| switch (rty_int.sign) {
+                    .unsigned => {
+                        const bits = @max(lty_int.width, rty_int.width);
+                        const dest_ty: Type = .{ .int = .{ .sign = .unsigned, .width = bits } };
+                        const lref = try coerceInnerImplicit(b, l, dest_ty);
+                        const rref = try coerceInnerImplicit(b, r, dest_ty);
+                        const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
+                        try b.mapInst(inst, new_arith);
+                    },
+                    .signed => {
+                        // try hg.errors.append(hg.gpa, .{
+                        //     .tag = .binary_diffsign,
+                        //     .token = op_token,
+                        // });
+                        return error.HandledUserError;
+                    },
+                },
+                .comptime_int => {
+                    const lref = l;
+                    const rref = try coerceInnerImplicit(b, r, lty);
+                    const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
+                    try b.mapInst(inst, new_arith);
+                },
+                else => unreachable, // TODO: should emit error
+            },
+            .signed => switch (rty) {
+                .int => |rty_int| switch (rty_int.sign) {
+                    .unsigned => {
+                        // try hg.errors.append(hg.gpa, .{
+                        //     .tag = .binary_diffsign,
+                        //     .token = op_token,
+                        // });
+                        return error.HandledUserError;
+                    },
+                    .signed => {
+                        const bits = @max(lty_int.width, rty_int.width);
+                        const dest_ty: Type = .{ .int = .{ .sign = .signed, .width = bits } };
+                        const lref = try coerceInnerImplicit(b, l, dest_ty);
+                        const rref = try coerceInnerImplicit(b, r, dest_ty);
+                        const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
+                        try b.mapInst(inst, new_arith);
+                    },
+                },
+                .comptime_int => {
+                    const lref = l;
+                    const rref = try coerceInnerImplicit(b, r, lty);
+
+                    const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
+                    try b.mapInst(inst, new_arith);
+                },
+                else => unreachable, // TODO: should emit error
+            },
+        },
+        .comptime_int => {
+            switch (rty) {
+                .int => {
+                    const lref = try coerceInnerImplicit(b, l, rty);
+                    const rref = r;
+
+                    const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
+                    try b.mapInst(inst, new_arith);
+                },
+                .comptime_int => {
+                    unreachable; // TODO: constant folding
+                },
+                else => unreachable, // TODO: should emit error
+            }
+        },
+        else => unreachable,
+    }
+
+    // if (lty.kind() == .comptime_uint or lty.kind() == .comptime_sint) {
+    //     if (rty.kind() == .comptime_uint or rty.kind() == .comptime_sint) {
+    //         return b.analyzeComptimeArithmetic(b, inst);
+    //     }
+    // }
+}
+
+const ResolutionStrategy = enum {
+    binary,
+};
+
+fn resolvePeerTypes(comptime strategy: ResolutionStrategy, types: anytype) ?Type {
+    switch (strategy) {
+        .binary => {
+            // for now, we assume addition only works on ints and floats
+            const lty = types[0];
+            const rty = types[1];
+            switch (lty) {
+                .comptime_int => {
+                    switch (rty) {
+                        .comptime_int => {
+                            if (lty.comptime_int.sign != rty.comptime_int.sign) return null;
+                            return lty;
+                        },
+                        .int => return rty,
+                        else => return null,
+                    }
+                },
+                .int => {
+                    switch (rty) {
+                        .comptime_int => return lty,
+                        .int => {
+                            if (lty.int.sign != rty.int.sign) return null;
+                            const width = @max(lty.int.width, rty.int.width);
+                            return .{ .int = .{ .sign = lty.int.sign, .width = width } };
+                        },
+                        else => return null,
+                    }
+                },
+                .comptime_float => switch (rty) {
+                    .comptime_float => return lty,
+                    .float => return rty,
+                    else => return null,
+                },
+                .float => switch (rty) {
+                    .comptime_float => return lty,
+                    .float => {
+                        const width = @max(lty.float.width, rty.float.width);
+                        return .{ .float = .{ .width = width } };
+                    },
+                    else => return null,
+                },
+                else => return null,
+            }
+        },
+    }
+}
+
+fn binaryCmp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Data)) !void {
+    const fir = b.fir;
+    const binary = fir.get(inst);
+    const data = @field(binary.data, @tagName(tag));
+
+    const temp_air = b.sema.tempAir();
+    var l = b.resolveInst(data.l);
+    var r = b.resolveInst(data.r);
+    const lty_index = temp_air.typeOf(l);
+    const rty_index = temp_air.typeOf(r);
+    const lty = b.pool.indexToKey(lty_index).ty;
+    const rty = b.pool.indexToKey(rty_index).ty;
+
+    const dest_type = resolvePeerTypes(.binary, .{ lty, rty }).?; // TODO: emit error if no type found
+    l = try coerceInnerImplicit(b, l, dest_type);
+    r = try coerceInnerImplicit(b, r, dest_type);
+
+    switch (dest_type) {
+        inline .comptime_int, .int => |int| switch (int.sign) {
+            .unsigned => {
+                const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+                    .cmp_eq => .icmp_eq,
+                    .cmp_ne => .icmp_ne,
+                    .cmp_gt => .icmp_ugt,
+                    .cmp_ge => .icmp_uge,
+                    .cmp_lt => .icmp_ult,
+                    .cmp_le => .icmp_ule,
+                    else => unreachable,
+                };
+                const air_inst = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = l, .r = r }));
+                try b.mapInst(inst, air_inst);
+            },
+            .signed => {
+                const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+                    .cmp_eq => .icmp_eq,
+                    .cmp_ne => .icmp_ne,
+                    .cmp_gt => .icmp_sgt,
+                    .cmp_ge => .icmp_sge,
+                    .cmp_lt => .icmp_slt,
+                    .cmp_le => .icmp_sle,
+                    else => unreachable,
+                };
+                const air_inst = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = l, .r = r }));
+                try b.mapInst(inst, air_inst);
+            },
+        },
+        .comptime_float, .float => {
+            const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+                .cmp_gt => .fcmp_gt,
+                .cmp_ge => .fcmp_ge,
+                .cmp_lt => .fcmp_lt,
+                .cmp_le => .fcmp_le,
+                else => unreachable,
+            };
+            const air_inst = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = l, .r = r }));
+            try b.mapInst(inst, air_inst);
+        },
+        else => unreachable,
+    }
+
+    switch (dest_type) {
+        inline else => {},
+    }
+}
+
+pub fn unaryNeg(b: *Block, inst: Fir.Index) !void {
+    const neg = b.fir.get(inst);
+    const data = neg.data.neg;
+
+    const operand = b.resolveInst(data);
+    const ty = b.sema.tempAir().typeOf(operand);
+    const operand_type = b.pool.indexToKey(ty).ty;
+    switch (operand_type) {
+        .comptime_int => unreachable, // TODO
+        // .comptime_int => |int| switch (int.sign) {
+        //     .unsigned => {
+        //         const src = b.insts.get(@intFromEnum(operand)).constant;
+        //         const tv = b.pool.indexToKey(src).tv;
+        //         const val = tv.val.integer;
+        //         if (val > dest_type.maxInt()) {
+        //             return error.Truncated;
+        //         }
+        //         return b.addConstant(.{ .tv = .{
+        //             .ty = self.dest_type,
+        //             .val = .{ .integer = val },
+        //         } });
+        //     },
+        // }
+        .int => |int| switch (int.sign) {
+            .unsigned => unreachable, // TODO: emit error
+            .signed => {
+                const air_inst = try b.add(.{ .neg = operand });
+                try b.mapInst(inst, air_inst);
+            },
+        },
+        .float => {
+            const air_inst = try b.add(.{ .neg = operand });
+            try b.mapInst(inst, air_inst);
+        },
+        else => unreachable, // TODO: emit error
+    }
+}
+
+pub fn bitwiseInv(b: *Block, inst: Fir.Index) !void {
+    const neg = b.fir.get(inst);
+    const data = neg.data.neg;
+
+    const operand = b.resolveInst(data);
+    // TODO: type checking
+    const air_inst = try b.add(.{ .bitwise_inv = operand });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn branchSingle(b: *Block, inst: Fir.Index) !void {
+    const branch_single = b.fir.get(inst);
+    const data = branch_single.data.branch_single;
+
+    const cond = b.resolveInst(data.cond);
+    const exec_true = try b.sema.analyzeBodyBlock(data.exec_true);
+    const air_inst = try b.add(.{ .branch_single = .{
+        .cond = cond,
+        .exec_true = exec_true,
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn branchDouble(b: *Block, inst: Fir.Index) !void {
+    const branch_double = b.fir.get(inst);
+    const data = branch_double.data.branch_double;
+    const branch = b.fir.extraData(Fir.Inst.BranchDouble, data.pl);
+
+    const cond = b.resolveInst(data.cond);
+    const exec_true = try b.sema.analyzeBodyBlock(branch.exec_true);
+    const exec_false = try b.sema.analyzeBodyBlock(branch.exec_true);
+
+    const pl = try b.sema.addExtra(Air.Inst.BranchDouble{
+        .exec_true = exec_true,
+        .exec_false = exec_false,
+    });
+    const air_inst = try b.add(.{ .branch_double = .{
+        .cond = cond,
+        .pl = pl,
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn loop(b: *Block, inst: Fir.Index) !void {
+    const loop_inst = b.fir.get(inst);
+    const data = loop_inst.data.loop;
+
+    const cond = try b.sema.analyzeBodyBlock(data.cond);
+    const body = try b.sema.analyzeBodyBlock(data.body);
+    const air_inst = try b.add(.{ .loop = .{
+        .cond = cond,
+        .body = body,
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn firBlock(b: *Block, inst: Fir.Index) !void {
+    const air_inst = try b.sema.analyzeBodyBlock(inst);
+    try b.insts.append(b.arena, air_inst);
+}
+
+pub fn returnNode(b: *Block, inst: Fir.Index) !void {
+    const return_node = b.fir.get(inst);
+    const data = return_node.data.return_node;
+
+    const operand = b.resolveInst(data);
+    const air_inst = try b.add(.{ .@"return" = operand });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn returnImplicit(b: *Block, inst: Fir.Index) !void {
+    const return_implicit = b.fir.get(inst);
+    const data = return_implicit.data.return_implicit;
+
+    const operand = b.resolveInst(data);
+    const air_inst = try b.add(.{ .@"return" = operand });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn yieldNode(b: *Block, inst: Fir.Index) !void {
+    const yield_node = b.fir.get(inst);
+    const data = yield_node.data.yield_node;
+
+    const operand = b.resolveInst(data);
+    const air_inst = try b.add(.{ .yield = operand });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn yieldImplicit(b: *Block, inst: Fir.Index) !void {
+    const yield_implicit = b.fir.get(inst);
+    const data = yield_implicit.data.yield_implicit;
+
+    const operand = b.resolveInst(data);
+    const air_inst = try b.add(.{ .yield = operand });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn firContinue(b: *Block, inst: Fir.Index) !void {
+    const air_inst = try b.add(.{ .@"continue" = {} });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn firBreak(b: *Block, inst: Fir.Index) !void {
+    const air_inst = try b.add(.{ .@"break" = {} });
+    try b.mapInst(inst, air_inst);
 }
 
 pub fn tempAir(sema: *Sema) Air {
@@ -583,5 +1102,6 @@ pub fn tempAir(sema: *Sema) Air {
         .insts = sema.insts.slice(),
         .extra = sema.extra.items,
         .pool = sema.pool,
+        .toplevel = undefined,
     };
 }

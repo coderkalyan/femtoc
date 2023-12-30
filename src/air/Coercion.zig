@@ -15,15 +15,15 @@ pub const Error = error{
 };
 
 const Coercion = @This();
-sema: *Sema,
+b: *Sema.Block,
 src: Air.Index,
 dest_type: InternPool.Index,
 
 pub fn coerce(self: *Coercion) !Air.Index {
-    const src_type = self.sema.tempAir().typeOf(self.src);
+    const src_type = self.b.sema.tempAir().typeOf(self.src);
     if (src_type == self.dest_type) return self.src;
 
-    const dest_type = self.sema.pool.indexToKey(self.dest_type).ty;
+    const dest_type = self.b.pool.indexToKey(self.dest_type).ty;
     return switch (dest_type) {
         .int => |int| switch (int.sign) {
             .unsigned => self.uint(),
@@ -40,23 +40,23 @@ pub fn coerce(self: *Coercion) !Air.Index {
 
 // coerce anything to a fixed-size unsigned int
 fn uint(self: *Coercion) !Air.Index {
-    const sema = self.sema;
-    const src_type = sema.tempAir().typeOf(self.src);
-    const dest_type = sema.pool.indexToKey(self.dest_type).ty;
+    const b = self.b;
+    const src_type = b.sema.tempAir().typeOf(self.src);
+    const dest_type = b.pool.indexToKey(self.dest_type).ty;
 
-    switch (sema.pool.indexToKey(src_type).ty) {
+    switch (b.pool.indexToKey(src_type).ty) {
         // can coerce to a fixed uint if the comptime value fits in bounds
         .comptime_int => |ty| {
             // comptime sints are always < 0, so can never fit in a uint
             if (ty.sign == .signed) return error.Truncated;
 
-            const src = sema.insts.get(@intFromEnum(self.src)).constant;
-            const tv = sema.pool.indexToKey(src).tv;
+            const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+            const tv = b.pool.indexToKey(src).tv;
             const val = tv.val.integer;
             if (val > dest_type.maxInt()) {
                 return error.Truncated;
             }
-            return sema.addConstant(.{ .tv = .{
+            return b.addConstant(.{ .tv = .{
                 .ty = self.dest_type,
                 .val = .{ .integer = val },
             } });
@@ -67,7 +67,7 @@ fn uint(self: *Coercion) !Air.Index {
             if (ty.sign == .signed) return error.Truncated;
             if (dest_type.int.width < ty.width) return error.Truncated;
 
-            return sema.add(.{ .zext = .{
+            return b.add(.{ .zext = .{
                 .ty = self.dest_type,
                 .operand = self.src,
             } });
@@ -80,34 +80,34 @@ fn uint(self: *Coercion) !Air.Index {
 
 // coerce anything to a fixed-size signed int
 fn sint(self: *Coercion) !Air.Index {
-    const sema = self.sema;
-    const src_type = sema.tempAir().typeOf(self.src);
-    const dest_type = sema.pool.indexToKey(self.dest_type).ty;
+    const b = self.b;
+    const src_type = b.sema.tempAir().typeOf(self.src);
+    const dest_type = b.pool.indexToKey(self.dest_type).ty;
 
-    switch (sema.pool.indexToKey(src_type).ty) {
+    switch (b.pool.indexToKey(src_type).ty) {
         .comptime_int => |ty| switch (ty.sign) {
             // can coerce to a fixed uint if the comptime value fits in bounds
             .unsigned => {
-                const src = sema.insts.get(@intFromEnum(self.src)).constant;
-                const tv = sema.pool.indexToKey(src).tv;
+                const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+                const tv = b.pool.indexToKey(src).tv;
                 const val = tv.val.integer;
                 if (val > dest_type.maxInt()) {
                     return error.Truncated;
                 }
-                return sema.addConstant(.{ .tv = .{
+                return b.addConstant(.{ .tv = .{
                     .ty = self.dest_type,
                     .val = .{ .integer = val },
                 } });
             },
             // can coerce to a fixed sint if the comptime value fits in bounds
             .signed => {
-                const src = sema.insts.get(@intFromEnum(self.src)).constant;
-                const tv = sema.pool.indexToKey(src).tv;
+                const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+                const tv = b.pool.indexToKey(src).tv;
                 const val: i64 = @bitCast(tv.val.integer);
                 if (val < dest_type.minInt() or val > dest_type.maxInt()) {
                     return error.Truncated;
                 }
-                return sema.addConstant(.{ .tv = .{
+                return b.addConstant(.{ .tv = .{
                     .ty = self.dest_type,
                     .val = .{ .integer = @bitCast(val) },
                 } });
@@ -119,7 +119,7 @@ fn sint(self: *Coercion) !Air.Index {
             if (ty.sign == .unsigned) return error.Truncated;
             if (dest_type.int.width < ty.width) return error.Truncated;
 
-            return sema.add(.{ .sext = .{
+            return b.add(.{ .sext = .{
                 .ty = self.dest_type,
                 .operand = self.src,
             } });

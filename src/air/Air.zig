@@ -6,6 +6,7 @@ const Air = @This();
 insts: std.MultiArrayList(Inst).Slice,
 extra: []const u32,
 pool: *InternPool,
+toplevel: Index,
 
 // index into the instructions array (pointer to an instruction)
 pub const Index = enum(u32) { _ };
@@ -248,6 +249,11 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         .bitwise_or,
         .bitwise_and,
         .bitwise_xor,
+        .lsl,
+        .lsr,
+        .asl,
+        .asr,
+        => |bin| return air.typeOf(bin.l),
         .icmp_eq,
         .icmp_ne,
         .icmp_ugt,
@@ -262,11 +268,7 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         .fcmp_ge,
         .fcmp_lt,
         .fcmp_le,
-        .lsl,
-        .lsr,
-        .asl,
-        .asr,
-        => |bin| return air.typeOf(bin.l),
+        => return @enumFromInt(0),
         .neg,
         .bitwise_inv,
         => |un| return air.typeOf(un),
