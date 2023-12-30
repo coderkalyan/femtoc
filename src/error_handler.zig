@@ -1,8 +1,7 @@
 const std = @import("std");
 const Ast = @import("Ast.zig");
 const lex = @import("lex.zig");
-const Hir = @import("Hir.zig");
-const Type = @import("hir/type.zig").Type;
+const Type = @import("air/type.zig").Type;
 
 const io = std.io;
 

@@ -4,7 +4,6 @@ const Fir = @import("../fir/Fir.zig");
 const Air = @import("Air.zig");
 const Sema = @import("Sema.zig");
 const Type = @import("type.zig").Type;
-const Value = @import("../value.zig").Value;
 const Allocator = std.mem.Allocator;
 
 pub const Error = error{
