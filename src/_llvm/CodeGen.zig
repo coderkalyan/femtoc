@@ -14,18 +14,17 @@ builder: *Context.Builder,
 pool: *InternPool,
 air: *const Air,
 scratch: std.ArrayListUnmanaged(c.LLVMValueRef),
-// inst_map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
 map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
-// alloca_loc: c.LLVM
-// ip_map: std.AutoHashMapUnmanaged(InternPool.Index, c.LLVMValueRef),
+entry: c.LLVMBasicBlockRef = null,
+prev_alloca: c.LLVMValueRef = null,
 
 const Error = Allocator.Error || error{NotImplemented};
 
 pub fn generate(self: *CodeGen) !void {
     var builder = self.builder;
 
-    const entry = builder.appendBlock("entry");
-    builder.positionAtEnd(entry);
+    self.entry = builder.appendBlock("entry");
+    builder.positionAtEnd(self.entry);
     _ = try self.block(self.air.toplevel);
 }
 
@@ -340,9 +339,28 @@ fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst
 }
 
 fn alloc(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const builder = self.builder;
     const data = self.air.insts.items(.data)[@intFromEnum(inst)].alloc;
     const ty = self.pool.indexToKey(data.slot_type).ty;
-    const ref = try self.builder.addAlloca(ty);
+
+    // LLVM prefers allocas to be at the beginning to participate in mem2reg optimization
+    const prev = builder.getInsertBlock();
+    if (self.prev_alloca) |loc| {
+        // we have a previous alloca, so insert below that
+        if (c.LLVMGetNextInstruction(loc)) |next| {
+            c.LLVMPositionBuilder(builder.builder, self.entry, next);
+        } else {
+            c.LLVMPositionBuilderAtEnd(builder.builder, self.entry);
+        }
+    } else {
+        // first alloca, so position at beginning of entry
+        const first = c.LLVMGetFirstInstruction(self.entry);
+        c.LLVMPositionBuilder(builder.builder, self.entry, first);
+    }
+    const ref = try builder.addAlloca(ty);
+    self.prev_alloca = ref;
+    c.LLVMPositionBuilderAtEnd(builder.builder, prev);
+
     try self.map.put(self.arena, inst, ref);
     return ref;
 }
