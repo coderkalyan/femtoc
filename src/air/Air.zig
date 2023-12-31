@@ -98,6 +98,10 @@ pub const Inst = union(enum) {
         operand: Index,
         ty: InternPool.Index,
     },
+    // initializes a slice with a ptr and len
+    slice_init: struct {
+        pl: ExtraIndex,
+    },
 
     // indexes into an array, slice, or many pointer (passed by
     // reference) and returns a reference to the element
@@ -114,6 +118,18 @@ pub const Inst = union(enum) {
     index_val: struct {
         base: Index,
         index: Index,
+    },
+    // extracts the ptr field from a slice (passed by value)
+    // and returns it
+    slice_ptr_val: struct {
+        base: Index,
+        ty: InternPool.Index,
+    },
+    // extracts the len field from a slice (passed by value)
+    // and returns it
+    slice_len_val: struct {
+        base: Index,
+        ty: InternPool.Index,
     },
 
     // allocates a stack slot and returns a pointer to it
@@ -201,6 +217,12 @@ pub const Inst = union(enum) {
         index: Index,
         ty: InternPool.Index,
     };
+
+    pub const SliceInit = struct {
+        ptr: Index,
+        len: Index,
+        ty: InternPool.Index,
+    };
 };
 
 pub const Decl = struct {
@@ -283,6 +305,10 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             return function_type.function.@"return";
         },
         inline .zext, .sext, .fpext => |cast| return cast.ty,
+        .slice_init => |slice_init| {
+            const data = air.extraData(Air.Inst.SliceInit, slice_init.pl);
+            return data.ty;
+        },
         .index_ref => |index_ref| {
             const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
             return data.ty;
@@ -297,6 +323,8 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
                 else => unreachable,
             }
         },
+        .slice_ptr_val => |slice_ptr_val| return slice_ptr_val.ty,
+        .slice_len_val => |slice_len_val| return slice_len_val.ty,
         .alloc => |alloc| return alloc.pointer_type,
         .load => |load| {
             const ty = air.typeOf(load.ptr);

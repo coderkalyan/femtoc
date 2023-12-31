@@ -189,7 +189,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .int => try integerLiteral(&b, inst),
             .float => try floatLiteral(&b, inst),
             .none => try voidLiteral(&b, inst),
-            .string => unreachable, // TODO
+            .string => try stringLiteral(&b, inst),
             .array => try array(&b, inst),
             .builtin_type => try builtinType(&b, inst),
             .bool_type => try boolType(&b, inst),
@@ -230,6 +230,11 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .call => try call(&b, inst),
             .index_val => try indexVal(&b, inst),
             .index_ref => try indexRef(&b, inst),
+            .slice => try firSlice(&b, inst),
+            .field_val => try fieldVal(&b, inst),
+            .field_ref => unreachable,
+            // .field_ref => try fieldRef(&b, inst),
+
             .load_global => try loadGlobal(&b, inst),
             .push => try push(&b, inst),
             .load => try load(&b, inst),
@@ -403,6 +408,12 @@ fn voidLiteral(b: *Block, inst: Fir.Index) !void {
         .val = .{ .none = {} },
     } });
     try b.mapInst(inst, air_inst);
+}
+
+fn stringLiteral(b: *Block, inst: Fir.Index) !void {
+    const string = b.fir.get(inst);
+    _ = string;
+    // TODO
 }
 
 fn array(b: *Block, inst: Fir.Index) !void {
@@ -1178,14 +1189,14 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
             }
         },
         // reading a field from a value by value - emit a val
-        .array => {
+        .array, .slice => {
             const access = try b.add(.{ .index_val = .{
                 .base = base,
                 .index = index,
             } });
             try b.mapInst(inst, access);
         },
-        .slice, .many_pointer => unreachable, // unimplemented
+        .many_pointer => unreachable, // unimplemented
         else => unreachable,
     }
 }
@@ -1235,6 +1246,265 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
         .slice, .many_pointer => unreachable, // unimplemented
         else => unreachable,
     }
+}
+
+fn firSlice(b: *Block, inst: Fir.Index) !void {
+    const slice_inst = b.fir.get(inst);
+    const slice_data = slice_inst.data.slice;
+    const data = b.fir.extraData(Fir.Inst.Slice, slice_data.pl);
+
+    const base = b.resolveInst(data.base);
+    const start = index: {
+        const inner = b.resolveInst(data.start);
+        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
+        break :index try coerceInnerImplicit(b, inner, usize_type);
+    };
+    const end = index: {
+        const inner = b.resolveInst(data.end);
+        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
+        break :index try coerceInnerImplicit(b, inner, usize_type);
+    };
+
+    const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
+    switch (base_type) {
+        .pointer => |pointer| {
+            const pointee = b.pool.indexToKey(pointer.pointee).ty;
+            switch (pointee) {
+                .array => |arr| {
+                    // we construct a slice using a gep (base + start) for the ptr
+                    // and a len (end - start + 1)
+                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
+                    const ptr = ptr: {
+                        const pl = try b.sema.addExtra(Air.Inst.IndexRef{
+                            .base = base,
+                            .index = start,
+                            .ty = element_ptr,
+                        });
+                        break :ptr try b.add(.{ .index_ref = .{ .pl = pl } });
+                    };
+                    const len = len: {
+                        const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
+                        const one = try b.addConstant(.{ .tv = .{
+                            .ty = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
+                            .val = .{ .integer = 1 },
+                        } });
+                        const inc = try b.add(.{ .add = .{ .l = sub, .r = one } });
+                        break :len inc;
+                    };
+
+                    const slice_type = try b.pool.getOrPut(.{ .ty = .{
+                        .slice = .{ .element = arr.element },
+                    } });
+                    const pl = try b.sema.addExtra(Air.Inst.SliceInit{
+                        .ptr = ptr,
+                        .len = len,
+                        .ty = slice_type,
+                    });
+
+                    const ref = try b.add(.{ .slice_init = .{ .pl = pl } });
+                    try b.mapInst(inst, ref);
+                },
+                .slice, .many_pointer => unreachable, // unimplemented
+                else => unreachable, // TODO: emit error
+            }
+        },
+        .array => |arr| {
+            // we construct a slice using a gep (base + start) for the ptr
+            // and a len (end - start + 1)
+            // TODO: huge issue here, we need to promote the array to stack
+            const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
+            const ptr = ptr: {
+                const pl = try b.sema.addExtra(Air.Inst.IndexRef{
+                    .base = base,
+                    .index = start,
+                    .ty = element_ptr,
+                });
+                break :ptr try b.add(.{ .index_ref = .{ .pl = pl } });
+            };
+            const len = len: {
+                const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
+                const one = try b.addConstant(.{ .tv = .{
+                    .ty = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
+                    .val = .{ .integer = 1 },
+                } });
+                const inc = try b.add(.{ .add = .{ .l = sub, .r = one } });
+                break :len inc;
+            };
+
+            const slice_type = try b.pool.getOrPut(.{ .ty = .{
+                .slice = .{ .element = arr.element },
+            } });
+            const pl = try b.sema.addExtra(Air.Inst.SliceInit{
+                .ptr = ptr,
+                .len = len,
+                .ty = slice_type,
+            });
+
+            const ref = try b.add(.{ .slice_init = .{ .pl = pl } });
+            try b.mapInst(inst, ref);
+        },
+        .slice, .many_pointer => unreachable, // unimplemented
+        else => unreachable,
+    }
+}
+
+// fn fieldRef(analysis: *BlockAnalysis, inst: Hir.Index) !void {
+//     const hg = analysis.hg;
+//     const b = analysis.b;
+//     const data = hg.get(inst, .field_ref);
+//     // TODO: use interner value instead
+//     const field_token = hg.tree.mainToken(data.node) + 1;
+//     const field_string = hg.tree.tokenString(field_token);
+//
+//     switch (hg.insts.items(.tag)[data.operand]) {
+//         // reading a field from a pointer by ref - emit a ref
+//         .push, .alloca => {
+//             const pointer_type = (try hg.resolveType(data.operand)).extended.cast(Type.Pointer).?;
+//             const src_type = pointer_type.pointee;
+//             // replace the generic field reference by a specific one - builtin, slice, array, structure
+//             switch (src_type.kind()) {
+//                 // slices only have two runtime fields - ptr and len
+//                 .slice => {
+//                     if (std.mem.eql(u8, field_string, "ptr")) {
+//                         const access = try b.add(.slice_ptr_ref, .{
+//                             .operand = data.operand,
+//                             .node = data.node,
+//                         });
+//                         try analysis.src_block.replaceAllUsesWith(inst, access);
+//                     } else if (std.mem.eql(u8, field_string, "len")) {
+//                         const access = try b.add(.slice_len_ref, .{
+//                             .operand = data.operand,
+//                             .node = data.node,
+//                         });
+//                         try analysis.src_block.replaceAllUsesWith(inst, access);
+//                     } else {
+//                         std.log.err("field access: no such field {s} for type slice", .{field_string});
+//                         unreachable;
+//                     }
+//                 },
+//                 .array, .structure => unreachable, // unimplemented
+//                 else => unreachable,
+//             }
+//         },
+//         // reading a field from a value by ref - emit a val + alloc + store
+//         else => {
+//             const src_type = try hg.resolveType(data.operand);
+//             // replace the generic field reference by a specific one - builtin, slice, array, structure
+//             switch (src_type.kind()) {
+//                 // slices only have two runtime fields - ptr and len
+//                 .slice => {
+//                     if (std.mem.eql(u8, field_string, "ptr")) {
+//                         const access = try b.add(.slice_ptr_val, .{
+//                             .operand = data.operand,
+//                             .node = data.node,
+//                         });
+//                         const ptr_type = try Type.Pointer.init(hg.gpa, src_type.extended.cast(Type.Slice).?.element);
+//                         const slot_type = try Type.Pointer.init(hg.gpa, ptr_type);
+//                         const push = try b.add(.push, .{
+//                             .ty = slot_type,
+//                             .operand = access,
+//                             .node = data.node,
+//                         });
+//                         try analysis.src_block.replaceAllUsesWith(inst, push);
+//                     } else if (std.mem.eql(u8, field_string, "len")) {
+//                         const access = try b.add(.slice_len_val, .{
+//                             .operand = data.operand,
+//                             .node = data.node,
+//                         });
+//                         const slot_type = try Type.Pointer.init(hg.gpa, Type.Common.u64_type);
+//                         const push = try b.add(.push, .{
+//                             .ty = slot_type,
+//                             .operand = access,
+//                             .node = data.node,
+//                         });
+//                         try analysis.src_block.replaceAllUsesWith(inst, push);
+//                     } else {
+//                         std.log.err("field access: no such field {s} for type slice", .{field_string});
+//                         unreachable;
+//                     }
+//                 },
+//                 .array, .structure => unreachable, // unimplemented
+//                 else => unreachable,
+//             }
+//         },
+//     }
+// }
+
+fn fieldVal(b: *Block, inst: Fir.Index) !void {
+    const field_val = b.fir.get(inst);
+    const data = field_val.data.field_val;
+    const base = b.resolveInst(data.base);
+    const base_type = b.sema.tempAir().typeOf(base);
+    const field_string = b.pool.getString(data.field).?;
+    switch (b.pool.indexToKey(base_type).ty) {
+        // reading a field from a pointer by value - emit a ref + load
+        .pointer => |pointer| {
+            _ = pointer;
+            unreachable;
+        },
+        // reading a field from a value by value - emit a val
+        .slice => |slice| {
+            // slices only have two runtime fields - ptr and len
+            if (std.mem.eql(u8, field_string, "ptr")) {
+                const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element } } });
+                const access = try b.add(.{ .slice_ptr_val = .{
+                    .base = base,
+                    .ty = ty,
+                } });
+                try b.mapInst(inst, access);
+            } else if (std.mem.eql(u8, field_string, "len")) {
+                const ty = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } });
+                const access = try b.add(.{ .slice_len_val = .{
+                    .base = base,
+                    .ty = ty,
+                } });
+                try b.mapInst(inst, access);
+            } else {
+                std.log.err("field access: no such field {s} for type slice", .{field_string});
+                unreachable;
+            }
+        },
+        else => unreachable,
+    }
+    // }
+    // switch (hg.insts.items(.tag)[data.operand]) {
+    //     .push, .alloca => {
+    //         const pointer_type = (try hg.resolveType(data.operand)).extended.cast(Type.Pointer).?;
+    //         const src_type = pointer_type.pointee;
+    //         // replace the generic field reference by a specific one - builtin, slice, array, structure
+    //         switch (src_type.kind()) {
+    //             // slices only have two runtime fields - ptr and len
+    //             .slice => {
+    //                 if (std.mem.eql(u8, field_string, "ptr")) {
+    //                     const ref = try b.add(.slice_ptr_ref, .{
+    //                         .operand = data.operand,
+    //                         .node = data.node,
+    //                     });
+    //                     const access = try b.add(.load, .{
+    //                         .operand = ref,
+    //                         .node = data.node,
+    //                     });
+    //                     try analysis.src_block.replaceAllUsesWith(inst, access);
+    //                 } else if (std.mem.eql(u8, field_string, "len")) {
+    //                     const ref = try b.add(.slice_len_ref, .{
+    //                         .operand = data.operand,
+    //                         .node = data.node,
+    //                     });
+    //                     const access = try b.add(.load, .{
+    //                         .operand = ref,
+    //                         .node = data.node,
+    //                     });
+    //                     try analysis.src_block.replaceAllUsesWith(inst, access);
+    //                 } else {
+    //                     std.log.err("field access: no such field {s} for type slice", .{field_string});
+    //                     unreachable;
+    //                 }
+    //             },
+    //             .array, .structure => unreachable, // unimplemented
+    //             else => unreachable,
+    //         }
+    //     },
+    // }
 }
 
 pub fn tempAir(sema: *Sema) Air {

@@ -30,6 +30,7 @@ pub fn coerce(self: *Coercion) !Air.Index {
         },
         // .float => self.float(),
         .array => self.array(),
+        .slice => self.slice(),
         else => {
             const src_key = self.b.pool.indexToKey(src_type).ty;
             std.log.err("coercion from {} to {} unimplemented or not allowed", .{ src_key, dest_type });
@@ -268,9 +269,42 @@ fn array(self: *Coercion) Error!Air.Index {
         else => return error.InvalidCoercion,
     }
 }
-//
-// fn maybeReplaceWith(self: *Coercion, new: Hir.Index) !void {
-//     if (self.coerce_inst) |old| {
-//         try self.src_block.replaceAllUsesWith(old, new);
-//     }
-// }
+
+fn slice(self: *Coercion) Error!Air.Index {
+    const b = self.b;
+    const src_type = b.sema.tempAir().typeOf(self.src);
+    const dest_type = b.pool.indexToKey(self.dest_type).ty;
+
+    switch (b.pool.indexToKey(src_type).ty) {
+        .pointer => |pointer| {
+            const pointee = b.pool.indexToKey(pointer.pointee).ty;
+            switch (pointee) {
+                .array => |arr| {
+                    if (dest_type.slice.element != arr.element) return error.InvalidCoercion;
+
+                    const ptr = self.src;
+                    const len = try b.addConstant(.{ .tv = .{
+                        .ty = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
+                        .val = .{ .integer = arr.count },
+                    } });
+                    const slice_type = try b.pool.getOrPut(.{ .ty = .{
+                        .slice = .{ .element = arr.element },
+                    } });
+                    const pl = try b.sema.addExtra(Air.Inst.SliceInit{
+                        .ptr = ptr,
+                        .len = len,
+                        .ty = slice_type,
+                    });
+                    return b.add(.{ .slice_init = .{ .pl = pl } });
+                },
+                else => return error.InvalidCoercion,
+            }
+        },
+        else => |tag| {
+            _ = tag;
+            std.debug.print("{} {}\n", .{ dest_type.slice.element, b.pool.indexToKey(src_type).ty.slice.element });
+            std.debug.print("{} {}\n", .{ src_type, self.dest_type });
+            return error.InvalidCoercion;
+        },
+    }
+}

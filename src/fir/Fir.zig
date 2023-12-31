@@ -150,6 +150,24 @@ pub const Inst = struct {
             base: Index,
             index: Index,
         },
+        // constructs a slice from an array or slice
+        slice: struct {
+            pl: ExtraIndex,
+        },
+        // access a field by name from a struct, array, or slice, yielding
+        // a pointer to the field (not the value), independent of
+        // whether the array is passed by value or reference
+        field_ref: struct {
+            base: Index,
+            field: InternPool.StringIndex,
+        },
+        // access a field by name from a struct, array, or slice, yielding
+        // the value of the field, independent of
+        // whether the array is passed by value or reference
+        field_val: struct {
+            base: Index,
+            field: InternPool.StringIndex,
+        },
 
         // loads a module decl that is forward declared
         // that is, ref is not available during generation but
@@ -287,6 +305,12 @@ pub const Inst = struct {
     pub const BranchDouble = struct {
         exec_true: Index,
         exec_false: Index,
+    };
+
+    pub const Slice = struct {
+        base: Index,
+        start: Index,
+        end: Index,
     };
 };
 

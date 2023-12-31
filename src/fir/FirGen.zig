@@ -247,45 +247,48 @@ fn charLiteral(b: *Block, node: Node.Index) !Fir.Index {
     });
 }
 
-// fn stringLiteral(b: *Block, node: Node.Index) !Fir.Index {
-//     const hg = b.hg;
-//     const string_token = hg.tree.mainToken(node);
-//     const string_text = hg.tree.tokenString(string_token);
-//     const string_literal = string_text[1 .. string_text.len - 1];
-//     const id = try hg.interner.intern(string_literal);
-//
-//     const len: u32 = @intCast(string_literal.len);
-//     const buffer_type: Type = .{ .basic = .{ .kind = Type.Kind.string, .width = 0 } };
-//     const buffer_value = try hg.pool.internValue(.{ .string = id });
-//
-//     // underlying string buffer, gets emitted to .rodata as a global
-//     _ = try b.add(.constant, .{
-//         .ty = try b.add(.ty, .{ .ty = buffer_type }),
-//         .val = buffer_value,
-//         .node = node,
-//     });
-//
-//     const len_value = try hg.pool.internValue(.{ .integer = len });
-//     const slice = try Value.createSlice(hg.pool.arena, buffer_value, len_value);
-//     const slice_value = try hg.pool.internValue(slice);
-//     const string_type = try Type.Slice.init(hg.gpa, Type.Common.u8_type);
-//
-//     return b.add(.constant, .{
-//         .ty = try b.add(.ty, .{ .ty = string_type }),
-//         .val = slice_value,
-//         .node = node,
-//     });
-//
-//     // const inner_slice = try hg.gpa.create(Value.Slice);
-//     // inner_slice.* = .{ .ptr = string, .len = string_literal.len };
-//     // const slice = Value{ .extended = &inner_slice.base };
-//     // // comptime slice to that string
-//     // return try b.add(.constant, .{
-//     //     .ty = try b.add(.ty, .{ .ty = string_type }),
-//     //     .val = try b.addValue(slice),
-//     //     .node = node,
-//     // });
-// }
+fn stringLiteral(b: *Block, node: Node.Index) !Fir.Index {
+    const fg = b.fg;
+    const string_token = b.tree.mainToken(node);
+    const string_text = b.tree.tokenString(string_token);
+    const string_literal = string_text[1 .. string_text.len - 1];
+    const id = try fg.pool.getOrPutString(string_literal);
+
+    // const len: u32 = @intCast(string_literal.len);
+    return b.add(.{
+        .data = .{ .string = id },
+        .loc = .{ .node = node },
+    });
+    // const buffer_value = try hg.pool.internValue(.{ .string = id });
+    //
+    // // underlying string buffer, gets emitted to .rodata as a global
+    // _ = try b.add(.constant, .{
+    //     .ty = try b.add(.ty, .{ .ty = buffer_type }),
+    //     .val = buffer_value,
+    //     .node = node,
+    // });
+    //
+    // const len_value = try hg.pool.internValue(.{ .integer = len });
+    // const slice = try Value.createSlice(hg.pool.arena, buffer_value, len_value);
+    // const slice_value = try hg.pool.internValue(slice);
+    // const string_type = try Type.Slice.init(hg.gpa, Type.Common.u8_type);
+    //
+    // return b.add(.constant, .{
+    //     .ty = try b.add(.ty, .{ .ty = string_type }),
+    //     .val = slice_value,
+    //     .node = node,
+    // });
+
+    // const inner_slice = try hg.gpa.create(Value.Slice);
+    // inner_slice.* = .{ .ptr = string, .len = string_literal.len };
+    // const slice = Value{ .extended = &inner_slice.base };
+    // // comptime slice to that string
+    // return try b.add(.constant, .{
+    //     .ty = try b.add(.ty, .{ .ty = string_type }),
+    //     .val = try b.addValue(slice),
+    //     .node = node,
+    // });
+}
 
 fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
     const fg = b.fg;
@@ -326,13 +329,18 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
             switch (ri.semantics) {
                 .val, .any => return ident_scope.cast(Scope.LocalVal).?.inst,
                 .ref => {
+                    const val = ident_scope.cast(Scope.LocalVal).?.inst;
+                    return b.add(.{
+                        .data = .{ .push = val },
+                        .loc = .{ .node = node }, // TODO: technically this node should be the ampersand
+                    });
                     // TODO: this could be a nicer constant assignment error
                     // especially since we want to upgrade these to const ptrs
-                    try fg.errors.append(fg.gpa, .{
-                        .tag = .invalid_lvalue,
-                        .token = ident_token,
-                    });
-                    return error.InvalidLvalue;
+                    // try fg.errors.append(fg.gpa, .{
+                    //     .tag = .invalid_lvalue,
+                    //     .token = ident_token,
+                    // });
+                    // return error.InvalidLvalue;
                 },
                 .ty => {
                     try fg.errors.append(fg.gpa, .{
@@ -589,7 +597,7 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .float_literal => floatLiteral(b, node),
             .bool_literal => boolLiteral(b, node),
             .char_literal => charLiteral(b, node),
-            // .string_literal => stringLiteral(b, node),
+            .string_literal => stringLiteral(b, node),
             .ident => identExpr(b, scope, ri, node),
             .call => try call(b, scope, node),
             .binary => try binary(b, scope, node),
@@ -597,8 +605,8 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .fn_decl => try fnDecl(b, scope, node),
             .array_init => try arrayInit(b, scope, node),
             .index => try indexAccess(b, scope, ri, node),
-            // .field => try fieldAccess(b, scope, ri, node),
-            // .get_slice => try getSlice(b, scope, node),
+            .field => try fieldAccess(b, scope, ri, node),
+            .get_slice => try getSlice(b, scope, node),
             .paren => try expr(b, scope, ri, b.tree.data(node).paren),
             .block => {
                 var block_scope = Block.init(b.fg, scope);
@@ -635,6 +643,7 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .pointer => try pointerType(b, scope, node),
             .many_pointer => try manyPointerType(b, scope, node),
             .array => try arrayType(b, scope, node),
+            .slice => try sliceType(b, scope, node),
             .function => try fnType(b, scope, node),
             else => {
                 std.log.err("expr (type semantics): unexpected node: {}\n", .{b.tree.data(node)});
@@ -697,6 +706,17 @@ fn manyPointerType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
+fn arrayType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+    const array_type = b.tree.data(node).array;
+    const element_type = try typeExpr(b, scope, array_type.element_type);
+    const count = try valExpr(b, scope, array_type.count_expr);
+    // TODO: make sure count is actually a comptime_int
+    return b.add(.{
+        .data = .{ .array_type = .{ .element = element_type, .count = count } },
+        .loc = .{ .node = node },
+    });
+}
+
 fn sliceType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     const element_type = b.tree.data(node).slice;
     const inner = try typeExpr(b, scope, element_type);
@@ -727,17 +747,6 @@ fn fnType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     const pl = try fg.addSlice(param_types);
     return b.add(.{
         .data = .{ .function_type = .{ .params = pl, .@"return" = return_type } },
-        .loc = .{ .node = node },
-    });
-}
-
-fn arrayType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
-    const array_type = b.tree.data(node).array;
-    const element_type = try typeExpr(b, scope, array_type.element_type);
-    const count = try valExpr(b, scope, array_type.count_expr);
-    // TODO: make sure count is actually a comptime_int
-    return b.add(.{
-        .data = .{ .array_type = .{ .element = element_type, .count = count } },
         .loc = .{ .node = node },
     });
 }
@@ -775,53 +784,72 @@ fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
     }
 }
 
-// fn getSlice(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
-//     const fg = b.fg;
-//     const get_slice = b.tree.data(node).get_slice;
-//     const payload = b.tree.extraData(get_slice.range, Node.GetSlice);
-//     const array = try anyExpr(b, scope, get_slice.operand);
-//     const start = try valExpr(b, scope, payload.start);
-//     const end = try valExpr(b, scope, payload.end);
-//     // TODO: actual variable length usize
-//     const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
-//     const start_index = try b.add(.coerce, .{
-//         .ty = usize_type,
-//         .val = start,
-//         .node = payload.start,
-//     });
-//     const end_index = try b.add(.coerce, .{
-//         .ty = usize_type,
-//         .val = end,
-//         .node = payload.end,
-//     });
-//     const type_of = try b.add(.type_of, .{ .operand = array, .node = node });
-//     const element_type = try b.add(.element_type, .{ .operand = type_of, .node = node });
-//     const len = try b.add(.sub, .{ .lref = end_index, .rref = start_index, .node = node });
-//     return try b.add(.slice_init, .{
-//         .element_type = element_type,
-//         .ptr = array, // TODO: pointer arithmetic
-//         .len = len,
-//         .node = node,
-//     });
-//
-//     // switch (ri.semantics) {
-//     //     .val => return b.add(.load, .{ .operand = ptr, .node = node }),
-//     //     .ref => return ptr,
-//     //     .ty, .any => unreachable,
-//     // }
-// }
+fn getSlice(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+    const fg = b.fg;
+    const get_slice = b.tree.data(node).get_slice;
+    const payload = b.tree.extraData(get_slice.range, Node.GetSlice);
+    const base = try anyExpr(b, scope, get_slice.operand);
+    const start = try valExpr(b, scope, payload.start);
+    const end = try valExpr(b, scope, payload.end);
 
-// fn fieldAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
-//     const fg = b.fg;
-//     const field_val = b.tree.data(node).field;
-//
-//     const operand = try anyExpr(b, scope, field_val);
-//     switch (ri.semantics) {
-//         .val => return b.add(.field_val, .{ .operand = operand, .node = node }),
-//         .ref => return b.add(.field_ref, .{ .operand = operand, .node = node }),
-//         .any, .ty => unreachable,
-//     }
-// }
+    const pl = try fg.addExtra(Fir.Inst.Slice{
+        .base = base,
+        .start = start,
+        .end = end,
+    });
+    return b.add(.{
+        .data = .{ .slice = .{ .pl = pl } },
+        .loc = .{ .node = node },
+    });
+    // // TODO: actual variable length usize
+    // const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
+    // const start_index = try b.add(.coerce, .{
+    //     .ty = usize_type,
+    //     .val = start,
+    //     .node = payload.start,
+    // });
+    // const end_index = try b.add(.coerce, .{
+    //     .ty = usize_type,
+    //     .val = end,
+    //     .node = payload.end,
+    // });
+    // const type_of = try b.add(.type_of, .{ .operand = array, .node = node });
+    // const element_type = try b.add(.element_type, .{ .operand = type_of, .node = node });
+    // const len = try b.add(.sub, .{ .lref = end_index, .rref = start_index, .node = node });
+    // return try b.add(.slice_init, .{
+    //     .element_type = element_type,
+    //     .ptr = array, // TODO: pointer arithmetic
+    //     .len = len,
+    //     .node = node,
+    // });
+
+    // switch (ri.semantics) {
+    //     .val => return b.add(.load, .{ .operand = ptr, .node = node }),
+    //     .ref => return ptr,
+    //     .ty, .any => unreachable,
+    // }
+}
+
+fn fieldAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
+    const fg = b.fg;
+    const field_val = b.tree.data(node).field;
+    const field_token = b.tree.mainToken(node) + 1;
+    const field_name = b.tree.tokenString(field_token);
+    const id = try fg.pool.getOrPutString(field_name);
+
+    const operand = try anyExpr(b, scope, field_val);
+    switch (ri.semantics) {
+        .val => return b.add(.{
+            .data = .{ .field_val = .{ .base = operand, .field = id } },
+            .loc = .{ .node = node },
+        }),
+        .ref => return b.add(.{
+            .data = .{ .field_ref = .{ .base = operand, .field = id } },
+            .loc = .{ .node = node },
+        }),
+        .any, .ty => unreachable,
+    }
+}
 
 fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     return try switch (b.tree.data(node)) {

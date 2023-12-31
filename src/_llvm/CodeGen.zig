@@ -108,6 +108,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
             .sext => try self.sext(inst),
             .fpext => try self.fpext(inst),
 
+            .slice_init => try self.sliceInit(inst),
             .index_ref => try self.indexRef(inst),
             .index_val => try self.indexVal(inst),
 
@@ -714,9 +715,60 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
             try self.map.put(self.arena, inst, access);
             return access;
         },
-        .slice, .many_pointer => unreachable, // TODO
+        .slice => |slice_type| {
+            // theres a lot of indirection here:
+            // the slice object itself (which doesn't own the underlying memory), while using value semantics,
+            // is still stored in memory since its an aggregate
+            // so first we gep + load the ptr field from the slice
+            // then, we use that ptr as the base to gep + load the element
+            const element_type = self.pool.indexToKey(slice_type.element).ty;
+            var indices = .{
+                try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+                try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // first element (ptr)
+            };
+            const ptr_gep = try builder.addGetElementPtr(base_type, base, &indices);
+            const ptr = try builder.addLoad(ptr_gep, .{ .pointer = .{ .pointee = slice_type.element } });
+            const deref = try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0);
+            indices = .{ deref, index };
+            const gep = try builder.addGetElementPtr(base_type, ptr, &indices);
+            const access = try builder.addLoad(gep, element_type);
+            try self.map.put(self.arena, inst, access);
+            return access;
+        },
+        .many_pointer => unreachable, // TODO
         else => unreachable,
     }
+}
+
+fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const slice_init = air.insts.items(.data)[@intFromEnum(inst)].slice_init;
+    const data = air.extraData(Air.Inst.SliceInit, slice_init.pl);
+
+    const ptr = self.resolveInst(data.ptr);
+    const len = self.resolveInst(data.len);
+    const slice_type = self.pool.indexToKey(air.typeOf(inst)).ty;
+    // aggregate, so should be stored on the stack
+    const alloca = try builder.addAlloca(slice_type);
+
+    // now insert both values in using 2x (gep + store)
+    // const ptr_type = self.pool.indexToKey(slice_type.slice.element).ty;
+    var indices = .{
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // first element (ptr)
+    };
+    var gep = try builder.addGetElementPtr(slice_type, alloca, &indices);
+    _ = builder.addStore(gep, ptr);
+    indices = .{
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 1), // second element (len)
+    };
+    gep = try builder.addGetElementPtr(slice_type, alloca, &indices);
+    _ = builder.addStore(gep, len);
+
+    try self.map.put(self.arena, inst, alloca);
+    return alloca;
 }
 //
 // fn slicePtrRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
