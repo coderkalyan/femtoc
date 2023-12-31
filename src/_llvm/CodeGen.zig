@@ -108,14 +108,14 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
             .zext => try self.zext(inst),
             .sext => try self.sext(inst),
             .fpext => try self.fpext(inst),
-            //
-            // .index_ref => unreachable, // TODO try self.indexRef(inst),
-            // .index_val => unreachable, // TODO try self.indexVal(inst),
-            //
+
+            .index_ref => try self.indexRef(inst),
+            .index_val => try self.indexVal(inst),
+
             .alloc => try self.alloc(inst),
             .load => try self.load(inst),
-            // .store => try self.store(inst),
-            //
+            .store => try self.store(inst),
+
             .branch_single => try self.branchSingle(inst),
             .branch_double => try self.branchDouble(inst),
             .loop => try self.loop(inst),
@@ -129,7 +129,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
             .param => try self.param(inst, @intCast(i)),
             .load_decl => {},
-            else => {},
+            else => unreachable,
             // .slice_ptr_ref => try self.slicePtrRef(inst),
             // .slice_len_ref => try self.sliceLenRef(inst),
             // .slice_ptr_val => try self.slicePtrVal(inst),
@@ -148,17 +148,42 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 }
 
 fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const builder = self.builder;
     const data = self.air.insts.items(.data)[@intFromEnum(inst)].constant;
     const tv = self.pool.indexToKey(data).tv;
     // TODO: we should have a better way to either mark as unused or complete discard
     // these intermediate instructions, but for now we just skip them
     switch (self.pool.indexToKey(tv.ty).ty) {
-        .comptime_int, .comptime_float => return null,
-        else => {},
+        .comptime_int,
+        .comptime_float,
+        .comptime_array,
+        => return null,
+        .void => {
+            const ty = c.LLVMVoidTypeInContext(builder.context.context);
+            const val = c.LLVMGetUndef(ty);
+            try self.map.put(self.arena, inst, val);
+            return val;
+        },
+        .int,
+        .float,
+        => {
+            const val = try builder.context.resolveTv(tv);
+            try self.map.put(self.arena, inst, val);
+            return val;
+        },
+        .array => |array| {
+            // llvm doesn't like immediate aggregates, so we quietly
+            // store this in .data by creating an unnamed decl
+            const val = try builder.context.resolveTv(tv);
+            const global = try builder.context.addGlobal("", .{ .array = array });
+            c.LLVMSetGlobalConstant(global, 1);
+            c.LLVMSetInitializer(global, val);
+            c.LLVMSetUnnamedAddress(global, c.LLVMGlobalUnnamedAddr);
+            try self.map.put(self.arena, inst, global);
+            return global;
+        },
+        else => unreachable, // unimplemented
     }
-    const val = try self.builder.context.resolveTv(tv);
-    try self.map.put(self.arena, inst, val);
-    return val;
 }
 
 // fn constantInner(self: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
@@ -333,112 +358,121 @@ fn load(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     return ref;
 }
 
-// fn store(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-//     const air = self.air;
-//     const data = air.get(inst, .store);
-//     // TODO: better way to check for comptime data
-//     const addr = self.resolveInst(data.ptr);
-//     const ptr_inner_type = try air.resolveType(self.arena, data.ptr);
-//     const ptr_type = ptr_inner_type.extended.cast(Type.Pointer).?.pointee;
-//     // const ty = try air.resolveType(self.arena, data.val);
-//     // we lower different "stores" differently to avoid
-//     // creating a large store to an aggregate type
-//     switch (ptr_type.kind()) {
-//         .array => {
-//             // arrays can either be initialized from a comptime known Value
-//             // or runtime known .array_init instruction
-//             // for the former, we prefer to emit a memcpy from a static global
-//             // into the ptr
-//             // for the latter, we generate a series of insertvalue instructions
-//             switch (air.insts.items(.tag)[data.val]) {
-//                 // to initialize an array from a set of comptime values, the best
-//                 // solution is to emit an unnamed constant global in the data section
-//                 // (done by resolveInst above) and memcpy from it to the array pointer
-//                 .constant => {
-//                     var val = self.resolveInst(data.val);
-//                     return self.builder.addMemcpy(ptr_type, addr, val);
-//                 },
-//                 // to initialize an array from a set of runtime values, we loop
-//                 // over each index in the array and emit a GEP + store
-//                 // to avoid doing a large store to the entire array
-//                 .array_init => {
-//                     const array_init = air.get(data.val, .array_init);
-//                     const start = array_init.elements_start;
-//                     const end = array_init.elements_end;
-//                     const src_elements = air.extra_data[start..end];
-//
-//                     const scratch_top = self.scratch.items.len;
-//                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-//                     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
-//
-//                     for (src_elements, 0..) |src_element, i| {
-//                         indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
-//                         indices[1] = try self.builder.addUint(Type.Common.u32_type, i);
-//                         const element = self.resolveInst(src_element);
-//                         const gep = try self.builder.addGetElementPtr(ptr_type, addr, indices);
-//                         c.LLVMSetIsInBounds(gep, 1);
-//                         _ = self.builder.addStore(gep, element);
-//                     }
-//
-//                     return null;
-//                 },
-//                 else => unreachable,
-//             }
-//         },
-//         .slice => {
-//             // slices are initialized by adding two GEP + stores, even if the data
-//             // is comptime known, because it doesn't make sense to emit a 64/128 bit
-//             // "wide pointer" constant global and then memcpy from it
-//             switch (air.insts.items(.tag)[data.val]) {
-//                 .constant => {
-//                     const slice_constant = air.get(data.val, .constant);
-//                     const slice = air.pool.values.items(.data)[slice_constant.val].slice;
-//
-//                     const scratch_top = self.scratch.items.len;
-//                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-//                     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
-//                     indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
-//
-//                     // ptr
-//                     const ptr = self.value_map.get(slice.ptr).?;
-//                     indices[1] = try self.builder.addUint(Type.Common.u32_type, 0);
-//                     const gep1 = try self.builder.addGetElementPtr(ptr_type, addr, indices);
-//                     c.LLVMSetIsInBounds(gep1, 1);
-//                     _ = self.builder.addStore(gep1, ptr);
-//
-//                     // len
-//                     const slice_len = air.pool.getValue(slice.len);
-//                     const len = try self.constantInner(Type.Common.u64_type, slice_len);
-//                     indices[1] = try self.builder.addUint(Type.Common.u32_type, 1);
-//                     const gep2 = try self.builder.addGetElementPtr(ptr_type, addr, indices);
-//                     c.LLVMSetIsInBounds(gep2, 1);
-//                     _ = self.builder.addStore(gep2, len);
-//
-//                     return null;
-//                 },
-//                 .slice_init => {
-//                     const slice_init = air.get(data.val, .slice_init);
-//                     const ptr_value = self.resolveInst(slice_init.ptr);
-//                     const len_value = self.resolveInst(slice_init.len);
-//
-//                     // generate a slice value by starting with an undef
-//                     // and inserting 2 values into it (ptr and len)
-//                     const ty = try air.resolveType(self.arena, data.val);
-//                     const llvm_type = try self.builder.convertType(ty);
-//                     const undef = c.LLVMGetUndef(llvm_type);
-//                     const ptr = try self.builder.addInsertValue(undef, ptr_value, 0);
-//                     return self.builder.addInsertValue(ptr, len_value, 1);
-//                 },
-//                 else => unreachable,
-//             }
-//         },
-//         else => {
-//             var val = self.resolveInst(data.val);
-//             return self.builder.addStore(addr, val);
-//         },
-//     }
-// }
-//
+fn store(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].store;
+    // TODO: better way to check for comptime data
+    const addr = self.resolveInst(data.ptr);
+    // const ptr_inner_type = air.typeOf(data.ptr);
+    // const ptr_type = ptr_inner_type.extended.cast(Type.Pointer).?.pointee;
+    var val = self.resolveInst(data.val);
+    // special behavior for aggregates to avoid storing the entire value at once
+    // LLVM prefers initializing each element/field separately, and we can also
+    // perform other optimizations
+    const val_type = self.pool.indexToKey(air.typeOf(data.val)).ty;
+    switch (val_type) {
+        .array => return self.builder.addMemcpy(val_type, addr, val),
+        else => return self.builder.addStore(addr, val),
+    }
+    // const ty = try air.resolveType(self.arena, data.val);
+    // we lower different "stores" differently to avoid
+    // creating a large store to an aggregate type
+    // switch (ptr_type.kind()) {
+    //     .array => {
+    //         // arrays can either be initialized from a comptime known Value
+    //         // or runtime known .array_init instruction
+    //         // for the former, we prefer to emit a memcpy from a static global
+    //         // into the ptr
+    //         // for the latter, we generate a series of insertvalue instructions
+    //         switch (air.insts.items(.tag)[data.val]) {
+    //             // to initialize an array from a set of comptime values, the best
+    //             // solution is to emit an unnamed constant global in the data section
+    //             // (done by resolveInst above) and memcpy from it to the array pointer
+    //             .constant => {
+    //                 var val = self.resolveInst(data.val);
+    //                 return self.builder.addMemcpy(ptr_type, addr, val);
+    //             },
+    //             // to initialize an array from a set of runtime values, we loop
+    //             // over each index in the array and emit a GEP + store
+    //             // to avoid doing a large store to the entire array
+    //             .array_init => {
+    //                 const array_init = air.get(data.val, .array_init);
+    //                 const start = array_init.elements_start;
+    //                 const end = array_init.elements_end;
+    //                 const src_elements = air.extra_data[start..end];
+    //
+    //                 const scratch_top = self.scratch.items.len;
+    //                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    //                 const indices = try self.scratch.addManyAsSlice(self.arena, 2);
+    //
+    //                 for (src_elements, 0..) |src_element, i| {
+    //                     indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
+    //                     indices[1] = try self.builder.addUint(Type.Common.u32_type, i);
+    //                     const element = self.resolveInst(src_element);
+    //                     const gep = try self.builder.addGetElementPtr(ptr_type, addr, indices);
+    //                     c.LLVMSetIsInBounds(gep, 1);
+    //                     _ = self.builder.addStore(gep, element);
+    //                 }
+    //
+    //                 return null;
+    //             },
+    //             else => unreachable,
+    //         }
+    //     },
+    //     .slice => {
+    //         // slices are initialized by adding two GEP + stores, even if the data
+    //         // is comptime known, because it doesn't make sense to emit a 64/128 bit
+    //         // "wide pointer" constant global and then memcpy from it
+    //         switch (air.insts.items(.tag)[data.val]) {
+    //             .constant => {
+    //                 const slice_constant = air.get(data.val, .constant);
+    //                 const slice = air.pool.values.items(.data)[slice_constant.val].slice;
+    //
+    //                 const scratch_top = self.scratch.items.len;
+    //                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    //                 const indices = try self.scratch.addManyAsSlice(self.arena, 2);
+    //                 indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
+    //
+    //                 // ptr
+    //                 const ptr = self.value_map.get(slice.ptr).?;
+    //                 indices[1] = try self.builder.addUint(Type.Common.u32_type, 0);
+    //                 const gep1 = try self.builder.addGetElementPtr(ptr_type, addr, indices);
+    //                 c.LLVMSetIsInBounds(gep1, 1);
+    //                 _ = self.builder.addStore(gep1, ptr);
+    //
+    //                 // len
+    //                 const slice_len = air.pool.getValue(slice.len);
+    //                 const len = try self.constantInner(Type.Common.u64_type, slice_len);
+    //                 indices[1] = try self.builder.addUint(Type.Common.u32_type, 1);
+    //                 const gep2 = try self.builder.addGetElementPtr(ptr_type, addr, indices);
+    //                 c.LLVMSetIsInBounds(gep2, 1);
+    //                 _ = self.builder.addStore(gep2, len);
+    //
+    //                 return null;
+    //             },
+    //             .slice_init => {
+    //                 const slice_init = air.get(data.val, .slice_init);
+    //                 const ptr_value = self.resolveInst(slice_init.ptr);
+    //                 const len_value = self.resolveInst(slice_init.len);
+    //
+    //                 // generate a slice value by starting with an undef
+    //                 // and inserting 2 values into it (ptr and len)
+    //                 const ty = try air.resolveType(self.arena, data.val);
+    //                 const llvm_type = try self.builder.convertType(ty);
+    //                 const undef = c.LLVMGetUndef(llvm_type);
+    //                 const ptr = try self.builder.addInsertValue(undef, ptr_value, 0);
+    //                 return self.builder.addInsertValue(ptr, len_value, 1);
+    //             },
+    //             else => unreachable,
+    //         }
+    //     },
+    //     else => {
+    //         var val = self.resolveInst(data.val);
+    //         return self.builder.addStore(addr, val);
+    //     },
+    // }
+}
+
 fn cmp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c.LLVMValueRef {
     const data = @field(self.air.insts.items(.data)[@intFromEnum(inst)], @tagName(tag));
     const l = self.resolveInst(data.l);
@@ -615,51 +649,57 @@ fn ret(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     return ref;
 }
 
-// fn indexRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-//     const air = self.air;
-//     const data = air.get(inst, .index_ref);
-//
-//     const ty = try air.resolveType(self.arena, data.array);
-//     const pointer_type = ty.extended.cast(Type.Pointer).?;
-//     const array_type = pointer_type.pointee;
-//     const array = self.resolveInst(data.array);
-//     const access_index = self.resolveInst(data.index);
-//     var indices: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-//     indices[0] = try self.builder.addUint(Type.Common.u64_type, 0);
-//     indices[1] = access_index;
-//     const gep = try self.builder.addGetElementPtr(array_type, array, &indices);
-//     if (air.insts.items(.tag)[data.index] == .constant) {
-//         // comptime known, so inbounds
-//         // TODO: better check and also make sure this is correct
-//         // and actually inbound
-//         c.LLVMSetIsInBounds(gep, 1);
-//     }
-//     return gep;
-// }
-//
-// fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-//     const air = self.air;
-//     const data = air.get(inst, .index_val);
-//
-//     const array_type = try air.resolveType(self.arena, data.array);
-//     const array = self.resolveInst(data.array);
-//     const element_type = array_type.extended.cast(Type.Array).?.element;
-//     const access_index = self.resolveInst(data.index);
-//
-//     const scratch_top = self.scratch.items.len;
-//     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-//     const indices = try self.scratch.addManyAsSlice(self.arena, 2);
-//     indices[0] = try self.builder.addUint(Type.Common.u32_type, 0);
-//     indices[1] = access_index;
-//     const gep = try self.builder.addGetElementPtr(array_type, array, indices);
-//     if (air.insts.items(.tag)[data.index] == .constant) {
-//         // comptime known, so inbounds
-//         // TODO: better check and also make sure this is correct
-//         // and actually inbound
-//         c.LLVMSetIsInBounds(gep, 1);
-//     }
-//     return self.builder.addLoad(gep, element_type);
-// }
+fn indexRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const index_ref = air.insts.items(.data)[@intFromEnum(inst)].index_ref;
+    const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
+
+    const base = self.resolveInst(data.base);
+    const index = self.resolveInst(data.index);
+
+    const base_type = self.pool.indexToKey(air.typeOf(data.base)).ty;
+    const pointee = self.pool.indexToKey(base_type.pointer.pointee).ty;
+    switch (pointee) {
+        .array => {
+            // since arrays are actually stored in memory (even though this is value semantics)
+            // we can ignore the "pointer" to the base and just emit a GEP
+            const deref = try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0);
+            var indices = .{ deref, index };
+            const gep = try builder.addGetElementPtr(pointee, base, &indices);
+            try self.map.put(self.arena, inst, gep);
+            return gep;
+        },
+        .slice, .many_pointer => unreachable, // TODO
+        else => unreachable,
+    }
+}
+
+fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].index_val;
+
+    const base = self.resolveInst(data.base);
+    const index = self.resolveInst(data.index);
+    const base_type = self.pool.indexToKey(air.typeOf(data.base)).ty;
+    switch (base_type) {
+        .array => |array_type| {
+            // since arrays are actually stored in memory (even though this is value semantics)
+            // we have an extra level of indirection
+            // hence we emit a GEP + load
+            const element_type = self.pool.indexToKey(array_type.element).ty;
+            const deref = try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0);
+            var indices = .{ deref, index };
+            const gep = try builder.addGetElementPtr(base_type, base, &indices);
+            const access = try builder.addLoad(gep, element_type);
+            try self.map.put(self.arena, inst, access);
+            return access;
+        },
+        .slice, .many_pointer => unreachable, // TODO
+        else => unreachable,
+    }
+}
 //
 // fn slicePtrRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 //     const air = self.air;

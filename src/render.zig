@@ -594,6 +594,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     .many_pointer => |pointer| std.fmt.allocPrint(self.arena, "{s}[*]", .{try self.formatInterned(pointer.pointee)}),
                     .slice => |slice| std.fmt.allocPrint(self.arena, "{s}[]", .{try self.formatInterned(slice.element)}),
                     .array => |array| std.fmt.allocPrint(self.arena, "{s}[{}]", .{ try self.formatInterned(array.element), array.count }),
+                    .comptime_array => std.fmt.allocPrint(self.arena, "comptime_array", .{}),
                     .function => |_| "function unimplemented",
                 },
                 .tv => |tv| {
@@ -601,6 +602,17 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     const val = switch (tv.val) {
                         .none => "none",
                         inline .integer, .float => |num| try std.fmt.allocPrint(self.arena, "{}", .{num}),
+                        .array => |array| fmt: {
+                            var str = try std.fmt.allocPrint(self.arena, "[", .{});
+                            const elements = self.pool.extra.items[array.start..array.end];
+                            for (elements, 0..) |element, i| {
+                                const interned = try self.formatInterned(@enumFromInt(element));
+                                str = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ str, interned });
+                                if (i < elements.len - 1) str = try std.fmt.allocPrint(self.arena, "{s}, ", .{str});
+                            }
+                            str = try std.fmt.allocPrint(self.arena, "{s}]", .{str});
+                            break :fmt str;
+                        },
                         .body => "body unimplemented",
                     };
                     return std.fmt.allocPrint(self.arena, "{s}({s})", .{ ty, val });

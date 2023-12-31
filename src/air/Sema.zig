@@ -142,6 +142,9 @@ fn analyzeGlobal(sema: *Sema, global_inst: Fir.Index) !void {
         switch (fir.insts.items(.tags)[i]) {
             .int => try integerLiteral(&b, inst),
             .float => try floatLiteral(&b, inst),
+            .none => try voidLiteral(&b, inst),
+            .string => unreachable, // TODO
+            .array => try array(&b, inst),
             .builtin_type => try builtinType(&b, inst),
             .bool_type => try boolType(&b, inst),
             .pointer_type => try pointerType(&b, inst),
@@ -187,7 +190,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .float => try floatLiteral(&b, inst),
             .none => try voidLiteral(&b, inst),
             .string => unreachable, // TODO
-            .array => unreachable, // TODO
+            .array => try array(&b, inst),
             .builtin_type => try builtinType(&b, inst),
             .bool_type => try boolType(&b, inst),
             .pointer_type => try pointerType(&b, inst),
@@ -225,7 +228,8 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
 
             .coerce => try firCoerce(&b, inst),
             .call => try call(&b, inst),
-            .index_ref, .index_val => unreachable, // TODO
+            .index_val => try indexVal(&b, inst),
+            .index_ref => try indexRef(&b, inst),
             .load_global => try loadGlobal(&b, inst),
             .push => try push(&b, inst),
             .load => try load(&b, inst),
@@ -401,6 +405,32 @@ fn voidLiteral(b: *Block, inst: Fir.Index) !void {
     try b.mapInst(inst, air_inst);
 }
 
+fn array(b: *Block, inst: Fir.Index) !void {
+    const pl = b.fir.get(inst).data.array;
+    const slice = b.fir.extraData(Fir.Inst.ExtraSlice, pl);
+    const elements = b.fir.extraSlice(slice);
+
+    // TODO: peer type resolution?
+    const scratch_top = b.sema.scratch.items.len;
+    defer b.sema.scratch.shrinkRetainingCapacity(scratch_top);
+    try b.sema.scratch.ensureUnusedCapacity(b.arena, elements.len);
+    for (elements) |element| {
+        const constant = b.resolveInst(@enumFromInt(element));
+        const tv = b.sema.insts.get(@intFromEnum(constant)).constant;
+        b.sema.scratch.appendAssumeCapacity(@intFromEnum(tv));
+    }
+
+    const tvs = b.sema.scratch.items[scratch_top..];
+    const elements_start: u32 = @intCast(b.pool.extra.items.len);
+    try b.pool.extra.appendSlice(b.pool.gpa, tvs);
+    const elements_end: u32 = @intCast(b.pool.extra.items.len);
+    const air_inst = try b.addConstant(.{ .tv = .{
+        .ty = try b.pool.getOrPut(.{ .ty = .{ .comptime_array = .{ .count = @intCast(elements.len) } } }),
+        .val = .{ .array = .{ .start = elements_start, .end = elements_end } },
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
 const builtin_type_enum = enum {
     u8_type,
     u16_type,
@@ -483,7 +513,9 @@ fn arrayType(b: *Block, inst: Fir.Index) !void {
     const data = array_type.data.array_type;
     const element = b.resolveInterned(data.element);
     const count = count: {
-        const ip_index = b.resolveInterned(data.element);
+        const constant = b.resolveInst(data.count);
+        // const ip_index = b.resolveInterned(data.count);
+        const ip_index = b.sema.insts.items(.data)[@intFromEnum(constant)].constant;
         const tv = b.pool.indexToKey(ip_index).tv;
         const ty = b.pool.indexToKey(tv.ty).ty;
         // TODO: emit error
@@ -553,7 +585,7 @@ fn elementType(b: *Block, inst: Fir.Index) !void {
     const parent = b.resolveInst(data.parent);
     const ty = b.sema.tempAir().typeOf(parent);
     const element = switch (b.pool.indexToKey(ty).ty) {
-        .array => |array| array.element,
+        .array => |arr| arr.element,
         .slice => |slice| slice.element,
         .many_pointer => |many_pointer| many_pointer.pointee,
         else => unreachable,
@@ -650,6 +682,11 @@ fn push(b: *Block, inst: Fir.Index) !void {
     const data = push_inst.data.push;
 
     const operand = b.resolveInst(data);
+    const alloc = try pushInner(b, operand);
+    try b.mapInst(inst, alloc);
+}
+
+fn pushInner(b: *Block, operand: Air.Index) !Air.Index {
     const ty = b.sema.tempAir().typeOf(operand);
     const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
     const alloc = try b.add(.{ .alloc = .{
@@ -660,7 +697,7 @@ fn push(b: *Block, inst: Fir.Index) !void {
         .ptr = alloc,
         .val = operand,
     } });
-    try b.mapInst(inst, alloc);
+    return alloc;
 }
 
 fn load(b: *Block, inst: Fir.Index) !void {
@@ -1102,6 +1139,102 @@ pub fn firContinue(b: *Block, inst: Fir.Index) !void {
 pub fn firBreak(b: *Block, inst: Fir.Index) !void {
     const air_inst = try b.add(.{ .@"break" = {} });
     try b.mapInst(inst, air_inst);
+}
+
+fn indexVal(b: *Block, inst: Fir.Index) !void {
+    const index_val = b.fir.get(inst);
+    const data = index_val.data.index_val;
+    const base = b.resolveInst(data.base);
+    const index = index: {
+        const inner = b.resolveInst(data.index);
+        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
+        break :index try coerceInnerImplicit(b, inner, usize_type);
+    };
+
+    const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
+    switch (base_type) {
+        // reading an index from a pointer by value - emit a ref + load
+        .pointer => |pointer| {
+            const pointee = b.pool.indexToKey(pointer.pointee).ty;
+            switch (pointee) {
+                .array => |arr| {
+                    // we want to avoid loading the entire aggregate (array) into a temporary,
+                    // so we instead get a reference to the element and then perform a load
+                    // this translates to a GEP in LLVM
+                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
+                    const pl = try b.sema.addExtra(Air.Inst.IndexRef{
+                        .base = base,
+                        .index = index,
+                        .ty = element_ptr,
+                    });
+                    const ref = try b.add(.{ .index_ref = .{ .pl = pl } });
+                    const access = try b.add(.{ .load = .{
+                        .ptr = ref,
+                    } });
+                    try b.mapInst(inst, access);
+                },
+                .slice, .many_pointer => unreachable, // unimplemented
+                else => unreachable, // TODO: emit error
+            }
+        },
+        // reading a field from a value by value - emit a val
+        .array => {
+            const access = try b.add(.{ .index_val = .{
+                .base = base,
+                .index = index,
+            } });
+            try b.mapInst(inst, access);
+        },
+        .slice, .many_pointer => unreachable, // unimplemented
+        else => unreachable,
+    }
+}
+
+fn indexRef(b: *Block, inst: Fir.Index) !void {
+    const index_val = b.fir.get(inst);
+    const data = index_val.data.index_ref;
+    const base = b.resolveInst(data.base);
+    const index = index: {
+        const inner = b.resolveInst(data.index);
+        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
+        break :index try coerceInnerImplicit(b, inner, usize_type);
+    };
+
+    const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
+    switch (base_type) {
+        // reading an index from a pointer by reference - emit a ref
+        .pointer => |pointer| {
+            const pointee = b.pool.indexToKey(pointer.pointee).ty;
+            switch (pointee) {
+                .array => |arr| {
+                    // we want to avoid loading the entire aggregate (array) into a temporary,
+                    // so we instead get a reference to the element and then perform a load
+                    // this translates to a GEP in LLVM
+                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
+                    const pl = try b.sema.addExtra(Air.Inst.IndexRef{
+                        .base = base,
+                        .index = index,
+                        .ty = element_ptr,
+                    });
+                    const ref = try b.add(.{ .index_ref = .{ .pl = pl } });
+                    try b.mapInst(inst, ref);
+                },
+                .slice, .many_pointer => unreachable, // unimplemented
+                else => unreachable, // TODO: emit error
+            }
+        },
+        // reading a field from a value by reference - emit a val + alloc + store
+        .array => {
+            const access = try b.add(.{ .index_val = .{
+                .base = base,
+                .index = index,
+            } });
+            const ref = try pushInner(b, access);
+            try b.mapInst(inst, ref);
+        },
+        .slice, .many_pointer => unreachable, // unimplemented
+        else => unreachable,
+    }
 }
 
 pub fn tempAir(sema: *Sema) Air {

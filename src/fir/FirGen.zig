@@ -748,9 +748,13 @@ fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
     const operand = try anyExpr(b, scope, index_access.operand);
     const index = access: {
         const inner = try valExpr(b, scope, index_access.index);
-        // TODO: actual variable length usize
-        // TODO: add back the coerce
-        // const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
+        // // TODO: actual variable length usize
+        // // TODO: add back the coerce
+        // may not be needed, moving this to sema
+        // const usize_type = try b.addConstant(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } });
+        // break :access try b.add(.{ .coerce = .{
+        //
+        // } });
         // break :access try b.add(.coerce, .{
         //     .ty = usize_type,
         //     .val = inner,
@@ -1200,6 +1204,7 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     const assign = b.tree.data(node).assign_simple;
 
+    const val = try valExpr(b, scope, assign.val);
     const ptr = refExpr(b, scope, assign.ptr) catch |err| {
         if (err == error.InvalidLvalue) {
             // TODO: not really accurate?
@@ -1212,7 +1217,6 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
             return err;
         }
     };
-    const val = try valExpr(b, scope, assign.val);
     return b.add(.{
         .data = .{ .store = .{ .ptr = ptr, .val = val } },
         .loc = .{ .node = node },

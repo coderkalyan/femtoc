@@ -51,12 +51,14 @@ const Tag = enum(u8) {
     many_pointer_type,
     slice_type,
     array_type,
+    comptime_array_type,
     function_type,
 
     // typed values
     none_tv,
     integer_tv,
     float_tv,
+    array_tv,
     body_tv,
 
     decl,
@@ -66,7 +68,7 @@ const ValueIndex = enum(u32) { _ };
 pub const DeclIndex = enum(u32) { _ };
 pub const AirIndex = enum(u32) { _ };
 
-pub const Array = struct {
+pub const ArrayType = struct {
     element: Index,
     count: u32,
 };
@@ -85,6 +87,12 @@ pub const IntegerTypedValue = struct {
 pub const FloatTypedValue = struct {
     ty: Index,
     value: ValueIndex,
+};
+
+pub const ArrayTypedValue = struct {
+    ty: Index,
+    elements_start: u32,
+    elements_end: u32,
 };
 
 pub const BodyTypedValue = struct {
@@ -169,11 +177,13 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .many_pointer_type,
         .slice_type,
         .array_type,
+        .comptime_array_type,
         .function_type,
         => .{ .ty = Type.fromInterned(pool, index) },
         .none_tv,
         .integer_tv,
         .float_tv,
+        .array_tv,
         .body_tv,
         => .{ .tv = TypedValue.fromInterned(pool, index) },
         .decl => .{ .decl = @enumFromInt(data) },
@@ -251,12 +261,13 @@ fn putType(pool: *InternPool, key: Key) !void {
         }),
         .slice => |slice| pool.items.appendAssumeCapacity(.{ .tag = .slice_type, .data = @intFromEnum(slice.element) }),
         .array => |array| {
-            const pl = try pool.addExtra(Array{
+            const pl = try pool.addExtra(ArrayType{
                 .element = array.element,
                 .count = array.count,
             });
             pool.items.appendAssumeCapacity(.{ .tag = .array_type, .data = pl });
         },
+        .comptime_array => |array| pool.items.appendAssumeCapacity(.{ .tag = .comptime_array_type, .data = @intCast(array.count) }),
         .function => |function| {
             const pl = try pool.addExtra(FunctionType{
                 .params_start = function.params.start,
@@ -272,7 +283,7 @@ fn putTypedValue(pool: *InternPool, key: Key) !void {
     const tv = key.tv;
     try pool.items.ensureUnusedCapacity(pool.gpa, 1);
     switch (tv.val) {
-        .none => pool.items.appendAssumeCapacity(.{ .tag = .none_tv, .data = 0xcafeb0ba }),
+        .none => pool.items.appendAssumeCapacity(.{ .tag = .none_tv, .data = @intFromEnum(tv.ty) }),
         .integer => |int| {
             try pool.values.append(pool.gpa, int);
             const value_index: u32 = @intCast(pool.values.items.len - 1);
@@ -290,6 +301,14 @@ fn putTypedValue(pool: *InternPool, key: Key) !void {
                 .value = @enumFromInt(value_index),
             });
             pool.items.appendAssumeCapacity(.{ .tag = .float_tv, .data = pl });
+        },
+        .array => |array| {
+            const pl = try pool.addExtra(ArrayTypedValue{
+                .ty = tv.ty,
+                .elements_start = array.start,
+                .elements_end = array.end,
+            });
+            pool.items.appendAssumeCapacity(.{ .tag = .array_tv, .data = pl });
         },
         .body => |body| {
             const pl = try pool.addExtra(BodyTypedValue{

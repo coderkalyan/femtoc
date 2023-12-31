@@ -12,6 +12,7 @@ pub const Value = union(enum) {
     none,
     integer: u64,
     float: f64,
+    array: InternPool.ExtraSlice,
     body: InternPool.AirIndex,
 };
 
@@ -19,7 +20,7 @@ pub fn fromInterned(pool: *InternPool, index: InternPool.Index) TypedValue {
     const item = pool.items.get(@intFromEnum(index));
     const data = item.data;
     switch (item.tag) {
-        // .none => return .{ .ty = @enumFromInt(data), .val = .{ .none = {} } },
+        .none_tv => return .{ .ty = @enumFromInt(data), .val = .{ .none = {} } },
         .integer_tv => {
             const integer = pool.extraData(InternPool.IntegerTypedValue, data);
             return .{
@@ -32,6 +33,13 @@ pub fn fromInterned(pool: *InternPool, index: InternPool.Index) TypedValue {
             return .{
                 .ty = float.ty,
                 .val = .{ .float = @bitCast(pool.values.items[@intFromEnum(float.value)]) },
+            };
+        },
+        .array_tv => {
+            const array = pool.extraData(InternPool.ArrayTypedValue, data);
+            return .{
+                .ty = array.ty,
+                .val = .{ .array = .{ .start = array.elements_start, .end = array.elements_end } },
             };
         },
         .body_tv => {

@@ -13,6 +13,7 @@ pub const Type = union(enum) {
     many_pointer: struct { pointee: InternPool.Index },
     slice: struct { element: InternPool.Index },
     array: struct { element: InternPool.Index, count: u32 },
+    comptime_array: struct { count: u32 },
     function: struct {
         params: InternPool.ExtraSlice,
         @"return": InternPool.Index,
@@ -38,9 +39,10 @@ pub const Type = union(enum) {
             .many_pointer_type => .{ .many_pointer = .{ .pointee = @enumFromInt(data) } },
             .slice_type => .{ .slice = .{ .element = @enumFromInt(data) } },
             .array_type => {
-                const array = pool.extraData(InternPool.Array, data);
+                const array = pool.extraData(InternPool.ArrayType, data);
                 return .{ .array = .{ .element = array.element, .count = array.count } };
             },
+            .comptime_array_type => .{ .comptime_array = .{ .count = @intCast(data) } },
             .function_type => {
                 const function = pool.extraData(InternPool.FunctionType, data);
                 return .{ .function = .{
@@ -73,6 +75,33 @@ pub const Type = union(enum) {
         } else {
             return (@as(i64, @intCast(-1)) << width);
         }
+    }
+
+    pub fn size(ty: Type, pool: *InternPool) usize {
+        return switch (ty) {
+            .void => 0,
+            .comptime_int, .comptime_float => unreachable,
+            inline .int, .float => |num| switch (num.width) {
+                inline 1...127 => |width| comptime intSize(width),
+                else => unreachable,
+            },
+            .pointer => 8, // TODO: architecture dependent
+            .array => |array| {
+                const element = pool.indexToKey(array.element).ty;
+                return element.size(pool) * array.count;
+            },
+            .function => unreachable, // TODO
+            else => unreachable,
+        };
+    }
+
+    fn intSize(width: u32) usize {
+        var s: usize = 1;
+        while (s * 8 < width) {
+            s *= 2;
+        }
+
+        return s;
     }
 };
 
@@ -223,25 +252,6 @@ pub const Type = union(enum) {
 //         }
 //     }
 //
-//     pub fn size(ty: Type) usize {
-//         return switch (ty.kind()) {
-//             .void => 0,
-//             .comptime_uint, .comptime_sint, .comptime_float => unreachable,
-//             .uint, .sint, .float => switch (ty.basic.width) {
-//                 inline 1...127 => |width| comptime intSize(width),
-//                 else => unreachable,
-//             },
-//             .pointer => 8, // TODO: architecture dependent
-//             .array => {
-//                 const array_type = ty.extended.cast(Type.Array).?;
-//                 return array_type.element.size() * array_type.count;
-//             },
-//             .structure,
-//             .function,
-//             => unreachable, // TODO
-//             else => unreachable,
-//         };
-//     }
 //
 //     pub fn initLiteral(comptime _kind: Type.Kind, width: u8) Type {
 //         // TODO: replace size guard with bigint and special floats

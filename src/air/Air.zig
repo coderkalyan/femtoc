@@ -105,8 +105,7 @@ pub const Inst = union(enum) {
     // emit an index_val to extract an element, and then promote
     // the element to an (immutable) stack object
     index_ref: struct {
-        base: Index,
-        index: Index,
+        pl: ExtraIndex,
     },
     // indexes into an array, slice, or many pointer (passed by
     // value) and returns the value of the element
@@ -196,6 +195,12 @@ pub const Inst = union(enum) {
         exec_true: Index,
         exec_false: Index,
     };
+
+    pub const IndexRef = struct {
+        base: Index,
+        index: Index,
+        ty: InternPool.Index,
+    };
 };
 
 pub const Decl = struct {
@@ -278,7 +283,10 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             return function_type.function.@"return";
         },
         inline .zext, .sext, .fpext => |cast| return cast.ty,
-        .index_ref => unreachable, // TODO
+        .index_ref => |index_ref| {
+            const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
+            return data.ty;
+        },
         .index_val => |index_val| {
             const ty = air.typeOf(index_val.base);
             const base_type = pool.indexToKey(ty).ty;

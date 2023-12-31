@@ -72,7 +72,7 @@ pub fn resolveType(context: *Context, ty: Type) !c.LLVMTypeRef {
         .void => c.LLVMVoidTypeInContext(context.context),
         .comptime_int,
         .comptime_float,
-        // .comptime_array,
+        .comptime_array,
         => unreachable,
         .int => |int| c.LLVMIntTypeInContext(context.context, int.width),
         .float => |float| switch (float.width) {
@@ -118,6 +118,7 @@ pub fn resolveTv(context: *Context, tv: TypedValue) !c.LLVMValueRef {
         .void,
         .comptime_int,
         .comptime_float,
+        .comptime_array,
         .function,
         => unreachable,
         .int => |int| c.LLVMConstInt(llvm_type, @intCast(tv.val.integer), @intFromBool(int.sign == .signed)),
@@ -125,8 +126,18 @@ pub fn resolveTv(context: *Context, tv: TypedValue) !c.LLVMValueRef {
         .pointer,
         .many_pointer,
         .slice,
-        .array,
         => unreachable, // TODO
+        .array => {
+            const array = tv.val.array;
+            const src_elements = context.pool.extra.items[array.start..array.end];
+            var elements = try context.arena.alloc(c.LLVMValueRef, src_elements.len);
+            for (src_elements, 0..) |src_element, i| {
+                const element_tv = context.pool.indexToKey(@enumFromInt(src_element)).tv;
+                elements[i] = try context.resolveTv(element_tv);
+            }
+
+            return c.LLVMConstArray(llvm_type, elements.ptr, @intCast(elements.len));
+        },
     };
 }
 
@@ -345,9 +356,9 @@ pub const Builder = struct {
         return c.LLVMBuildFPExt(builder.builder, val, llvm_type, "");
     }
 
-    pub fn addGetElementPtr(builder: *Builder, ty: Type, ptr: c.LLVMValueRef, indices: []c.LLVMValueRef) !c.LLVMValueRef {
+    pub fn addGetElementPtr(builder: *Builder, ty: Type, ptr: c.LLVMValueRef, indices: []const c.LLVMValueRef) !c.LLVMValueRef {
         const llvm_type = try builder.resolveType(ty);
-        return c.LLVMBuildGEP2(builder.builder, llvm_type, ptr, indices.ptr, @intCast(indices.len), "");
+        return c.LLVMBuildGEP2(builder.builder, llvm_type, ptr, @constCast(indices.ptr), @intCast(indices.len), "");
     }
 
     pub fn addPhi(builder: *Builder, ty: Type) !c.LLVMValueRef {
@@ -356,7 +367,8 @@ pub const Builder = struct {
     }
 
     pub fn addMemcpy(builder: *Builder, ty: Type, dest: c.LLVMValueRef, src: c.LLVMValueRef) !c.LLVMValueRef {
-        const size = try builder.addUint(Type.Common.u32_type, ty.size());
+        const u32_type: Type = .{ .int = .{ .sign = .unsigned, .width = 32 } };
+        const size = try builder.addUint(u32_type, ty.size(builder.context.pool));
         const dest_align = c.LLVMGetAlignment(dest);
         const src_align = c.LLVMGetAlignment(src);
         return c.LLVMBuildMemCpy(builder.builder, dest, dest_align, src, src_align, size);
