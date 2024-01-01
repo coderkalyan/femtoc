@@ -24,6 +24,8 @@ pub const Type = union(enum) {
         unsigned,
     };
 
+    pub const Tag = std.meta.Tag(Type);
+
     pub fn fromInterned(pool: *InternPool, index: InternPool.Index) Type {
         const item = pool.items.get(@intFromEnum(index));
         const data = item.data;
@@ -103,6 +105,22 @@ pub const Type = union(enum) {
 
         return s;
     }
+
+    pub const void_type: Type = .{ .void = {} };
+    pub const comptime_uint_type: Type = .{ .comptime_int = .{ .sign = .unsigned } };
+    pub const comptime_sint_type: Type = .{ .comptime_int = .{ .sign = .signed } };
+    pub const comptime_float_type: Type = .{ .comptime_float = {} };
+    pub const u1_type: Type = .{ .int = .{ .sign = .unsigned, .width = 1 } };
+    pub const u8_type: Type = .{ .int = .{ .sign = .unsigned, .width = 8 } };
+    pub const u16_type: Type = .{ .int = .{ .sign = .unsigned, .width = 16 } };
+    pub const u32_type: Type = .{ .int = .{ .sign = .unsigned, .width = 32 } };
+    pub const u64_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
+    pub const i8_type: Type = .{ .int = .{ .sign = .signed, .width = 8 } };
+    pub const i16_type: Type = .{ .int = .{ .sign = .signed, .width = 16 } };
+    pub const i32_type: Type = .{ .int = .{ .sign = .signed, .width = 32 } };
+    pub const i64_type: Type = .{ .int = .{ .sign = .signed, .width = 64 } };
+    pub const f32_type: Type = .{ .float = .{ .width = 32 } };
+    pub const f64_type: Type = .{ .float = .{ .width = 64 } };
 };
 
 // pub fn kind(ty: Type, pool: *InternPool) Kind {
@@ -310,23 +328,6 @@ pub const Type = union(enum) {
 //         return ty.basic.kind == .sint or ty.basic.kind == .comptime_sint;
 //     }
 //
-//     pub const Common = .{
-//         .void_type = Type.initLiteral(.void, 0),
-//         .comptime_uint = Type.initLiteral(.comptime_uint, 64),
-//         .comptime_sint = Type.initLiteral(.comptime_sint, 64),
-//         .comptime_float = Type.initLiteral(.comptime_float, 64),
-//         .u1_type = Type.initLiteral(.uint, 1),
-//         .u8_type = Type.initLiteral(.uint, 8),
-//         .u16_type = Type.initLiteral(.uint, 16),
-//         .u32_type = Type.initLiteral(.uint, 32),
-//         .u64_type = Type.initLiteral(.uint, 64),
-//         .i8_type = Type.initLiteral(.sint, 8),
-//         .i16_type = Type.initLiteral(.sint, 16),
-//         .i32_type = Type.initLiteral(.sint, 32),
-//         .i64_type = Type.initLiteral(.sint, 64),
-//         .f32_type = Type.initLiteral(.float, 32),
-//         .f64_type = Type.initLiteral(.float, 64),
-//     };
 // };
 //
 // test "integers" {

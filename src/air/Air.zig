@@ -295,7 +295,7 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         .fcmp_ge,
         .fcmp_lt,
         .fcmp_le,
-        => return @enumFromInt(0),
+        => return InternPool.Index.u1_type,
         .neg,
         .bitwise_inv,
         => |un| return air.typeOf(un),

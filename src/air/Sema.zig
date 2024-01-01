@@ -3,6 +3,8 @@ const Fir = @import("../fir/Fir.zig");
 const Air = @import("Air.zig");
 const InternPool = @import("../InternPool.zig");
 const Coercion = @import("Coercion.zig");
+const coercion = @import("coercion.zig");
+const alu = @import("alu.zig");
 const Type = @import("type.zig").Type;
 const Decl = Air.Decl;
 const Allocator = std.mem.Allocator;
@@ -168,7 +170,7 @@ fn analyzeGlobal(sema: *Sema, global_inst: Fir.Index) !void {
     }
 }
 
-fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Truncated, InvalidCoercion, OutOfMemory, HandledUserError }!Air.Index {
+fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Truncated, InvalidCoercion, OutOfMemory, HandledUserError, Overflow, DivZero }!Air.Index {
     const fir = sema.fir;
     const block_pl = fir.insts.items(.data)[@intFromEnum(block)].block.insts;
     const slice = fir.extraData(Fir.Inst.ExtraSlice, block_pl);
@@ -221,7 +223,6 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .cmp_ge,
             .cmp_lt,
             .cmp_le,
-            // => {}, // TODO
             => |tag| try binaryCmp(&b, inst, tag),
             .neg => try unaryNeg(&b, inst),
             .bitwise_inv => try bitwiseInv(&b, inst),
@@ -387,7 +388,7 @@ fn globalSetLinkageExternal(b: *Block, inst: Fir.Index) !void {
 fn integerLiteral(b: *Block, inst: Fir.Index) !void {
     const int = b.fir.get(inst);
     const air_inst = try b.addConstant(.{ .tv = .{
-        .ty = try b.pool.getOrPut(.{ .ty = .{ .comptime_int = .{ .sign = .unsigned } } }),
+        .ty = .comptime_uint_type,
         .val = .{ .integer = int.data.int },
     } });
     try b.mapInst(inst, air_inst);
@@ -396,17 +397,14 @@ fn integerLiteral(b: *Block, inst: Fir.Index) !void {
 fn floatLiteral(b: *Block, inst: Fir.Index) !void {
     const float = b.fir.get(inst);
     const air_inst = try b.addConstant(.{ .tv = .{
-        .ty = try b.pool.getOrPut(.{ .ty = .{ .comptime_float = {} } }),
+        .ty = .comptime_float_type,
         .val = .{ .float = float.data.float },
     } });
     try b.mapInst(inst, air_inst);
 }
 
 fn voidLiteral(b: *Block, inst: Fir.Index) !void {
-    const air_inst = try b.addConstant(.{ .tv = .{
-        .ty = try b.pool.getOrPut(.{ .ty = .{ .void = {} } }),
-        .val = .{ .none = {} },
-    } });
+    const air_inst = try b.add(.{ .constant = .none });
     try b.mapInst(inst, air_inst);
 }
 
@@ -442,22 +440,7 @@ fn array(b: *Block, inst: Fir.Index) !void {
     try b.mapInst(inst, air_inst);
 }
 
-const builtin_type_enum = enum {
-    u8_type,
-    u16_type,
-    u32_type,
-    u64_type,
-    i8_type,
-    i16_type,
-    i32_type,
-    i64_type,
-    f32_type,
-    f64_type,
-    bool_type,
-    void_type,
-};
-
-const builtin_types = std.ComptimeStringMap(builtin_type_enum, .{
+const builtin_types = std.ComptimeStringMap(InternPool.Index, .{
     .{ "u8", .u8_type },
     .{ "u16", .u16_type },
     .{ "u32", .u32_type },
@@ -468,7 +451,7 @@ const builtin_types = std.ComptimeStringMap(builtin_type_enum, .{
     .{ "i64", .i64_type },
     .{ "f32", .f32_type },
     .{ "f64", .f64_type },
-    .{ "bool", .bool_type },
+    .{ "bool", .u1_type },
     .{ "void", .void_type },
 });
 
@@ -477,21 +460,7 @@ fn builtinType(b: *Block, inst: Fir.Index) !void {
     const node = fir.locs[@intFromEnum(inst)].node;
     const main_token = fir.tree.mainToken(node);
     const type_str = fir.tree.tokenString(main_token);
-    const builtin_type = builtin_types.get(type_str).?;
-    const ip_index = switch (builtin_type) {
-        .u8_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 8 } } }),
-        .u16_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 16 } } }),
-        .u32_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 32 } } }),
-        .u64_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
-        .i8_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 8 } } }),
-        .i16_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 16 } } }),
-        .i32_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 32 } } }),
-        .i64_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .signed, .width = 64 } } }),
-        .f32_type => try b.pool.getOrPut(.{ .ty = .{ .float = .{ .width = 32 } } }),
-        .f64_type => try b.pool.getOrPut(.{ .ty = .{ .float = .{ .width = 64 } } }),
-        .bool_type => try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } }),
-        .void_type => try b.pool.getOrPut(.{ .ty = .{ .void = {} } }),
-    };
+    const ip_index = builtin_types.get(type_str).?;
     try b.mapInterned(inst, ip_index);
 }
 
@@ -538,8 +507,7 @@ fn arrayType(b: *Block, inst: Fir.Index) !void {
 }
 
 fn boolType(b: *Block, inst: Fir.Index) !void {
-    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } });
-    try b.mapInterned(inst, ip_index);
+    try b.mapInterned(inst, .u1_type);
 }
 
 fn functionType(b: *Block, inst: Fir.Index) !void {
@@ -778,19 +746,71 @@ pub fn coerceInnerImplicit(b: *Block, src: Air.Index, dest_type: Type) !Air.Inde
     return info.coerce();
 }
 
+fn binaryInner(b: *Block, l: Air.Index, r: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !Air.Index {
+    // tries to comptime an operation, and if not possible, emits an instruction
+    const ltag = b.sema.insts.items(.tags)[@intFromEnum(l)];
+    const rtag = b.sema.insts.items(.tags)[@intFromEnum(r)];
+    if (ltag != .constant or rtag != .constant) {
+        // can't comptime, emit the instruction
+        return b.add(@unionInit(Air.Inst, @tagName(tag), .{ .l = l, .r = r }));
+    }
+
+    // we *can* comptime, so dispatch the correct instruction to the generic alu
+    const lconst = b.sema.insts.items(.data)[@intFromEnum(l)].constant;
+    const rconst = b.sema.insts.items(.data)[@intFromEnum(r)].constant;
+    const ltv = b.pool.indexToKey(lconst).tv;
+    const rtv = b.pool.indexToKey(rconst).tv;
+    const lty = b.pool.indexToKey(ltv.ty).ty;
+    // const rty = b.pool.indexToKey(rtv.ty).ty;
+
+    // at this point, we expect both types to be the same
+    // so we just switch on the left one
+    const result = switch (tag) {
+        .add => switch (lty) {
+            .int => |int| switch (int.sign) {
+                .unsigned => try alu.uadd(ltv.val.integer, rtv.val.integer),
+                .signed => try alu.sadd(ltv.val.integer, rtv.val.integer),
+            },
+            .float => unreachable, // big sadge, not implemented
+            else => unreachable,
+        },
+        .sub => try alu.sadd(ltv.val.integer, alu.negate(rtv.val.integer)),
+        .mul => switch (lty) {
+            .int => |int| switch (int.sign) {
+                .unsigned => try alu.umul(ltv.val.integer, rtv.val.integer),
+                .signed => try alu.smul(ltv.val.integer, rtv.val.integer),
+            },
+            .float => unreachable, // big sadge, not implemented
+            else => unreachable,
+        },
+        .div => switch (lty) {
+            .int => |int| switch (int.sign) {
+                .unsigned => try alu.udiv(ltv.val.integer, rtv.val.integer),
+                .signed => try alu.sdiv(ltv.val.integer, rtv.val.integer),
+            },
+            .float => unreachable, // big sadge, not implemented
+            else => unreachable,
+        },
+        .mod => unreachable, // not implemented
+        // .lsl => try
+        else => unreachable,
+    };
+
+    return b.addConstant(.{ .tv = .{
+        .ty = ltv.ty,
+        .val = .{ .integer = result },
+    } });
+}
 fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Data)) !void {
     const fir = b.fir;
     const binary = fir.get(inst);
     const data = @field(binary.data, @tagName(tag));
-    // const op_token = b.tree.mainToken(binary.node);
 
     const temp_air = b.sema.tempAir();
-    const l = b.resolveInst(data.l);
-    const r = b.resolveInst(data.r);
-    const lty_index = temp_air.typeOf(l);
-    const rty_index = temp_air.typeOf(r);
-    const lty = b.pool.indexToKey(lty_index).ty;
-    const rty = b.pool.indexToKey(rty_index).ty;
+    var l = b.resolveInst(data.l);
+    var r = b.resolveInst(data.r);
+    const lty = b.pool.indexToKey(temp_air.typeOf(l)).ty;
+    const rty = b.pool.indexToKey(temp_air.typeOf(r)).ty;
 
     const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
         .add => .add,
@@ -805,141 +825,17 @@ fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst
         else => undefined,
     };
 
-    // pending a discussion on arithmetic overflow semantics,
-    // femto only allows addition between variables of the same sign
-    // comptime literals coerce to the fixed type of the other value
-    // if both are comptime literals, the arithmetic is evaluated at
-    // compile time (constant folding)
-    switch (lty) {
-        .int => |lty_int| switch (lty_int.sign) {
-            .unsigned => switch (rty) {
-                .int => |rty_int| switch (rty_int.sign) {
-                    .unsigned => {
-                        const bits = @max(lty_int.width, rty_int.width);
-                        const dest_ty: Type = .{ .int = .{ .sign = .unsigned, .width = bits } };
-                        const lref = try coerceInnerImplicit(b, l, dest_ty);
-                        const rref = try coerceInnerImplicit(b, r, dest_ty);
-                        const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
-                        try b.mapInst(inst, new_arith);
-                    },
-                    .signed => {
-                        // try hg.errors.append(hg.gpa, .{
-                        //     .tag = .binary_diffsign,
-                        //     .token = op_token,
-                        // });
-                        return error.HandledUserError;
-                    },
-                },
-                .comptime_int => {
-                    const lref = l;
-                    const rref = try coerceInnerImplicit(b, r, lty);
-                    const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
-                    try b.mapInst(inst, new_arith);
-                },
-                else => unreachable, // TODO: should emit error
-            },
-            .signed => switch (rty) {
-                .int => |rty_int| switch (rty_int.sign) {
-                    .unsigned => {
-                        // try hg.errors.append(hg.gpa, .{
-                        //     .tag = .binary_diffsign,
-                        //     .token = op_token,
-                        // });
-                        return error.HandledUserError;
-                    },
-                    .signed => {
-                        const bits = @max(lty_int.width, rty_int.width);
-                        const dest_ty: Type = .{ .int = .{ .sign = .signed, .width = bits } };
-                        const lref = try coerceInnerImplicit(b, l, dest_ty);
-                        const rref = try coerceInnerImplicit(b, r, dest_ty);
-                        const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
-                        try b.mapInst(inst, new_arith);
-                    },
-                },
-                .comptime_int => {
-                    const lref = l;
-                    const rref = try coerceInnerImplicit(b, r, lty);
-
-                    const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
-                    try b.mapInst(inst, new_arith);
-                },
-                else => unreachable, // TODO: should emit error
-            },
-        },
-        .comptime_int => {
-            switch (rty) {
-                .int => {
-                    const lref = try coerceInnerImplicit(b, l, rty);
-                    const rref = r;
-
-                    const new_arith = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = lref, .r = rref }));
-                    try b.mapInst(inst, new_arith);
-                },
-                .comptime_int => {
-                    unreachable; // TODO: constant folding
-                },
-                else => unreachable, // TODO: should emit error
-            }
-        },
-        else => unreachable,
-    }
+    const dest_type = coercion.resolvePeerTypes(b.pool, &.{ lty, rty }).?;
+    l = try coerceInnerImplicit(b, l, dest_type);
+    r = try coerceInnerImplicit(b, r, dest_type);
+    const new_arith = try binaryInner(b, l, r, air_tag);
+    try b.mapInst(inst, new_arith);
 
     // if (lty.kind() == .comptime_uint or lty.kind() == .comptime_sint) {
     //     if (rty.kind() == .comptime_uint or rty.kind() == .comptime_sint) {
     //         return b.analyzeComptimeArithmetic(b, inst);
     //     }
     // }
-}
-
-const ResolutionStrategy = enum {
-    binary,
-};
-
-fn resolvePeerTypes(comptime strategy: ResolutionStrategy, types: anytype) ?Type {
-    switch (strategy) {
-        .binary => {
-            // for now, we assume addition only works on ints and floats
-            const lty = types[0];
-            const rty = types[1];
-            switch (lty) {
-                .comptime_int => {
-                    switch (rty) {
-                        .comptime_int => {
-                            if (lty.comptime_int.sign != rty.comptime_int.sign) return null;
-                            return lty;
-                        },
-                        .int => return rty,
-                        else => return null,
-                    }
-                },
-                .int => {
-                    switch (rty) {
-                        .comptime_int => return lty,
-                        .int => {
-                            if (lty.int.sign != rty.int.sign) return null;
-                            const width = @max(lty.int.width, rty.int.width);
-                            return .{ .int = .{ .sign = lty.int.sign, .width = width } };
-                        },
-                        else => return null,
-                    }
-                },
-                .comptime_float => switch (rty) {
-                    .comptime_float => return lty,
-                    .float => return rty,
-                    else => return null,
-                },
-                .float => switch (rty) {
-                    .comptime_float => return lty,
-                    .float => {
-                        const width = @max(lty.float.width, rty.float.width);
-                        return .{ .float = .{ .width = width } };
-                    },
-                    else => return null,
-                },
-                else => return null,
-            }
-        },
-    }
 }
 
 fn binaryCmp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Data)) !void {
@@ -955,7 +851,7 @@ fn binaryCmp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Dat
     const lty = b.pool.indexToKey(lty_index).ty;
     const rty = b.pool.indexToKey(rty_index).ty;
 
-    const dest_type = resolvePeerTypes(.binary, .{ lty, rty }).?; // TODO: emit error if no type found
+    const dest_type = coercion.resolvePeerTypes(b.pool, &.{ lty, rty }).?; // TODO: emit error if no peer type found
     l = try coerceInnerImplicit(b, l, dest_type);
     r = try coerceInnerImplicit(b, r, dest_type);
 
@@ -1158,8 +1054,7 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
     const base = b.resolveInst(data.base);
     const index = index: {
         const inner = b.resolveInst(data.index);
-        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
-        break :index try coerceInnerImplicit(b, inner, usize_type);
+        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
     };
 
     const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
@@ -1207,8 +1102,7 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
     const base = b.resolveInst(data.base);
     const index = index: {
         const inner = b.resolveInst(data.index);
-        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
-        break :index try coerceInnerImplicit(b, inner, usize_type);
+        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
     };
 
     const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
@@ -1256,13 +1150,11 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
     const base = b.resolveInst(data.base);
     const start = index: {
         const inner = b.resolveInst(data.start);
-        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
-        break :index try coerceInnerImplicit(b, inner, usize_type);
+        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
     };
     const end = index: {
         const inner = b.resolveInst(data.end);
-        const usize_type: Type = .{ .int = .{ .sign = .unsigned, .width = 64 } };
-        break :index try coerceInnerImplicit(b, inner, usize_type);
+        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
     };
 
     const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
@@ -1284,10 +1176,7 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
                     };
                     const len = len: {
                         const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
-                        const one = try b.addConstant(.{ .tv = .{
-                            .ty = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
-                            .val = .{ .integer = 1 },
-                        } });
+                        const one = try b.add(.{ .constant = .u64_one });
                         const inc = try b.add(.{ .add = .{ .l = sub, .r = one } });
                         break :len inc;
                     };
@@ -1323,10 +1212,7 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
             };
             const len = len: {
                 const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
-                const one = try b.addConstant(.{ .tv = .{
-                    .ty = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } }),
-                    .val = .{ .integer = 1 },
-                } });
+                const one = try b.add(.{ .constant = .u64_one });
                 const inc = try b.add(.{ .add = .{ .l = sub, .r = one } });
                 break :len inc;
             };
@@ -1453,10 +1339,9 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
                 } });
                 try b.mapInst(inst, access);
             } else if (std.mem.eql(u8, field_string, "len")) {
-                const ty = try b.pool.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } });
                 const access = try b.add(.{ .slice_len_val = .{
                     .base = base,
-                    .ty = ty,
+                    .ty = .u64_type,
                 } });
                 try b.mapInst(inst, access);
             } else {

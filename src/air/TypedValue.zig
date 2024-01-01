@@ -52,3 +52,11 @@ pub fn fromInterned(pool: *InternPool, index: InternPool.Index) TypedValue {
         else => unreachable,
     }
 }
+
+pub const none: TypedValue = .{ .ty = .void_type, .val = .{ .none = {} } };
+pub const u8_zero: TypedValue = .{ .ty = .u8_type, .val = .{ .integer = 0 } };
+pub const u8_one: TypedValue = .{ .ty = .u8_type, .val = .{ .integer = 1 } };
+pub const u32_zero: TypedValue = .{ .ty = .u32_type, .val = .{ .integer = 0 } };
+pub const u32_one: TypedValue = .{ .ty = .u32_type, .val = .{ .integer = 1 } };
+pub const u64_zero: TypedValue = .{ .ty = .u64_type, .val = .{ .integer = 0 } };
+pub const u64_one: TypedValue = .{ .ty = .u64_type, .val = .{ .integer = 1 } };

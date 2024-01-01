@@ -64,9 +64,69 @@ const Tag = enum(u8) {
     decl,
 };
 
-const ValueIndex = enum(u32) { _ };
+pub const ValueIndex = enum(u32) { _ };
 pub const DeclIndex = enum(u32) { _ };
 pub const AirIndex = enum(u32) { _ };
+pub const StringIndex = enum(u32) { _ };
+pub const Index = enum(u32) {
+    // common types, mirrors those in Type
+    void_type,
+    comptime_uint_type,
+    comptime_sint_type,
+    comptime_float_type,
+    u1_type,
+    u8_type,
+    u16_type,
+    u32_type,
+    u64_type,
+    i8_type,
+    i16_type,
+    i32_type,
+    i64_type,
+    f32_type,
+    f64_type,
+    // common typed values, mirrors those in TypedValue
+    none,
+    u8_zero,
+    u8_one,
+    u32_zero,
+    u32_one,
+    u64_zero,
+    u64_one,
+
+    _,
+
+    // must match order above
+    pub const Common = &.{
+        .{ .ty = Type.void_type },
+        .{ .ty = Type.comptime_uint_type },
+        .{ .ty = Type.comptime_sint_type },
+        .{ .ty = Type.comptime_float_type },
+        .{ .ty = Type.u1_type },
+        .{ .ty = Type.u8_type },
+        .{ .ty = Type.u16_type },
+        .{ .ty = Type.u32_type },
+        .{ .ty = Type.u64_type },
+        .{ .ty = Type.i8_type },
+        .{ .ty = Type.i16_type },
+        .{ .ty = Type.i32_type },
+        .{ .ty = Type.i64_type },
+        .{ .ty = Type.f32_type },
+        .{ .ty = Type.f64_type },
+        .{ .tv = TypedValue.none },
+        .{ .tv = TypedValue.u8_zero },
+        .{ .tv = TypedValue.u8_one },
+        .{ .tv = TypedValue.u32_zero },
+        .{ .tv = TypedValue.u32_one },
+        .{ .tv = TypedValue.u64_zero },
+        .{ .tv = TypedValue.u64_one },
+    };
+};
+
+pub const ExtraSlice = struct {
+    start: u32,
+    end: u32,
+};
 
 pub const ArrayType = struct {
     element: Index,
@@ -99,6 +159,38 @@ pub const BodyTypedValue = struct {
     ty: Index,
     body: AirIndex,
 };
+
+pub fn init(gpa: Allocator) !InternPool {
+    var ip: InternPool = .{
+        .gpa = gpa,
+        .map = .{},
+        .items = .{},
+        .extra = .{},
+        .values = .{},
+        .decls = .{},
+        .bodies = .{},
+        .string_bytes = .{},
+        .string_table = .{},
+    };
+
+    // initialize the pool with default "common" values
+    inline for (Index.Common, std.meta.fields(Index)) |entry, field| {
+        const ip_index = try ip.getOrPut(entry);
+        std.debug.assert(std.mem.eql(u8, @tagName(ip_index), field.name));
+    }
+
+    return ip;
+}
+
+pub fn deinit(pool: *InternPool) void {
+    pool.map.deinit(pool.gpa);
+    pool.items.deinit(pool.gpa);
+    pool.extra.deinit(pool.gpa);
+    pool.values.deinit(pool.gpa);
+    pool.decls.deinit(pool.gpa);
+    pool.string_bytes.deinit(pool.gpa);
+    pool.string_table.deinit(pool.gpa);
+}
 
 pub const Key = union(enum) {
     ty: Type,
@@ -133,16 +225,6 @@ pub const Key = union(enum) {
             .tv,
             .decl,
             => |data| Hash.hash(seed, asBytes(&data)),
-            // .tv => |data| switch (key.tv.val) {
-            //     .none => unreachable,
-            //     .integer => Hash.hash(seed, asBytes(&data)),
-            //     .float => {
-            //         var hasher = Hash.init(seed);
-            //         std.hash.autoHash(&hasher, data.ty);
-            //         std.hash.autoHash(&hasher, @as(u64, @bitCast(data.value)));
-            //         return hasher.final();
-            //     },
-            // },
         };
     }
 
@@ -348,8 +430,6 @@ pub fn addOneBody(pool: *InternPool, ty: InternPool.Index) !AirIndex {
     return @enumFromInt(index);
 }
 
-pub const StringIndex = enum(u32) { _ };
-
 pub fn getOrPutString(pool: *InternPool, string: []const u8) !StringIndex {
     const gop = try pool.string_table.getOrPutContextAdapted(pool.gpa, string, StringIndexAdapter{
         .bytes = &pool.string_bytes,
@@ -372,41 +452,6 @@ pub fn getString(pool: *InternPool, index: StringIndex) ?[:0]const u8 {
     const off: u32 = @intFromEnum(index);
     if (off >= pool.string_bytes.items.len) return null;
     return std.mem.sliceTo(@as([*:0]const u8, @ptrCast(pool.string_bytes.items.ptr + off)), 0);
-}
-
-pub const Index = enum(u32) {
-    _,
-};
-
-pub const ExtraSlice = struct {
-    start: u32,
-    end: u32,
-};
-
-pub fn init(gpa: Allocator) !InternPool {
-    var ip: InternPool = .{
-        .gpa = gpa,
-        .map = .{},
-        .items = .{},
-        .extra = .{},
-        .values = .{},
-        .decls = .{},
-        .bodies = .{},
-        .string_bytes = .{},
-        .string_table = .{},
-    };
-    _ = try ip.getOrPut(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 1 } } });
-    return ip;
-}
-
-pub fn deinit(pool: *InternPool) void {
-    pool.map.deinit(pool.gpa);
-    pool.items.deinit(pool.gpa);
-    pool.extra.deinit(pool.gpa);
-    pool.values.deinit(pool.gpa);
-    pool.decls.deinit(pool.gpa);
-    pool.string_bytes.deinit(pool.gpa);
-    pool.string_table.deinit(pool.gpa);
 }
 
 test "string intern" {
