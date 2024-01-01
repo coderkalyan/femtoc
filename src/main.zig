@@ -180,14 +180,14 @@ pub fn main() !void {
     var pool = try InternPool.init(gpa);
     defer pool.deinit();
     const fir = try FirGen.lowerAst(gpa, &pool, &ast);
-    // if (fir.errors.len > 0) {
-    //     const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, fir.errors);
-    //     var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);
-    //
-    //     try error_renderer.render();
-    //     try buffered_out.flush();
-    //     std.os.exit(1);
-    // }
+    if (fir.errors.len > 0) {
+        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, fir.errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);
+
+        try error_renderer.render();
+        try buffered_out.flush();
+        std.os.exit(1);
+    }
 
     if (verbose_hir) {
         var fir_arena = std.heap.ArenaAllocator.init(gpa);

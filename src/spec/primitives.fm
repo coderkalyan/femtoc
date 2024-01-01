@@ -10,7 +10,7 @@ let main = fn () void {
 
     // numerical literals cannot be inferred due to ambiguity
     // for clarity, femto does not try to infer size from larger context
-    let a_float: f32 = 1.0;
+    // let a_float: f32 = 1.0;
     let an_integer: i32 = 5;
 
     // variables are constant by default, and cannot be changed
@@ -20,6 +20,7 @@ let main = fn () void {
     global = mutable;
 
     // but types of mutable values can't be changed
+    // an_integer = mutable;
     // mutable = true; // error
 
     // copy value of mutable (21) into constant

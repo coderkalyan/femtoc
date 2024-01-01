@@ -385,7 +385,7 @@ const Parser = struct {
             .l_bracket => p.expectArrayInit(),
             .l_brace => p.expectBlock(),
             .k_if => p.parseConditional(),
-            .plus, .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
+            .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
                 .main_token = try p.expectToken(p.token_tags[p.index]),
                 .data = .{ .unary = try p.parsePrimaryExpr() },
             }),

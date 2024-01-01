@@ -1,6 +1,7 @@
 const std = @import("std");
 const Ast = @import("../Ast.zig");
 const InternPool = @import("../InternPool.zig");
+const error_handler = @import("../error_handler.zig");
 
 const Fir = @This();
 const NodeIndex = Ast.Node.Index;
@@ -12,6 +13,7 @@ tree: *const Ast,
 insts: std.MultiArrayList(Inst.Data).Slice,
 locs: std.ArrayListUnmanaged(Inst.Loc).Slice,
 extra: []const u32,
+errors: []error_handler.SourceError,
 module_index: Index,
 pool: *InternPool,
 
@@ -120,8 +122,8 @@ pub const Inst = struct {
         // unary expressions
         // negate -
         neg: Index,
-        // bitwise invert ~
-        bitwise_inv: Index,
+        // bitwise not ~
+        bitwise_not: Index,
 
         // coerce operand to destination type
         coerce: struct {

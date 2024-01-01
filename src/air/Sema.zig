@@ -65,6 +65,27 @@ pub const Block = struct {
     pub fn resolveInterned(b: *Block, fir_inst: Fir.Index) InternPool.Index {
         return b.sema.resolveInterned(fir_inst);
     }
+
+    pub fn typeOf(b: *Block, inst: Air.Index) InternPool.Index {
+        return b.sema.tempAir().typeOf(inst);
+    }
+
+    pub fn addIndexRef(b: *Block, base: Air.Index, index: Air.Index, element: InternPool.Index) !Air.Index {
+        const element_ptr = try b.pool.getOrPutType(.{ .pointer = .{ .pointee = element } });
+        const pl = try b.sema.addExtra(Air.Inst.IndexRef{
+            .base = base,
+            .index = index,
+            .ty = element_ptr,
+        });
+        return b.add(.{ .index_ref = .{ .pl = pl } });
+    }
+
+    pub fn addIndexVal(b: *Block, base: Air.Index, index: Air.Index) !Air.Index {
+        return b.add(.{ .index_val = .{
+            .base = base,
+            .index = index,
+        } });
+    }
 };
 
 pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) !void {
@@ -156,6 +177,7 @@ fn analyzeGlobal(sema: *Sema, global_inst: Fir.Index) !void {
             .function_type => try functionType(&b, inst),
             .type_of => try firTypeOf(&b, inst),
             .function => try firFunction(&b, inst),
+            .coerce => try firCoerce(&b, inst),
             .global_handle => try globalHandle(&b, inst, decl_ip_index),
             .global_set_mutable => try globalSetMutable(&b, inst),
             .global_set_type => try globalSetType(&b, inst),
@@ -225,7 +247,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .cmp_le,
             => |tag| try binaryCmp(&b, inst, tag),
             .neg => try unaryNeg(&b, inst),
-            .bitwise_inv => try bitwiseInv(&b, inst),
+            .bitwise_not => try bitwiseNot(&b, inst),
 
             .coerce => try firCoerce(&b, inst),
             .call => try call(&b, inst),
@@ -941,7 +963,7 @@ pub fn unaryNeg(b: *Block, inst: Fir.Index) !void {
     }
 }
 
-pub fn bitwiseInv(b: *Block, inst: Fir.Index) !void {
+pub fn bitwiseNot(b: *Block, inst: Fir.Index) !void {
     const neg = b.fir.get(inst);
     const data = neg.data.neg;
 
@@ -1057,26 +1079,17 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
         break :index try coerceInnerImplicit(b, inner, Type.u64_type);
     };
 
-    const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
+    const base_type = b.pool.indexToType(b.typeOf(base));
     switch (base_type) {
         // reading an index from a pointer by value - emit a ref + load
         .pointer => |pointer| {
-            const pointee = b.pool.indexToKey(pointer.pointee).ty;
-            switch (pointee) {
+            switch (b.pool.indexToType(pointer.pointee)) {
                 .array => |arr| {
                     // we want to avoid loading the entire aggregate (array) into a temporary,
                     // so we instead get a reference to the element and then perform a load
                     // this translates to a GEP in LLVM
-                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
-                    const pl = try b.sema.addExtra(Air.Inst.IndexRef{
-                        .base = base,
-                        .index = index,
-                        .ty = element_ptr,
-                    });
-                    const ref = try b.add(.{ .index_ref = .{ .pl = pl } });
-                    const access = try b.add(.{ .load = .{
-                        .ptr = ref,
-                    } });
+                    const ref = try b.addIndexRef(base, index, arr.element);
+                    const access = try b.add(.{ .load = .{ .ptr = ref } });
                     try b.mapInst(inst, access);
                 },
                 .slice, .many_pointer => unreachable, // unimplemented
@@ -1085,10 +1098,7 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
         },
         // reading a field from a value by value - emit a val
         .array, .slice => {
-            const access = try b.add(.{ .index_val = .{
-                .base = base,
-                .index = index,
-            } });
+            const access = try b.addIndexVal(base, index);
             try b.mapInst(inst, access);
         },
         .many_pointer => unreachable, // unimplemented
@@ -1105,23 +1115,16 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
         break :index try coerceInnerImplicit(b, inner, Type.u64_type);
     };
 
-    const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
+    const base_type = b.pool.indexToType(b.typeOf(base));
     switch (base_type) {
         // reading an index from a pointer by reference - emit a ref
         .pointer => |pointer| {
-            const pointee = b.pool.indexToKey(pointer.pointee).ty;
-            switch (pointee) {
+            switch (b.pool.indexToType(pointer.pointee)) {
                 .array => |arr| {
                     // we want to avoid loading the entire aggregate (array) into a temporary,
                     // so we instead get a reference to the element and then perform a load
                     // this translates to a GEP in LLVM
-                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
-                    const pl = try b.sema.addExtra(Air.Inst.IndexRef{
-                        .base = base,
-                        .index = index,
-                        .ty = element_ptr,
-                    });
-                    const ref = try b.add(.{ .index_ref = .{ .pl = pl } });
+                    const ref = try b.addIndexRef(base, index, arr.element);
                     try b.mapInst(inst, ref);
                 },
                 .slice, .many_pointer => unreachable, // unimplemented
@@ -1130,10 +1133,7 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
         },
         // reading a field from a value by reference - emit a val + alloc + store
         .array => {
-            const access = try b.add(.{ .index_val = .{
-                .base = base,
-                .index = index,
-            } });
+            const access = try b.addIndexVal(base, index);
             const ref = try pushInner(b, access);
             try b.mapInst(inst, ref);
         },
@@ -1346,6 +1346,19 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
                 try b.mapInst(inst, access);
             } else {
                 std.log.err("field access: no such field {s} for type slice", .{field_string});
+                unreachable;
+            }
+        },
+        .array => |arr| {
+            // slices only have two runtime fields - ptr and len
+            if (std.mem.eql(u8, field_string, "len")) {
+                const len = try b.addConstant(.{ .tv = .{
+                    .ty = .u64_type,
+                    .val = .{ .integer = arr.count },
+                } });
+                try b.mapInst(inst, len);
+            } else {
+                std.log.err("field access: no such field {s} for type array", .{field_string});
                 unreachable;
             }
         },

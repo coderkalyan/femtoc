@@ -58,13 +58,22 @@ pub fn lowerAst(gpa: Allocator, pool: *InternPool, tree: *const Ast) !Fir {
 
     // post order format guarantees that the module node will be the last
     const module_node: u32 = @intCast(tree.nodes.len - 1);
-    const module_index = try fg.module(module_node);
+    const module_index = fg.module(module_node) catch return .{
+        .tree = tree,
+        .insts = fg.insts.toOwnedSlice(),
+        .locs = try fg.locs.toOwnedSlice(gpa),
+        .extra = try fg.extra.toOwnedSlice(gpa),
+        .module_index = undefined,
+        .errors = try fg.errors.toOwnedSlice(gpa),
+        .pool = pool,
+    };
 
     return .{
         .tree = tree,
         .insts = fg.insts.toOwnedSlice(),
         .locs = try fg.locs.toOwnedSlice(gpa),
         .extra = try fg.extra.toOwnedSlice(gpa),
+        .errors = try fg.errors.toOwnedSlice(gpa),
         .module_index = module_index,
         .pool = pool,
     };
@@ -89,8 +98,12 @@ const ResultInfo = struct {
     semantics: Semantics,
 
     const Semantics = enum {
+        // the expression should generate an rvalue that can be used, loading from memory if necessary
         val,
-        ref,
+        // the expression should generate an lvalue reference/pointer to be used as a location to assign to
+        ptr,
+        // similar to ref, but applies to non-lvalues. the reference (&) operator uses this
+        // ptr,
         ty,
         any,
     };
@@ -303,10 +316,11 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
                 .loc = .{ .node = node },
             }),
             else => {
-                // try fg.errors.append(fg.gpa, .{
-                //     .tag = .invalid_identifier,
-                //     .token = ident_token,
-                // });
+                // TODO: this check should maybe happen during declaration
+                try fg.errors.append(fg.gpa, .{
+                    .tag = .shadows_builtin_type,
+                    .token = ident_token,
+                });
                 return error.HandledUserError;
             },
         }
@@ -314,10 +328,10 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
 
     const id = try fg.pool.getOrPutString(ident_str);
     const ident_scope = (try scope.resolveIdent(id)) orelse {
-        // try fg.errors.append(fg.gpa, .{
-        //     .tag = .invalid_identifier,
-        //     .token = ident_token,
-        // });
+        try fg.errors.append(fg.gpa, .{
+            .tag = .unknown_identifier,
+            .token = ident_token,
+        });
         return error.HandledUserError;
     };
 
@@ -326,28 +340,24 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
         // so we need to check that this is an rvalue context
         // we can't use consts in an lvalue context, aka on the left side of an assignment
         .local_val => {
+            const local_val = ident_scope.cast(Scope.LocalVal).?;
             switch (ri.semantics) {
-                .val, .any => return ident_scope.cast(Scope.LocalVal).?.inst,
-                .ref => {
-                    const val = ident_scope.cast(Scope.LocalVal).?.inst;
-                    return b.add(.{
-                        .data = .{ .push = val },
-                        .loc = .{ .node = node }, // TODO: technically this node should be the ampersand
+                // rvalue - return the instruction
+                .val, .any => return local_val.inst,
+                // lvalue - emit an error
+                .ptr => {
+                    try fg.errors.append(fg.gpa, .{
+                        .tag = .const_variable_assign,
+                        .token = ident_token,
                     });
-                    // TODO: this could be a nicer constant assignment error
-                    // especially since we want to upgrade these to const ptrs
-                    // try fg.errors.append(fg.gpa, .{
-                    //     .tag = .invalid_lvalue,
-                    //     .token = ident_token,
-                    // });
-                    // return error.InvalidLvalue;
+                    return error.HandledUserError;
                 },
                 .ty => {
                     try fg.errors.append(fg.gpa, .{
-                        .tag = .invalid_type,
+                        .tag = .named_var_type_context,
                         .token = ident_token,
                     });
-                    return error.InvalidLvalue;
+                    return error.HandledUserError;
                 },
             }
         },
@@ -361,25 +371,26 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
                     .data = .{ .load = .{ .ptr = local_ptr.ptr } },
                     .loc = .{ .node = node },
                 }),
-                .ref, .any => return local_ptr.ptr,
+                .ptr, .any => return local_ptr.ptr,
                 .ty => {
                     try fg.errors.append(fg.gpa, .{
-                        .tag = .invalid_type,
+                        .tag = .named_var_type_context,
                         .token = ident_token,
                     });
-                    return error.InvalidLvalue;
+                    return error.HandledUserError;
                 },
             }
         },
         .local_type => {
+            const local_type = ident_scope.cast(Scope.LocalType).?;
             switch (ri.semantics) {
-                .ty, .any => return ident_scope.cast(Scope.LocalType).?.inst,
-                .val, .ref => {
+                .ty, .any => return local_type.inst,
+                .val, .ptr => {
                     try fg.errors.append(fg.gpa, .{
-                        .tag = .invalid_lvalue,
+                        .tag = .named_type_var_context,
                         .token = ident_token,
                     });
-                    return error.InvalidLvalue;
+                    return error.HandledUserError;
                 },
             }
         },
@@ -459,7 +470,8 @@ fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.I
 
     switch (b.tree.tokenTag(operator_token)) {
         // calculate a reference to the pointer and return it
-        .ampersand => return refExpr(b, scope, unary_expr),
+        // TODO: switch this to ref semantics
+        .ampersand => return ptrExpr(b, scope, unary_expr),
         .asterisk => {
             const ptr = try valExpr(b, scope, unary_expr);
             switch (ri.semantics) {
@@ -467,13 +479,10 @@ fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.I
                     .data = .{ .load = .{ .ptr = ptr } },
                     .loc = .{ .node = node },
                 }),
-                .ref, .any => return ptr,
+                .ptr, .any => return ptr,
                 .ty => unreachable,
             }
         },
-        // nop: +x is just x
-        // TODO: consider removing this syntax entirely
-        .plus => return expr(b, scope, ri, unary_expr),
         .minus => {
             const operand = try valExpr(b, scope, unary_expr);
             return b.add(.{
@@ -484,6 +493,7 @@ fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.I
         .bang => {
             // lowers to a bool comparison to 0
             // just coerce this to a u1 so we know we're operating on a bool
+            // TODO: move this to Air
             const inner = try valExpr(b, scope, unary_expr);
             const bool_type = try b.add(.{
                 .data = .{ .bool_type = {} },
@@ -502,7 +512,7 @@ fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.I
         .tilde => {
             const operand = try valExpr(b, scope, unary_expr);
             return b.add(.{
-                .data = .{ .bitwise_inv = operand },
+                .data = .{ .bitwise_not = operand },
                 .loc = .{ .node = node },
             });
         },
@@ -621,7 +631,7 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
                 return GenError.NotImplemented;
             },
         },
-        .ref => switch (b.tree.data(node)) {
+        .ptr => switch (b.tree.data(node)) {
             .integer_literal => integerLiteral(b, node),
             .float_literal => floatLiteral(b, node),
             .bool_literal => boolLiteral(b, node),
@@ -673,8 +683,8 @@ inline fn valExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     return expr(b, scope, ri, node);
 }
 
-inline fn refExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
-    const ri: ResultInfo = .{ .semantics = .ref };
+inline fn ptrExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+    const ri: ResultInfo = .{ .semantics = .ptr };
     return expr(b, scope, ri, node);
 }
 
@@ -776,7 +786,7 @@ fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             .data = .{ .index_val = .{ .base = operand, .index = index } },
             .loc = .{ .node = node },
         }),
-        .ref => return b.add(.{
+        .ptr => return b.add(.{
             .data = .{ .index_ref = .{ .base = operand, .index = index } },
             .loc = .{ .node = node },
         }),
@@ -843,7 +853,7 @@ fn fieldAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             .data = .{ .field_val = .{ .base = operand, .field = id } },
             .loc = .{ .node = node },
         }),
-        .ref => return b.add(.{
+        .ptr => return b.add(.{
             .data = .{ .field_ref = .{ .base = operand, .field = id } },
             .loc = .{ .node = node },
         }),
@@ -891,7 +901,8 @@ fn globalStatement(fg: *FirGen, scope: *Scope, node: Node.Index) Error!Fir.Index
 fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const call_expr = b.tree.data(node).call;
-    const ri: ResultInfo = .{ .semantics = .ref };
+    // TODO: probably use ref semantics
+    const ri: ResultInfo = .{ .semantics = .ptr };
     const ptr = try identExpr(b, scope, ri, call_expr.ptr);
 
     const scratch_top = fg.scratch.items.len;
@@ -1233,13 +1244,14 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const assign = b.tree.data(node).assign_simple;
 
     const val = try valExpr(b, scope, assign.val);
-    const ptr = refExpr(b, scope, assign.ptr) catch |err| {
+    const ptr = ptrExpr(b, scope, assign.ptr) catch |err| {
         if (err == error.InvalidLvalue) {
             // TODO: not really accurate?
-            try fg.errors.append(fg.gpa, .{
-                .tag = .const_assign,
-                .token = b.tree.mainToken(node),
-            });
+            // try fg.errors.append(fg.gpa, .{
+            //     .tag = .const_assign,
+            //     .token = b.tree.mainToken(node),
+            // });
+            _ = fg;
             return error.ConstAssign;
         } else {
             return err;
@@ -1265,13 +1277,14 @@ fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const assign = b.tree.data(node).assign_binary;
     const op = b.tree.mainToken(node);
 
-    const ptr = refExpr(b, scope, assign.ptr) catch |err| {
+    const ptr = ptrExpr(b, scope, assign.ptr) catch |err| {
         if (err == error.InvalidLvalue) {
             // TODO: not really accurate?
-            try fg.errors.append(fg.gpa, .{
-                .tag = .const_assign,
-                .token = b.tree.mainToken(node),
-            });
+            // try fg.errors.append(fg.gpa, .{
+            //     .tag = .const_assign,
+            //     .token = b.tree.mainToken(node),
+            // });
+            _ = fg;
             return error.ConstAssign;
         } else {
             return err;

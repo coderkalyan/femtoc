@@ -272,6 +272,10 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
     };
 }
 
+pub fn indexToType(pool: *InternPool, index: Index) Type {
+    return pool.indexToKey(index).ty;
+}
+
 pub fn addExtra(pool: *InternPool, extra: anytype) !u32 {
     const len: u32 = @intCast(pool.extra.items.len);
     const fields = std.meta.fields(@TypeOf(extra));
@@ -319,6 +323,10 @@ pub fn getOrPut(pool: *InternPool, key: Key) Allocator.Error!Index {
         }),
     }
     return @enumFromInt(pool.items.len - 1);
+}
+
+pub fn getOrPutType(pool: *InternPool, ty: Type) Allocator.Error!Index {
+    return pool.getOrPut(.{ .ty = ty });
 }
 
 fn putType(pool: *InternPool, key: Key) !void {
