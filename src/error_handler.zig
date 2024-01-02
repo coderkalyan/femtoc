@@ -28,6 +28,7 @@ pub const SourceError = struct {
         unexpected_token,
 
         shadows_builtin_type,
+        var_shadows_keyword,
         named_var_type_context,
         named_type_var_context,
         unknown_identifier,
@@ -150,6 +151,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .unmatched_parenth => "Unmatched parenthesis",
                 .unexpected_token => "unexpected token",
                 .shadows_builtin_type => "identifier shadows builtin type",
+                .var_shadows_keyword => "variable name shadows builtin keyword",
                 .named_var_type_context => "use of variable identifier in type expression",
                 .named_type_var_context => "use of type identifier in expression",
                 .const_variable_assign => "cannot assign new value to constant",

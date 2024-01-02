@@ -924,10 +924,33 @@ const Parser = struct {
             is_mut = true;
         }
 
-        if (p.token_tags[p.index] == .ident) {
-            _ = p.eatCurrentToken();
-        } else {
-            try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
+        switch (p.token_tags[p.index]) {
+            .ident => _ = p.eatCurrentToken(),
+            .k_use,
+            .k_as,
+            .k_fn,
+            .k_return,
+            .k_let,
+            .k_mut,
+            .k_type,
+            .k_distinct,
+            .k_if,
+            .k_else,
+            .k_yield,
+            .k_struct,
+            .k_enum,
+            .k_variant,
+            .k_defer,
+            .k_for,
+            .k_break,
+            .k_or,
+            .k_and,
+            .k_xor,
+            .k_implies,
+            .k_true,
+            .k_false,
+            => try p.errors.append(.{ .tag = .var_shadows_keyword, .token = p.index }),
+            else => try p.errors.append(.{ .tag = .missing_identifier, .token = p.index }),
         }
         const type_annotation = if (p.eatToken(.colon) == null) 0 else try p.expectType();
 
