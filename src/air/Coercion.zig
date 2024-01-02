@@ -28,7 +28,7 @@ pub fn coerce(self: *Coercion) !Air.Index {
             .unsigned => self.uint(),
             .signed => self.sint(),
         },
-        // .float => self.float(),
+        .float => self.float(),
         .array => self.array(),
         .slice => self.slice(),
         else => {
@@ -132,42 +132,38 @@ fn sint(self: *Coercion) !Air.Index {
 }
 
 // coerce anything to a fixed-size float
-// fn float(self: *Coercion) !Hir.Index {
-//     const b = self.b;
-//     const hg = b.hg;
-//
-//     switch (self.src_type.kind()) {
-//         // can coerce to a fixed float if the comptime value fits in bounds
-//         // TODO: we don't check that right now
-//         .comptime_float => {
-//             const src = hg.get(self.src, .constant);
-//             const constant = try b.add(.constant, .{
-//                 .ty = self.dest_type_ref,
-//                 .val = src.val,
-//                 .node = undefined, // TODO: node annotation
-//             });
-//             try self.maybeReplaceWith(constant);
-//             return constant;
-//         },
-//         // lossy and ambiguous, so not allowed
-//         .comptime_uint, .comptime_sint, .uint, .sint => return error.Truncated,
-//         // can coerce only if the destination float is larger (same size would be caught earlier)
-//         .float => {
-//             if (self.dest_type.basic.width < self.src_type.basic.width) {
-//                 return error.Truncated;
-//             }
-//             const fpext = try b.add(.fpext, .{
-//                 .ty = self.dest_type_ref,
-//                 .val = self.src,
-//                 .node = undefined, // TODO: node annotation
-//             });
-//             try self.maybeReplaceWith(fpext);
-//             return fpext;
-//         },
-//         else => return error.InvalidCoercion,
-//     }
-// }
-//
+fn float(self: *Coercion) !Air.Index {
+    const b = self.b;
+    const src_type = b.typeOf(self.src);
+    const dest_type = b.pool.indexToType(self.dest_type);
+
+    switch (b.pool.indexToType(src_type)) {
+        // can coerce to a fixed float if the comptime value fits in bounds
+        // TODO: we don't check that right now
+        .comptime_float => {
+            const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+            const tv = b.pool.indexToKey(src).tv;
+            const val = tv.val.float;
+            return b.addConstant(.{ .tv = .{
+                .ty = self.dest_type,
+                .val = .{ .float = val },
+            } });
+        },
+        // lossy and ambiguous, so not allowed
+        .comptime_int, .int => return error.Truncated,
+        // can coerce only if the destination float is larger (same size would be caught earlier)
+        .float => |ty| {
+            if (dest_type.float.width < ty.width) return error.Truncated;
+
+            return b.add(.{ .fpext = .{
+                .ty = self.dest_type,
+                .operand = self.src,
+            } });
+        },
+        else => return error.InvalidCoercion,
+    }
+}
+
 fn array(self: *Coercion) Error!Air.Index {
     const b = self.b;
     const src_type = b.sema.tempAir().typeOf(self.src);
@@ -301,8 +297,8 @@ fn slice(self: *Coercion) Error!Air.Index {
             }
         },
         else => |tag| {
-            _ = tag;
             std.debug.print("{} {}\n", .{ dest_type.slice.element, b.pool.indexToKey(src_type).ty.slice.element });
+            std.debug.print("{} {}\n", .{ tag, self.dest_type });
             std.debug.print("{} {}\n", .{ src_type, self.dest_type });
             return error.InvalidCoercion;
         },
