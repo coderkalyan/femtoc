@@ -345,11 +345,6 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("load_global({s})", .{ident});
                     try self.stream.newline();
                 },
-                .param => |param| {
-                    const param_str = fir.pool.getString(param.name).?;
-                    try writer.print("param(%{}, \"{s}\")", .{ @intFromEnum(param.ty), param_str });
-                    try self.stream.newline();
-                },
                 .call => |call| {
                     try writer.print("call(%{}", .{@intFromEnum(call.function)});
                     const slice = fir.extraData(Fir.Inst.ExtraSlice, call.args);
@@ -395,6 +390,10 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         void => {},
                         inline u32, u64, f64 => try writer.print("{}", .{data}),
                         Fir.Index => try writer.print("%{}", .{@intFromEnum(data)}),
+                        InternPool.StringIndex => {
+                            const str = fir.pool.getString(data).?;
+                            try writer.print("\"{s}\"", .{str});
+                        },
                         else => {
                             const fields = std.meta.fields(@TypeOf(data));
                             inline for (fields, 0..) |field, i| {

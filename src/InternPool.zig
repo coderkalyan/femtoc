@@ -68,6 +68,7 @@ pub const ValueIndex = enum(u32) { _ };
 pub const DeclIndex = enum(u32) { _ };
 pub const AirIndex = enum(u32) { _ };
 pub const StringIndex = enum(u32) { _ };
+
 pub const Index = enum(u32) {
     // common types, mirrors those in Type
     void_type,
