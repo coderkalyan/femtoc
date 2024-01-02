@@ -721,7 +721,11 @@ fn store(b: *Block, inst: Fir.Index) !void {
     const data = store_inst.data.store;
 
     const ptr = b.resolveInst(data.ptr);
-    const val = b.resolveInst(data.val);
+    const val_inner = b.resolveInst(data.val);
+    const ptr_type = b.pool.indexToType(b.typeOf(ptr)).pointer;
+    const pointee_type = b.pool.indexToType(ptr_type.pointee);
+    const val = try coerceInnerImplicit(b, val_inner, pointee_type);
+
     const air_inst = try b.add(.{ .store = .{
         .ptr = ptr,
         .val = val,
