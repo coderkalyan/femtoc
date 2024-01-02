@@ -151,7 +151,7 @@ pub fn generateDecl(context: *Context, decl: *const Decl) !c.LLVMValueRef {
         .function => try context.addFunction(name, ty),
         else => decl: {
             const global = try context.addGlobal(name, ty);
-            c.LLVMSetGlobalConstant(global, @intFromBool(decl.mutable));
+            c.LLVMSetGlobalConstant(global, @intFromBool(!decl.mutable));
             if (decl.initializer) |initializer| {
                 const initializer_tv = pool.indexToKey(initializer).tv;
                 const value = try context.resolveTv(initializer_tv);

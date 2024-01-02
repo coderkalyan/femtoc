@@ -1,6 +1,6 @@
 // type func = (fn (a: u32, b: u32) bool)*;
 
-let main = fn () void {
+@export let main = fn () void {
     // let greater: func = fn (a: u32, b: u32) bool { a > b };
     // std.sort(arr, greater);
     // std.sort(arr, fn (a: u32, b: u32) bool { a < b });
@@ -14,14 +14,18 @@ let main = fn () void {
         }
     }
 
-    count = 0;
+    let tmp: u32 = 0;
+    count = tmp;
     for count < 100 {
+        // if count == 50 {
+            // continue;
+        // }
         count += 1;
     }
-
-    let n: u32 = 10;
-    let mut fact: u32 = 1;
-    for let mut i: u32 = 1; i <= n; i += 1 {
-        fact *= i;
-    }
+    //
+    // let n: u32 = 10;
+    // let mut fact: u32 = 1;
+    // for let mut i: u32 = 1; i <= n; i += 1 {
+    //     fact *= i;
+    // }
 };

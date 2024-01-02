@@ -198,18 +198,6 @@ fn module(fg: *FirGen, node: Node.Index) !Fir.Index {
             .loc = .{ .node = stmt },
         });
         fg.scratch.appendAssumeCapacity(@intFromEnum(global));
-        // const id = try globalIdentId(fg, stmt);
-        // switch (fg.tree.data(stmt)) {
-        //     .const_decl, .const_decl_attr, .var_decl => {
-        //         _ = id;
-        //         _ = inst;
-        //         // try fg.untyped_decls.put(fg.gpa, id, inst);
-        //     },
-        //     else => {
-        //         std.log.err("module: unexpected node: {}\n", .{fg.tree.data(node)});
-        //         return GenError.NotImplemented;
-        //     },
-        // }
     }
 
     const insts = fg.scratch.items[scratch_top..];
@@ -267,40 +255,10 @@ fn stringLiteral(b: *Block, node: Node.Index) !Fir.Index {
     const string_literal = string_text[1 .. string_text.len - 1];
     const id = try fg.pool.getOrPutString(string_literal);
 
-    // const len: u32 = @intCast(string_literal.len);
     return b.add(.{
         .data = .{ .string = id },
         .loc = .{ .node = node },
     });
-    // const buffer_value = try hg.pool.internValue(.{ .string = id });
-    //
-    // // underlying string buffer, gets emitted to .rodata as a global
-    // _ = try b.add(.constant, .{
-    //     .ty = try b.add(.ty, .{ .ty = buffer_type }),
-    //     .val = buffer_value,
-    //     .node = node,
-    // });
-    //
-    // const len_value = try hg.pool.internValue(.{ .integer = len });
-    // const slice = try Value.createSlice(hg.pool.arena, buffer_value, len_value);
-    // const slice_value = try hg.pool.internValue(slice);
-    // const string_type = try Type.Slice.init(hg.gpa, Type.Common.u8_type);
-    //
-    // return b.add(.constant, .{
-    //     .ty = try b.add(.ty, .{ .ty = string_type }),
-    //     .val = slice_value,
-    //     .node = node,
-    // });
-
-    // const inner_slice = try hg.gpa.create(Value.Slice);
-    // inner_slice.* = .{ .ptr = string, .len = string_literal.len };
-    // const slice = Value{ .extended = &inner_slice.base };
-    // // comptime slice to that string
-    // return try b.add(.constant, .{
-    //     .ty = try b.add(.ty, .{ .ty = string_type }),
-    //     .val = try b.addValue(slice),
-    //     .node = node,
-    // });
 }
 
 fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
@@ -395,11 +353,19 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
             }
         },
         .namespace => {
-            // TODO: semantics for this
-            return b.add(.{
+            const ptr = try b.add(.{
                 .data = .{ .load_global = .{ .name = id } },
                 .loc = .{ .node = node },
             });
+
+            switch (ri.semantics) {
+                .val => return b.add(.{
+                    .data = .{ .load = .{ .ptr = ptr } },
+                    .loc = .{ .node = node },
+                }),
+                .ptr, .any => return ptr,
+                .ty => unreachable,
+            }
         },
         else => unreachable,
     }
@@ -491,23 +457,24 @@ fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.I
             });
         },
         .bang => {
+            unreachable; // TODO
             // lowers to a bool comparison to 0
             // just coerce this to a u1 so we know we're operating on a bool
             // TODO: move this to Air
-            const inner = try valExpr(b, scope, unary_expr);
-            const bool_type = try b.add(.{
-                .data = .{ .bool_type = {} },
-                .loc = .{ .node = node },
-            });
-            const operand = try coerce(b, scope, inner, bool_type, node);
-            const other = try b.add(.{
-                .data = .{ .int = 0 },
-                .loc = .{ .node = node },
-            });
-            return b.add(.{
-                .data = .{ .cmp_eq = .{ .l = operand, .r = other } },
-                .loc = .{ .node = node },
-            });
+            // const inner = try valExpr(b, scope, unary_expr);
+            // const bool_type = try b.add(.{
+            //     .data = .{ .bool_type = {} },
+            //     .loc = .{ .node = node },
+            // });
+            // const operand = try coerce(b, scope, inner, bool_type, node);
+            // const other = try b.add(.{
+            //     .data = .{ .int = 0 },
+            //     .loc = .{ .node = node },
+            // });
+            // return b.add(.{
+            //     .data = .{ .cmp_eq = .{ .l = operand, .r = other } },
+            //     .loc = .{ .node = node },
+            // });
         },
         .tilde => {
             const operand = try valExpr(b, scope, unary_expr);
@@ -573,7 +540,9 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
         .loc = .{ .node = node },
     });
 
-    const body = try block(&body_scope, &body_scope.base, fn_decl.body, true);
+    // const body = try block(&body_scope, &body_scope.base, fn_decl.body, true);
+    try blockInner(&body_scope, &body_scope.base, fn_decl.body);
+    const body = try b.addBlockUnlinked(&body_scope, fn_decl.body);
     return b.add(.{
         .data = .{ .function = .{ .signature = sig, .body = body } },
         .loc = .{ .node = node },
@@ -619,11 +588,9 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .get_slice => try getSlice(b, scope, node),
             .paren => try expr(b, scope, ri, b.tree.data(node).paren),
             .block => {
-                var block_scope = Block.init(b.fg, scope);
-                defer block_scope.deinit();
-                const bl = try block(&block_scope, &block_scope.base, node, true);
-                try b.linkInst(bl);
-                return bl;
+                const block = try blockUnlinked(b, scope, node);
+                try b.linkInst(block);
+                return block;
             },
             .if_else => try ifElse(b, scope, node),
             else => {
@@ -861,11 +828,39 @@ fn fieldAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
     }
 }
 
-fn statement(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+// this function can modify the scope passed in if it encounters a declaration
+fn statement(b: *Block, s: **Scope, node: Node.Index) Error!Fir.Index {
+    const fg = b.fg;
+    const scope = s.*;
+
     return try switch (b.tree.data(node)) {
-        .const_decl => constDecl(b, scope, node),
-        .const_decl_attr => constDeclAttr(b, scope, node),
-        .var_decl => varDecl(b, scope, node),
+        .const_decl => {
+            const ret = try constDecl(b, scope, node);
+            const ident = b.tree.tokenString(b.tree.mainToken(node) + 1);
+            const id = try fg.pool.getOrPutString(ident);
+            const val_scope = try fg.arena.create(Scope.LocalVal);
+            val_scope.* = Scope.LocalVal.init(scope, id, ret);
+            s.* = &val_scope.base;
+            return ret;
+        },
+        .const_decl_attr => {
+            const ret = try constDeclAttr(b, scope, node);
+            const ident = b.tree.tokenString(b.tree.mainToken(node) + 1);
+            const id = try fg.pool.getOrPutString(ident);
+            const val_scope = try fg.arena.create(Scope.LocalVal);
+            val_scope.* = Scope.LocalVal.init(scope, id, ret);
+            s.* = &val_scope.base;
+            return ret;
+        },
+        .var_decl => {
+            const ret = try varDecl(b, scope, node);
+            const ident = b.tree.tokenString(b.tree.mainToken(node) + 2);
+            const id = try fg.pool.getOrPutString(ident);
+            const ptr_scope = try fg.arena.create(Scope.LocalPtr);
+            ptr_scope.* = Scope.LocalPtr.init(scope, id, ret);
+            s.* = &ptr_scope.base;
+            return ret;
+        },
         .assign_simple => assignSimple(b, scope, node),
         .assign_binary => assignBinary(b, scope, node),
         .if_simple => ifSimple(b, scope, node),
@@ -929,46 +924,22 @@ fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn block(b: *Block, scope: *Scope, node: Node.Index, comptime add_unlinked: bool) Error!Fir.Index {
-    const fg = b.fg;
+fn blockInner(b: *Block, scope: *Scope, node: Node.Index) Error!void {
     const data = b.tree.data(node).block;
 
     var s: *Scope = scope;
     const stmts = b.tree.extra_data[data.stmts_start..data.stmts_end];
     for (stmts) |stmt| {
-        const ref = try statement(b, s, stmt);
-        switch (b.tree.data(stmt)) {
-            .const_decl, .const_decl_attr => {
-                const ident = b.tree.tokenString(b.tree.mainToken(stmt) + 1);
-                const id = try fg.pool.getOrPutString(ident);
-                const var_scope = try fg.arena.create(Scope.LocalVal);
-                var_scope.* = Scope.LocalVal.init(s, id, ref);
-                s = &var_scope.base;
-            },
-            .var_decl => {
-                const ident = b.tree.tokenString(b.tree.mainToken(stmt) + 2);
-                const id = try fg.pool.getOrPutString(ident);
-                const var_scope = try fg.arena.create(Scope.LocalPtr);
-                var_scope.* = Scope.LocalPtr.init(s, id, ref);
-                s = &var_scope.base;
-            },
-            else => {},
-        }
+        _ = try statement(b, &s, stmt);
     }
+}
 
-    // unwind and free scope objects
-    while (s != scope) {
-        const parent = s.parent().?;
-        fg.arena.destroy(s);
-        s = parent;
-    }
+fn blockUnlinked(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+    var inner = Block.init(b.fg, scope);
+    defer inner.deinit();
 
-    if (add_unlinked) {
-        return b.addBlockUnlinked(b, node);
-        // return b.addBlock(b, node);
-    } else {
-        return undefined;
-    }
+    try blockInner(&inner, &inner.base, node);
+    return b.addBlockUnlinked(&inner, node);
 }
 
 fn coerce(b: *Block, s: *Scope, val: Fir.Index, dest_ty: Fir.Index, node: Node.Index) !Fir.Index {
@@ -1263,15 +1234,6 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn conditionExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
-    const ref = try valExpr(b, scope, node);
-    const condition_type = try b.add(.{
-        .data = .{ .bool_type = {} },
-        .loc = .{ .node = node },
-    });
-    return try coerce(b, scope, ref, condition_type, node);
-}
-
 fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     const assign = b.tree.data(node).assign_binary;
@@ -1302,14 +1264,11 @@ fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
 
 fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const if_simple = b.tree.data(node).if_simple;
-    var block_scope = Block.init(b.fg, scope);
-    defer block_scope.deinit();
-    const s = &block_scope.base;
 
-    const condition = try conditionExpr(b, scope, if_simple.condition);
-    const exec = try block(&block_scope, s, if_simple.exec_true, true);
+    const condition = try valExpr(b, scope, if_simple.condition);
+    const exec_true = try blockUnlinked(b, scope, if_simple.exec_true);
     return b.add(.{
-        .data = .{ .branch_single = .{ .cond = condition, .exec_true = exec } },
+        .data = .{ .branch_single = .{ .cond = condition, .exec_true = exec_true } },
         .loc = .{ .node = node },
     });
 }
@@ -1317,58 +1276,32 @@ fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
 fn ifElse(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     const if_else = b.tree.data(node).if_else;
 
-    const condition = try conditionExpr(b, scope, if_else.condition);
+    const condition = try valExpr(b, scope, if_else.condition);
     const exec = b.tree.extraData(if_else.exec, Node.IfElse);
-    const exec_true = block: {
-        var block_scope = Block.init(b.fg, scope);
-        defer block_scope.deinit();
-        break :block try block(&block_scope, &block_scope.base, exec.exec_true, true);
-    };
-    const exec_false = block: {
-        var block_scope = Block.init(b.fg, scope);
-        defer block_scope.deinit();
-        break :block try block(&block_scope, &block_scope.base, exec.exec_false, true);
-    };
-    const pl = try b.fg.addExtra(Inst.BranchDouble{
-        .exec_true = exec_true,
-        .exec_false = exec_false,
-    });
-    return b.add(.{
-        .data = .{ .branch_double = .{ .cond = condition, .pl = pl } },
-        .loc = .{ .node = node },
-    });
+    const exec_true = try blockUnlinked(b, scope, exec.exec_true);
+    const exec_false = try blockUnlinked(b, scope, exec.exec_false);
+    return b.addBranchDouble(condition, exec_true, exec_false, node);
 }
 
 fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const if_chain = b.tree.data(node).if_chain;
-
-    const condition = try conditionExpr(b, scope, if_chain.condition);
     const chain = b.tree.extraData(if_chain.chain, Node.IfChain);
-    const exec_true = block: {
-        var block_scope = Block.init(b.fg, scope);
-        defer block_scope.deinit();
-        break :block try block(&block_scope, &block_scope.base, chain.exec_true, true);
-    };
+
+    const condition = try valExpr(b, scope, if_chain.condition);
+    const exec_true = try blockUnlinked(b, scope, chain.exec_true);
     const next = block: {
         var block_scope = Block.init(b.fg, scope);
         defer block_scope.deinit();
+
         _ = switch (b.tree.data(chain.next)) {
             .if_simple => try ifSimple(&block_scope, &block_scope.base, chain.next),
             .if_else => try ifElse(&block_scope, &block_scope.base, chain.next),
             else => unreachable,
         };
-
         break :block try b.addBlockUnlinked(&block_scope, node);
     };
 
-    const pl = try b.fg.addExtra(Inst.BranchDouble{
-        .exec_true = exec_true,
-        .exec_false = next,
-    });
-    return b.add(.{
-        .data = .{ .branch_double = .{ .cond = condition, .pl = pl } },
-        .loc = .{ .node = node },
-    });
+    return b.addBranchDouble(condition, exec_true, next, node);
 }
 
 fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
@@ -1401,36 +1334,24 @@ fn yield(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
+fn loopConditionInner(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+    var inner = Block.init(b.fg, scope);
+    defer inner.deinit();
+
+    const condition = try valExpr(&inner, &inner.base, node);
+    _ = try inner.add(.{
+        .data = .{ .yield_implicit = condition },
+        .loc = .{ .token = undefined },
+    });
+    return b.addBlockUnlinked(&inner, node);
+}
+
 fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const loop_forever = b.tree.data(node).loop_forever;
-    var loop_scope = Block.init(b.fg, scope);
-    defer loop_scope.deinit();
-    const body = try block(&loop_scope, &loop_scope.base, loop_forever.body, true);
 
-    const condition = block: {
-        var block_scope = Block.init(b.fg, scope);
-        defer block_scope.deinit();
-
-        // TODO: should be implicit not node
-        const condition_inner = try b.add(.{
-            .data = .{ .int = 1 },
-            .loc = .{ .node = node },
-        });
-        const condition_type = try b.add(.{
-            .data = .{ .bool_type = {} },
-            .loc = .{ .node = node },
-        });
-        const condition = try coerce(b, scope, condition_inner, condition_type, node);
-        _ = try block_scope.add(.{
-            .data = .{ .yield_implicit = condition },
-            .loc = .{ .token = undefined }, // TODO: token
-        });
-
-        break :block try b.addBlockUnlinked(&block_scope, node);
-    };
-
+    const body = try blockUnlinked(b, scope, loop_forever.body);
     return b.add(.{
-        .data = .{ .loop = .{ .cond = condition, .body = body } },
+        .data = .{ .loop_forever = .{ .body = body } },
         .loc = .{ .node = node },
     });
 }
@@ -1438,84 +1359,27 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
 fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const loop_conditional = b.tree.data(node).loop_conditional;
 
-    const condition = block: {
-        var block_scope = Block.init(b.fg, scope);
-        defer block_scope.deinit();
-        const s = &block_scope.base;
-
-        const condition = try conditionExpr(&block_scope, s, loop_conditional.condition);
-        _ = try block_scope.add(.{
-            .data = .{ .yield_implicit = condition },
-            .loc = .{ .token = undefined },
-        });
-        break :block try b.addBlockUnlinked(&block_scope, node);
-    };
-
-    var loop_scope = Block.init(b.fg, scope);
-    defer loop_scope.deinit();
-    const body = try block(&loop_scope, &loop_scope.base, loop_conditional.body, true);
-
-    return b.add(.{
-        .data = .{ .loop = .{ .cond = condition, .body = body } },
-        .loc = .{ .node = node },
-    });
+    const condition = try loopConditionInner(b, scope, loop_conditional.condition);
+    const body = try blockUnlinked(b, scope, loop_conditional.body);
+    return b.addLoopWhile(condition, body, node);
 }
 
 fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
-    const fg = b.fg;
     const loop_range = b.tree.data(node).loop_range;
     const signature = b.tree.extraData(loop_range.signature, Node.RangeSignature);
 
-    const ref = try statement(b, scope, signature.binding);
-    var s: *Scope = var_scope: {
-        const ident = b.tree.tokenString(b.tree.mainToken(signature.binding) + 2);
-        const id = try fg.pool.getOrPutString(ident);
-        var var_scope = Scope.LocalPtr.init(scope, id, ref);
-        break :var_scope &var_scope.base;
-    };
+    var s: *Scope = scope;
+    _ = try statement(b, &s, signature.binding);
+    const condition = try loopConditionInner(b, s, signature.condition);
 
-    const condition = block: {
-        var block_scope = Block.init(b.fg, s);
-        defer block_scope.deinit();
-        const bs = &block_scope.base;
+    var inner = Block.init(b.fg, s);
+    defer inner.deinit();
+    s = &inner.base;
 
-        const condition_inner = try valExpr(&block_scope, bs, signature.condition);
-        const condition_type = try b.add(.{
-            .data = .{ .bool_type = {} },
-            .loc = .{ .node = node },
-        });
-        const condition = try coerce(&block_scope, bs, condition_inner, condition_type, node);
-        _ = try block_scope.add(.{
-            .data = .{ .yield_implicit = condition },
-            .loc = .{ .token = undefined }, // TODO
-        });
-        break :block try b.addBlockUnlinked(&block_scope, node);
-    };
-
-    // we have a block (loop outer body) that contains the afterthought
-    // and then an inner nested block that contains the user loop body
-    const body = body: {
-        var outer_scope = Block.init(b.fg, s);
-        defer outer_scope.deinit();
-
-        var inner_scope = Block.init(b.fg, &outer_scope.base);
-        defer inner_scope.deinit();
-
-        _ = try block(&inner_scope, &inner_scope.base, loop_range.body, false);
-        _ = try outer_scope.addBlock(&inner_scope, node);
-
-        _ = try statement(&outer_scope, &outer_scope.base, signature.afterthought);
-        // if (try statement(&outer_scope, &outer_scope.base, signature.afterthought)) |_| {
-        // return error.AfterthoughtDecl;
-        // }
-
-        break :body try b.addBlockUnlinked(&outer_scope, node);
-    };
-
-    return b.add(.{
-        .data = .{ .loop = .{ .cond = condition, .body = body } },
-        .loc = .{ .node = node },
-    });
+    try blockInner(&inner, s, loop_range.body);
+    _ = try statement(&inner, &s, signature.afterthought);
+    const body = try b.addBlockUnlinked(&inner, node);
+    return b.addLoopWhile(condition, body, node);
 }
 
 fn loopBreak(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {

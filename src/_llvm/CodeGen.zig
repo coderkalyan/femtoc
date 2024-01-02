@@ -17,8 +17,23 @@ scratch: std.ArrayListUnmanaged(c.LLVMValueRef),
 map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
 entry: c.LLVMBasicBlockRef = null,
 prev_alloca: c.LLVMValueRef = null,
+control_flow: std.ArrayListUnmanaged(ControlFlow),
 
 const Error = Allocator.Error || error{NotImplemented};
+
+const ControlFlow = union(enum) {
+    // basic blocks to jump to in a loop
+    loop: struct {
+        // points to the condition in a loop_while,
+        // and the entry in loop_forever
+        // used for "continue"
+        entry: c.LLVMBasicBlockRef,
+        // points to the loop exit
+        // used for "break"
+        exit: c.LLVMBasicBlockRef,
+    },
+    // basic blocks to jump to in an if/else statement
+};
 
 pub fn generate(self: *CodeGen) !void {
     var builder = self.builder;
@@ -41,7 +56,7 @@ fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
         // dereference through the load decl and return the decl itself
         .load_decl => {
             const load_decl = air.insts.items(.data)[i].load_decl;
-            const decl_index = self.pool.indexToKey(load_decl).decl;
+            const decl_index = self.pool.indexToKey(load_decl.ip_index).decl;
             const decl = self.pool.decls.at(@intFromEnum(decl_index));
             return self.builder.context.resolveDecl(decl);
         },
@@ -118,13 +133,15 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
             .branch_single => try self.branchSingle(inst),
             .branch_double => try self.branchDouble(inst),
-            .loop => try self.loop(inst),
+            .loop_forever => try self.loopForever(inst),
+            .loop_while => try self.loopWhile(inst),
             .@"return" => try self.ret(inst),
             .yield => {
                 yield_val = try self.yield(inst);
                 continue;
             },
-            // .@"break", .@"@continue" => unreachable, // TODO
+            .@"break" => try self.controlBreak(inst),
+            .@"continue" => try self.controlContinue(inst),
             .block => try self.block(inst),
 
             .param => try self.param(inst, @intCast(i)),
@@ -606,31 +623,75 @@ fn yield(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     return self.resolveInst(data);
 }
 
-fn loop(self: *CodeGen, inst: Air.Index) !void {
+fn loopWhile(self: *CodeGen, inst: Air.Index) !void {
     // the canonical form of a loop in LLVM is a do-while
     // where the body is placed first, and then the condition, which
     // results in a branch back to the body or to the exit
     // finally, a jump is placed at the top (entry) that jumps unconditionally
     // to the branch to create "while" behavior rather than "do" while
     var builder = self.builder;
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].loop;
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].loop_while;
 
-    const prev = builder.getInsertBlock();
+    const prev_block = builder.getInsertBlock();
     const entry_block = builder.appendBlock("loop.entry");
+    const condition_block = builder.appendBlock("loop.cond");
+    const exit_block = builder.appendBlock("loop.exit");
+    try self.control_flow.append(self.arena, .{ .loop = .{ .entry = condition_block, .exit = exit_block } });
+    defer _ = self.control_flow.pop();
+
+    builder.positionAtEnd(prev_block);
+    builder.addBranch(condition_block);
+
     builder.positionAtEnd(entry_block);
     _ = try self.block(data.body);
+    builder.addBranch(condition_block);
+    // purely aesthetic
+    c.LLVMMoveBasicBlockAfter(condition_block, builder.getInsertBlock());
 
-    const condition_block = builder.appendBlock("loop.cond");
-    builder.addBranch(condition_block);
-    builder.positionAtEnd(prev);
-    builder.addBranch(condition_block);
     builder.positionAtEnd(condition_block);
     const condition_ref = try self.block(data.cond);
-
-    const exit_block = builder.appendBlock("loop.exit");
     builder.addCondBranch(condition_ref, entry_block, exit_block);
+    // purely aesthetic
+    c.LLVMMoveBasicBlockAfter(exit_block, builder.getInsertBlock());
 
     builder.positionAtEnd(exit_block);
+}
+
+fn loopForever(self: *CodeGen, inst: Air.Index) !void {
+    // the forever loop can be generated much more simply, since there isn't a
+    // condition to check. we can therefore ignore the structure above in loopWhile
+    // and simply emit a single basic block that unconditionally branches back to itself
+    var builder = self.builder;
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].loop_forever;
+
+    const prev_block = builder.getInsertBlock();
+    const entry_block = builder.appendBlock("loop.entry");
+    const exit_block = builder.appendBlock("loop.exit");
+    try self.control_flow.append(self.arena, .{ .loop = .{ .entry = entry_block, .exit = exit_block } });
+    defer _ = self.control_flow.pop();
+
+    builder.positionAtEnd(prev_block);
+    builder.addBranch(entry_block);
+
+    builder.positionAtEnd(entry_block);
+    _ = try self.block(data.body);
+    builder.addBranch(entry_block);
+    // purely aesthetic
+    c.LLVMMoveBasicBlockAfter(exit_block, builder.getInsertBlock());
+
+    builder.positionAtEnd(exit_block);
+}
+
+fn controlBreak(self: *CodeGen, inst: Air.Index) !void {
+    _ = inst;
+    const loop_info = self.control_flow.items[self.control_flow.items.len - 1].loop;
+    self.builder.addBranch(loop_info.exit);
+}
+
+fn controlContinue(self: *CodeGen, inst: Air.Index) !void {
+    _ = inst;
+    const loop_info = self.control_flow.items[self.control_flow.items.len - 1].loop;
+    self.builder.addBranch(loop_info.entry);
 }
 
 fn call(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
@@ -649,8 +710,10 @@ fn call(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     }
 
     const args = self.scratch.items[scratch_top..];
-    const ty = self.pool.indexToKey(air.typeOf(call_inst.function)).ty;
-    const ref = try self.builder.addCall(ty, function, args);
+    // const ty = self.pool.indexToKey(air.typeOf(call_inst.function)).ty;
+    const pointer_type = self.pool.indexToType(air.typeOf(call_inst.function)).pointer;
+    const function_type = self.pool.indexToType(pointer_type.pointee);
+    const ref = try self.builder.addCall(function_type, function, args);
     try self.map.put(self.arena, inst, ref);
     return ref;
 }

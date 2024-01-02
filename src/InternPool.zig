@@ -87,6 +87,8 @@ pub const Index = enum(u32) {
     f64_type,
     // common typed values, mirrors those in TypedValue
     none,
+    u1_false,
+    u1_true,
     u8_zero,
     u8_one,
     u32_zero,
@@ -114,6 +116,8 @@ pub const Index = enum(u32) {
         .{ .ty = Type.f32_type },
         .{ .ty = Type.f64_type },
         .{ .tv = TypedValue.none },
+        .{ .tv = TypedValue.u1_false },
+        .{ .tv = TypedValue.u1_true },
         .{ .tv = TypedValue.u8_zero },
         .{ .tv = TypedValue.u8_one },
         .{ .tv = TypedValue.u32_zero },

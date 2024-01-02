@@ -316,8 +316,18 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("}}", .{});
                     try self.stream.newline();
                 },
-                .loop => |loop| {
-                    try writer.print("loop {{", .{});
+                .loop_forever => |loop| {
+                    try writer.print("loop_forever {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
+                    try writer.print("body: ", .{});
+                    try self.renderInst(loop.body);
+                    self.stream.dedent();
+                    try writer.print("}}", .{});
+                    try self.stream.newline();
+                },
+                .loop_while => |loop| {
+                    try writer.print("loop_while {{", .{});
                     self.stream.indent();
                     try self.stream.newline();
                     try writer.print("condition: ", .{});
@@ -496,12 +506,22 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("}}", .{});
                     try self.stream.newline();
                 },
-                .loop => |loop| {
-                    try writer.print("loop {{", .{});
+                .loop_while => |loop| {
+                    try writer.print("loop_while {{", .{});
                     self.stream.indent();
                     try self.stream.newline();
                     try writer.print("condition: ", .{});
                     try self.renderInst(air, loop.cond);
+                    try writer.print("body: ", .{});
+                    try self.renderInst(air, loop.body);
+                    self.stream.dedent();
+                    try writer.print("}}", .{});
+                    try self.stream.newline();
+                },
+                .loop_forever => |loop| {
+                    try writer.print("loop_forever {{", .{});
+                    self.stream.indent();
+                    try self.stream.newline();
                     try writer.print("body: ", .{});
                     try self.renderInst(air, loop.body);
                     self.stream.dedent();

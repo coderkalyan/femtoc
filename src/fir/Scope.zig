@@ -131,6 +131,24 @@ pub const Block = struct {
     pub fn linkInst(b: *Block, inst: Fir.Index) !void {
         return b.insts.append(b.fg.arena, inst);
     }
+
+    pub fn addBranchDouble(b: *Block, cond: Fir.Index, exec_true: Fir.Index, exec_false: Fir.Index, node: Node.Index) !Fir.Index {
+        const pl = try b.fg.addExtra(Inst.BranchDouble{
+            .exec_true = exec_true,
+            .exec_false = exec_false,
+        });
+        return b.add(.{
+            .data = .{ .branch_double = .{ .cond = cond, .pl = pl } },
+            .loc = .{ .node = node },
+        });
+    }
+
+    pub fn addLoopWhile(b: *Block, cond: Fir.Index, body: Fir.Index, node: Node.Index) !Fir.Index {
+        return b.add(.{
+            .data = .{ .loop_while = .{ .cond = cond, .body = body } },
+            .loc = .{ .node = node },
+        });
+    }
 };
 
 pub const LocalVal = struct {
@@ -184,6 +202,62 @@ pub const LocalType = struct {
     }
 };
 
+// tries to find an identifier in the current scope, expecting *not* to find it
+// to make sure that the identifier is unused (to be used in a declaration)
+// the only exception is *immediate shadowing* of constants and variables
+pub fn validateIdent(inner: *Scope, ident: InternPool.StringIndex) ?*Scope {
+    var s: *Scope = inner;
+
+    while (true) {
+        switch (s.tag) {
+            .module => break,
+            .namespace => {
+                const namespace = s.cast(Namespace).?;
+                if (namespace.decls.contains(ident)) {
+                    return s;
+                }
+
+                s = namespace.parent;
+            },
+            .block => {
+                const block = s.cast(Block).?;
+                s = block.parent;
+            },
+            .local_val => {
+                const local_val = s.cast(LocalVal).?;
+                if (local_val.ident == ident) {
+                    return s;
+                }
+
+                s = local_val.parent;
+            },
+            .local_ptr => {
+                const local_ptr = s.cast(LocalPtr).?;
+                if (local_ptr.ident == ident) {
+                    return s;
+                }
+
+                s = local_ptr.parent;
+            },
+            .local_type => {
+                const local_type = s.cast(LocalPtr).?;
+                if (local_type.ident == ident) {
+                    return s;
+                }
+
+                s = local_type.parent;
+            },
+        }
+    }
+
+    // yay, this identifier doesn't exist yet
+    return null;
+}
+
+// tries to find an identifier in the current scope, *expecting* to find it
+// to be used in an expression to load from or assign to
+// this assumes that the identifier is not incorrectly shadowed, as it will
+// only find the most local use of the identifier
 pub fn resolveIdent(inner: *Scope, ident: InternPool.StringIndex) !?*Scope {
     var found: ?*Scope = null;
     var shadows_scope: bool = false;

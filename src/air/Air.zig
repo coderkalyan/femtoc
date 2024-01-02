@@ -167,9 +167,14 @@ pub const Inst = union(enum) {
         pl: ExtraIndex,
     },
     // loops an execution block as long as a condition is true
-    loop: struct {
+    loop_while: struct {
         // condition block to evaluate before each loop iteration
         cond: Index,
+        // body to execute on each loop iteration
+        body: Index,
+    },
+    // loops an execution block forever (until broken out of)
+    loop_forever: struct {
         // body to execute on each loop iteration
         body: Index,
     },
@@ -193,7 +198,10 @@ pub const Inst = union(enum) {
     },
 
     // TODO: it would be better to store a decl index
-    load_decl: InternPool.Index,
+    load_decl: struct {
+        ip_index: InternPool.Index,
+        ty: InternPool.Index,
+    },
 
     // represents a "slice" to an "array" stored as a span of elements in extra data
     pub const ExtraSlice = struct {
@@ -338,7 +346,8 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         .store => unreachable, // should not be referenced
         .branch_single => unreachable, // should not be referenced
         .branch_double => unreachable, // TODO
-        .loop,
+        .loop_forever,
+        .loop_while,
         .@"return",
         .yield,
         .@"break",
@@ -346,10 +355,6 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         => unreachable, // should not be referenced
         .block => unreachable, // TODO
         .param => |param| return param.ty,
-        .load_decl => |load_decl| {
-            const decl_index = pool.indexToKey(load_decl).decl;
-            const decl = pool.decls.at(@intFromEnum(decl_index));
-            return decl.ty;
-        },
+        .load_decl => |load_decl| return load_decl.ty,
     }
 }

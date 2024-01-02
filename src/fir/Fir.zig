@@ -42,9 +42,6 @@ pub const Inst = struct {
         // type expressions
         // builtin type, figure out what it is using the node location
         builtin_type,
-        // boolean type, used to coerce conditions
-        // TODO: try to get rid of this
-        bool_type,
         // build a pointer * to an underlying type
         pointer_type: struct {
             pointee: Index,
@@ -209,9 +206,14 @@ pub const Inst = struct {
             pl: ExtraIndex,
         },
         // loops an execution block as long as a condition is true
-        loop: struct {
+        loop_while: struct {
             // condition block to evaluate before each loop iteration
             cond: Index,
+            // body to execute on each loop iteration
+            body: Index,
+        },
+        // loops an execution block forever (until break)
+        loop_forever: struct {
             // body to execute on each loop iteration
             body: Index,
         },

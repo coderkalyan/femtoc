@@ -153,7 +153,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .named_var_type_context => "use of variable identifier in type expression",
                 .named_type_var_context => "use of type identifier in expression",
                 .const_variable_assign => "cannot assign new value to constant",
-                .unknown_identifier => "identifier doesn't exist in current context",
+                .unknown_identifier => "identifier doesn't exist in current scope",
                 .call_nonfunc => "attempted to call non-function type",
                 .call_argcount => "incorrect number of arguments to function call",
                 .binary_diffsign => "operands to binary arithmetic must have same sign",

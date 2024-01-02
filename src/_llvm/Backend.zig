@@ -62,6 +62,7 @@ pub fn generate(self: *Backend) !void {
                         .air = air,
                         .scratch = .{},
                         .map = .{},
+                        .control_flow = .{},
                     };
                     defer codegen.deinit();
                     try codegen.generate();

@@ -169,7 +169,6 @@ fn analyzeGlobal(sema: *Sema, global_inst: Fir.Index) !void {
             .string => unreachable, // TODO
             .array => try array(&b, inst),
             .builtin_type => try builtinType(&b, inst),
-            .bool_type => try boolType(&b, inst),
             .pointer_type => try pointerType(&b, inst),
             .many_pointer_type => try manyPointerType(&b, inst),
             .slice_type => try sliceType(&b, inst),
@@ -216,7 +215,6 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .string => try stringLiteral(&b, inst),
             .array => try array(&b, inst),
             .builtin_type => try builtinType(&b, inst),
-            .bool_type => try boolType(&b, inst),
             .pointer_type => try pointerType(&b, inst),
             .many_pointer_type => try manyPointerType(&b, inst),
             .array_type => try arrayType(&b, inst),
@@ -265,7 +263,8 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
 
             .branch_single => try branchSingle(&b, inst),
             .branch_double => try branchDouble(&b, inst),
-            .loop => try loop(&b, inst),
+            .loop_forever => try loopForever(&b, inst),
+            .loop_while => try loopWhile(&b, inst),
             .return_node => try returnNode(&b, inst),
             .return_implicit => try returnImplicit(&b, inst),
             .yield_node => try yieldNode(&b, inst),
@@ -355,7 +354,7 @@ fn resolveInterned(sema: *Sema, fir_inst: Fir.Index) InternPool.Index {
 fn resolveDecl(sema: *Sema, inst: Air.Index) *Decl {
     std.debug.assert(sema.insts.items(.tags)[@intFromEnum(inst)] == .load_decl);
     const load_decl = sema.insts.items(.data)[@intFromEnum(inst)].load_decl;
-    const decl_index = sema.pool.items.items(.data)[@intFromEnum(load_decl)];
+    const decl_index = sema.pool.items.items(.data)[@intFromEnum(load_decl.ip_index)];
     return sema.pool.decls.at(decl_index);
 }
 
@@ -375,7 +374,16 @@ pub fn addConstant(sema: *Sema, key: InternPool.Key) !Air.Index {
 fn globalHandle(b: *Block, inst: Fir.Index, decl: InternPool.Index) !void {
     // const decl_index = b.pool.indexToKey(decl).decl;
     // const decl_data = b.pool.decls.at(@intFromEnum(decl_index));
-    const air_inst = try b.add(.{ .load_decl = decl });
+    const ty = ty: {
+        const decl_index = b.pool.indexToKey(decl).decl;
+        const decl_data = b.pool.decls.at(@intFromEnum(decl_index));
+        break :ty decl_data.ty;
+    };
+    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
+    const air_inst = try b.add(.{ .load_decl = .{
+        .ip_index = decl,
+        .ty = pointer_type,
+    } });
     try b.mapInst(inst, air_inst);
 }
 
@@ -528,10 +536,6 @@ fn arrayType(b: *Block, inst: Fir.Index) !void {
     try b.mapInterned(inst, ip_index);
 }
 
-fn boolType(b: *Block, inst: Fir.Index) !void {
-    try b.mapInterned(inst, .u1_type);
-}
-
 fn functionType(b: *Block, inst: Fir.Index) !void {
     const fir = b.fir;
     const function_type = fir.get(inst);
@@ -574,8 +578,8 @@ fn paramType(b: *Block, inst: Fir.Index) !void {
     const param_type = b.fir.get(inst);
     const data = param_type.data.param_type;
     const function = b.resolveInst(data.function);
-    const ty = b.sema.tempAir().typeOf(function);
-    const function_type = b.pool.indexToKey(ty).ty.function;
+    const pointer_type = b.pool.indexToType(b.typeOf(function)).pointer;
+    const function_type = b.pool.indexToType(pointer_type.pointee).function;
     const params = b.pool.extra.items[function_type.params.start..function_type.params.end];
     try b.mapInterned(inst, @enumFromInt(params[data.index]));
 }
@@ -755,7 +759,16 @@ fn loadGlobal(b: *Block, inst: Fir.Index) !void {
     const data = load_global.data.load_global;
 
     const ip_index = b.sema.globals.get(data.name).?;
-    const air_inst = try b.add(.{ .load_decl = ip_index });
+    const ty = ty: {
+        const decl_index = b.pool.indexToKey(ip_index).decl;
+        const decl = b.pool.decls.at(@intFromEnum(decl_index));
+        break :ty decl.ty;
+    };
+    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
+    const air_inst = try b.add(.{ .load_decl = .{
+        .ip_index = ip_index,
+        .ty = pointer_type,
+    } });
     try b.mapInst(inst, air_inst);
 }
 
@@ -1006,13 +1019,24 @@ pub fn branchDouble(b: *Block, inst: Fir.Index) !void {
     try b.mapInst(inst, air_inst);
 }
 
-pub fn loop(b: *Block, inst: Fir.Index) !void {
+pub fn loopForever(b: *Block, inst: Fir.Index) !void {
     const loop_inst = b.fir.get(inst);
-    const data = loop_inst.data.loop;
+    const data = loop_inst.data.loop_forever;
+
+    const body = try b.sema.analyzeBodyBlock(data.body);
+    const air_inst = try b.add(.{ .loop_forever = .{
+        .body = body,
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
+pub fn loopWhile(b: *Block, inst: Fir.Index) !void {
+    const loop_inst = b.fir.get(inst);
+    const data = loop_inst.data.loop_while;
 
     const cond = try b.sema.analyzeBodyBlock(data.cond);
     const body = try b.sema.analyzeBodyBlock(data.body);
-    const air_inst = try b.add(.{ .loop = .{
+    const air_inst = try b.add(.{ .loop_while = .{
         .cond = cond,
         .body = body,
     } });
