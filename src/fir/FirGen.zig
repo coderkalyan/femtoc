@@ -127,12 +127,19 @@ pub fn addExtra(fg: *FirGen, extra: anytype) !Fir.ExtraIndex {
 pub fn extraData(fg: *FirGen, comptime T: type, index: Fir.ExtraIndex) T {
     var result: T = undefined;
     const fields = std.meta.fields(T);
+    const base: u32 = @intFromEnum(index);
     inline for (fields, 0..) |field, i| {
         switch (field.type) {
-            inline else => @field(result, field.name) = @bitCast(fg.extra.items[index + i]),
+            inline else => @field(result, field.name) = @enumFromInt(fg.extra.items[base + i]),
         }
     }
     return result;
+}
+
+pub fn extraSlice(fg: *FirGen, slice: Fir.Inst.ExtraSlice) []const u32 {
+    const start: u32 = @intFromEnum(slice.start);
+    const end: u32 = @intFromEnum(slice.end);
+    return fg.extra.items[start..end];
 }
 
 pub fn addSlice(fg: *FirGen, slice: []const u32) !Fir.ExtraIndex {
@@ -542,6 +549,19 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
 
     // const body = try block(&body_scope, &body_scope.base, fn_decl.body, true);
     try blockInner(&body_scope, &body_scope.base, fn_decl.body);
+    if (!blockReturns(&body_scope)) {
+        // insert implicit return
+        // TODO: find the closing brace as token
+        const none = try body_scope.add(.{
+            .data = .{ .none = {} },
+            .loc = .{ .token = undefined },
+        });
+        _ = try body_scope.add(.{
+            .data = .{ .return_implicit = none },
+            .loc = .{ .token = undefined },
+        });
+    }
+
     const body = try b.addBlockUnlinked(&body_scope, fn_decl.body);
     return b.add(.{
         .data = .{ .function = .{ .signature = sig, .body = body } },
@@ -968,8 +988,11 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
     const ident_index = b.tree.mainToken(node);
     const ident_str = b.tree.tokenString(ident_index + 1);
     const id = try fg.pool.getOrPutString(ident_str);
+    if (s.validateIdent(id)) |found| {
+        _ = found;
+    }
+
     const ref = try valExpr(b, s, const_decl.val);
-    _ = id;
     // _ = try b.addDebugValue(ref, id, node);
 
     if (const_decl.ty == 0) {
@@ -1398,4 +1421,29 @@ fn globalIdentId(fg: *FirGen, stmt: u32) !InternPool.StringIndex {
     };
 
     return fg.pool.getOrPutString(ident);
+}
+
+fn instructionReturns(fg: *FirGen, inst: Fir.Index) bool {
+    switch (fg.insts.get(@intFromEnum(inst))) {
+        .block => |block| {
+            const slice = fg.extraData(Fir.Inst.ExtraSlice, block.insts);
+            const insts = fg.extraSlice(slice);
+            if (insts.len == 0) return false;
+            return instructionReturns(fg, @enumFromInt(insts[insts.len - 1]));
+        },
+        .branch_single => return false,
+        .branch_double => |branch_double| {
+            const data = fg.extraData(Fir.Inst.BranchDouble, branch_double.pl);
+            const lret = instructionReturns(fg, data.exec_true);
+            const rret = instructionReturns(fg, data.exec_false);
+            return lret and rret;
+        },
+        .return_implicit, .return_node => return true,
+        else => return false,
+    }
+}
+
+fn blockReturns(b: *Block) bool {
+    const inst = b.insts.items[b.insts.items.len - 1];
+    return instructionReturns(b.fg, inst);
 }
