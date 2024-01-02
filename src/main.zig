@@ -35,7 +35,8 @@ fn print_usage() !void {
         \\ -S               Compile, but don't assemble.
         \\ -c               Compile and assemble, but don't link.
         \\ --emit-llvm      Emit LLVM IR (.ll) file and exit.
-        \\ --verbose-hir    Dump femto HIR to stdout.
+        \\ --verbose-fir    Dump femto FIR to stdout.
+        \\ --verbose-air    Dump femto AIR to stdout.
         \\ --verbose-llvm   Dump LLVM IR to stdout.
         \\ <str>            Source filename to compile.
     ;
@@ -94,7 +95,8 @@ pub fn main() !void {
     var output_filename: ?[]const u8 = null;
     var stage: Stage = .assemble;
     var stage_set = false;
-    var verbose_hir = false;
+    var verbose_fir = false;
+    var verbose_air = false;
     var verbose_llvm = false;
     var i: u32 = 1;
     _ = args.next(); // skip executable
@@ -132,8 +134,10 @@ pub fn main() !void {
             }
             stage = .llvm;
             stage_set = true;
-        } else if (std.mem.eql(u8, arg, "--verbose-hir")) {
-            verbose_hir = true;
+        } else if (std.mem.eql(u8, arg, "--verbose-fir")) {
+            verbose_fir = true;
+        } else if (std.mem.eql(u8, arg, "--verbose-air")) {
+            verbose_air = true;
         } else if (std.mem.eql(u8, arg, "--verbose-llvm")) {
             verbose_llvm = true;
         } else if (arg.len == 0 or arg[0] == '-') {
@@ -189,7 +193,7 @@ pub fn main() !void {
         std.os.exit(1);
     }
 
-    if (verbose_hir) {
+    if (verbose_fir) {
         var fir_arena = std.heap.ArenaAllocator.init(gpa);
         defer fir_arena.deinit();
 
@@ -204,11 +208,13 @@ pub fn main() !void {
     var air_arena = std.heap.ArenaAllocator.init(gpa);
     defer air_arena.deinit();
 
-    const air_renderer = render.AirRenderer(2, @TypeOf(writer));
-    var renderer = air_renderer.init(writer, air_arena.allocator(), &pool);
-    try renderer.renderAllDecls();
-    try renderer.renderAllBodies();
-    try buffered_out.flush();
+    if (verbose_air) {
+        const air_renderer = render.AirRenderer(2, @TypeOf(writer));
+        var renderer = air_renderer.init(writer, air_arena.allocator(), &pool);
+        try renderer.renderAllDecls();
+        try renderer.renderAllBodies();
+        try buffered_out.flush();
+    }
 
     if (stage_bits & CODEGEN == 0) std.os.exit(0);
     var backend = LlvmBackend.init(gpa, arena.allocator(), &pool);
