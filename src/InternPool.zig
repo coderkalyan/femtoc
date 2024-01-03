@@ -538,6 +538,14 @@ test "basic type intern" {
     try std.testing.expectEqual(u8_key.hash64(), u8_key2.hash64());
     const u8_index2 = try pool.getOrPut(u8_key2);
     try std.testing.expectEqual(u8_index, u8_index2);
+
+    const comptime_uint_key: Key = .{ .ty = .{ .comptime_int = .{ .sign = .unsigned } } };
+    const comptime_uint_index = try pool.getOrPut(comptime_uint_key);
+    try std.testing.expectEqual(comptime_uint_index, .comptime_uint_type);
+    const comptime_uint_key2 = pool.indexToKey(comptime_uint_index);
+    try std.testing.expectEqual(comptime_uint_key, comptime_uint_key2);
+    try std.testing.expectEqual(comptime_uint_index, try pool.getOrPut(comptime_uint_key2));
+    try std.testing.expectEqual(comptime_uint_index, try pool.getOrPut(comptime_uint_key));
 }
 
 test "pointer type intern" {

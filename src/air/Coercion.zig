@@ -75,7 +75,10 @@ fn uint(self: *Coercion) !Air.Index {
         },
         // lossy
         .float => return error.Truncated, // TODO: more specific error
-        else => return error.InvalidCoercion,
+        else => |ty| {
+            std.log.err("coercion from {} to {} unimplemented or not allowed", .{ ty, dest_type });
+            return error.InvalidCoercion;
+        },
     }
 }
 

@@ -15,6 +15,7 @@ pub const Type = union(enum) {
     many_pointer: struct { pointee: InternPool.Index },
     slice: struct { element: InternPool.Index },
     array: struct { element: InternPool.Index, count: u32 },
+    // TODO: maybe get rid of this type
     comptime_array: struct { count: u32 },
     function: struct {
         params: InternPool.ExtraSlice,
@@ -66,15 +67,36 @@ pub const Type = union(enum) {
         const Hash = std.hash.Wyhash;
         const asBytes = std.mem.asBytes;
         const seed = @intFromEnum(ty);
-        return switch (ty) {
-            .pointer => |data| {
-                var hasher = Hash.init(seed);
+        var hasher = Hash.init(seed);
+        switch (ty) {
+            .void => {},
+            .comptime_int => |data| hasher.update(asBytes(&data.sign)),
+            .int => |data| {
+                hasher.update(asBytes(&data.sign));
+                hasher.update(asBytes(&data.width));
+            },
+            .comptime_float => {},
+            .float => |data| hasher.update(asBytes(&data.width)),
+            .bool => {},
+            inline .ref, .pointer => |data| {
                 hasher.update(asBytes(&data.pointee));
                 hasher.update(asBytes(&data.mutable));
-                return hasher.final();
             },
-            inline else => |data| return Hash.hash(seed, asBytes(&data)),
-        };
+            .many_pointer => |data| hasher.update(asBytes(&data.pointee)),
+            .slice => |data| hasher.update(asBytes(&data.element)),
+            .array => |data| {
+                hasher.update(asBytes(&data.element));
+                hasher.update(asBytes(&data.count));
+            },
+            .comptime_array => |data| hasher.update(asBytes(&data.count)),
+            .function => |data| {
+                hasher.update(asBytes(&data.@"return"));
+                hasher.update(asBytes(&data.params.start));
+                hasher.update(asBytes(&data.params.end));
+            },
+        }
+
+        return hasher.final();
     }
 
     pub fn maxInt(ty: Type) u64 {
@@ -103,20 +125,21 @@ pub const Type = union(enum) {
     pub fn size(ty: Type, pool: *InternPool) ?usize {
         return switch (ty) {
             .void => 0,
-            .comptime_int, .comptime_float => null,
+            .comptime_int, .comptime_float, .comptime_array => null,
             inline .int, .float => |num| switch (num.width) {
                 inline 1...127 => |width| comptime intSize(width),
                 else => unreachable,
             },
             .bool => 1,
-            .pointer => 8, // TODO: architecture dependent
+            .pointer, .many_pointer => 8, // TODO: architecture dependent
+            .slice => 16, // TODO: architecture dependent
             .array => |array| {
                 const element = pool.indexToKey(array.element).ty;
                 const element_size = element.size(pool) orelse return null;
                 return element_size * array.count;
             },
             .function => unreachable, // TODO
-            else => unreachable,
+            .ref => unreachable,
         };
     }
 

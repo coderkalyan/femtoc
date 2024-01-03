@@ -1218,75 +1218,144 @@ pub fn firBreak(b: *Block, inst: Fir.Index) !void {
 }
 
 fn indexVal(b: *Block, inst: Fir.Index) !void {
+    const sema = b.sema;
     const index_val = b.fir.get(inst);
     const data = index_val.data.index_val;
     const base = b.resolveInst(data.base);
-    const index = index: {
-        const inner = b.resolveInst(data.index);
-        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
-    };
+    const index_inner = b.resolveInst(data.index);
+    const index = try coerceInnerImplicit(b, index_inner, Type.u64_type);
 
-    const base_type = b.pool.indexToType(b.typeOf(base));
+    var base_type = b.pool.indexToType(b.typeOf(base));
+    var is_ref = false;
+    if (@as(Type.Tag, base_type) == .ref) {
+        // fir wants ref semantics, so we have one level of indirection
+        base_type = b.pool.indexToType(base_type.ref.pointee);
+        is_ref = true;
+    }
+
     switch (base_type) {
-        // reading an index from a pointer by value - emit a ref + load
-        .ref => |pointer| {
-            switch (b.pool.indexToType(pointer.pointee)) {
-                .array => |arr| {
-                    // we want to avoid loading the entire aggregate (array) into a temporary,
-                    // so we instead get a reference to the element and then perform a load
-                    // this translates to a GEP in LLVM
-                    const ref = try b.addIndexRef(base, index, arr.element);
-                    const access = try b.add(.{ .load = .{ .ptr = ref } });
-                    try b.mapInst(inst, access);
-                },
-                .slice, .many_pointer => unreachable, // unimplemented
-                else => unreachable, // TODO: emit error
-            }
-        },
         // reading a field from a value by value - emit a val
-        .array, .slice => {
-            const access = try b.addIndexVal(base, index);
+        .array => |arr| {
+            const access = if (is_ref) access: {
+                // we want to avoid loading the entire aggregate (array) into a temporary,
+                // so we instead get a reference to the element and then perform a load
+                // this translates to a GEP in LLVM
+                const ref = try b.addIndexRef(base, index, arr.element);
+                break :access try b.add(.{ .load = .{ .ptr = ref } });
+            } else try b.addIndexVal(base, index);
             try b.mapInst(inst, access);
         },
-        .many_pointer => unreachable, // unimplemented
-        else => unreachable,
+        .slice => |slice| {
+            // because of the extra level of indirection, we first load the
+            // slice into a temporary, and then emit an index ref on that
+            const val = if (is_ref) try b.add(.{ .load = .{ .ptr = base } }) else base;
+            const ref = try b.addIndexVal(val, index);
+            _ = slice;
+            // const ptr = if (is_ref) {
+            //     unreachable;
+            // } else base: {
+            //     const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element, .mutable = false } } });
+            //     break :base try b.add(.{ .slice_ptr_val = .{
+            //         .base = base,
+            //         .ty = ty,
+            //     } });
+            // };
+            // const ref = if (is_ref) ref: {
+            //     break :ref try b.addIndexRef(base, index, arr.element);
+            // } else ref: {
+            //     const val = try b.addIndexVal(base, index);
+            //     break :ref try pushInner(b, val, false);
+            // };
+            try b.mapInst(inst, ref);
+        },
+        .many_pointer => |ptr| {
+            const access = if (is_ref) access: {
+                // we want to avoid loading the entire aggregate (array) into a temporary,
+                // so we instead get a reference to the element and then perform a load
+                // this translates to a GEP in LLVM
+                const ref = try b.addIndexRef(base, index, ptr.pointee);
+                break :access try b.add(.{ .load = .{ .ptr = ref } });
+            } else try b.addIndexVal(base, index);
+            try b.mapInst(inst, access);
+        },
+        else => {
+            try sema.errors.append(sema.gpa, .{
+                .tag = .not_indexable,
+                .token = sema.fir.tree.mainToken(index_val.loc.node),
+            });
+            return error.HandledUserError;
+        },
     }
 }
 
 fn indexRef(b: *Block, inst: Fir.Index) !void {
+    const sema = b.sema;
     const index_val = b.fir.get(inst);
     const data = index_val.data.index_ref;
     const base = b.resolveInst(data.base);
-    const index = index: {
-        const inner = b.resolveInst(data.index);
-        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
-    };
+    const index_inner = b.resolveInst(data.index);
+    const index = try coerceInnerImplicit(b, index_inner, Type.u64_type);
 
-    const base_type = b.pool.indexToType(b.typeOf(base));
+    var base_type = b.pool.indexToType(b.typeOf(base));
+    var is_ref = false;
+    if (@as(Type.Tag, base_type) == .ref) {
+        // fir wants ref semantics, so we have one level of indirection
+        base_type = b.pool.indexToType(base_type.ref.pointee);
+        is_ref = true;
+    }
+
     switch (base_type) {
-        // reading an index from a pointer by reference - emit a ref
-        .pointer => |pointer| {
-            switch (b.pool.indexToType(pointer.pointee)) {
-                .array => |arr| {
-                    // we want to avoid loading the entire aggregate (array) into a temporary,
-                    // so we instead get a reference to the element and then perform a load
-                    // this translates to a GEP in LLVM
-                    const ref = try b.addIndexRef(base, index, arr.element);
-                    try b.mapInst(inst, ref);
-                },
-                .slice, .many_pointer => unreachable, // unimplemented
-                else => unreachable, // TODO: emit error
-            }
-        },
-        // reading a field from a value by reference - emit a val + alloc + store
-        .array => {
-            const access = try b.addIndexVal(base, index);
-            // TODO: should this be mutable?
-            const ref = try pushInner(b, access, false);
+        .array => |arr| {
+            const ref = if (is_ref) ref: {
+                break :ref try b.addIndexRef(base, index, arr.element);
+            } else ref: {
+                const val = try b.addIndexVal(base, index);
+                break :ref try pushInner(b, val, false);
+            };
             try b.mapInst(inst, ref);
         },
-        .slice, .many_pointer => unreachable, // unimplemented
-        else => unreachable,
+        .slice => |slice| {
+            // because of the extra level of indirection, we first load the
+            // slice into a temporary, and then emit an index ref on that
+            // this is potentially non-optimal because we may not need the
+            // len field to be loaded, but its a small cost and the optimizer
+            // should handle it pretty well.
+            // TODO: can we improve on this?
+            const val = try b.add(.{ .load = .{ .ptr = base } });
+            const ref = try b.addIndexRef(val, index, slice.element);
+            // const ptr = if (is_ref) {
+            //     unreachable;
+            // } else base: {
+            //     const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element, .mutable = false } } });
+            //     break :base try b.add(.{ .slice_ptr_val = .{
+            //         .base = base,
+            //         .ty = ty,
+            //     } });
+            // };
+            // const ref = if (is_ref) ref: {
+            //     break :ref try b.addIndexRef(base, index, arr.element);
+            // } else ref: {
+            //     const val = try b.addIndexVal(base, index);
+            //     break :ref try pushInner(b, val, false);
+            // };
+            try b.mapInst(inst, ref);
+        },
+        .many_pointer => |ptr| {
+            const ref = if (is_ref) ref: {
+                break :ref try b.addIndexRef(base, index, ptr.pointee);
+            } else ref: {
+                const val = try b.addIndexVal(base, index);
+                break :ref try pushInner(b, val, false);
+            };
+            try b.mapInst(inst, ref);
+        },
+        else => {
+            try sema.errors.append(sema.gpa, .{
+                .tag = .not_indexable,
+                .token = sema.fir.tree.mainToken(index_val.loc.node),
+            });
+            return error.HandledUserError;
+        },
     }
 }
 
@@ -1296,69 +1365,33 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
     const data = b.fir.extraData(Fir.Inst.Slice, slice_data.pl);
 
     const base = b.resolveInst(data.base);
-    const start = index: {
-        const inner = b.resolveInst(data.start);
-        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
-    };
-    const end = index: {
-        const inner = b.resolveInst(data.end);
-        break :index try coerceInnerImplicit(b, inner, Type.u64_type);
-    };
+    const start_inner = b.resolveInst(data.start);
+    const start = try coerceInnerImplicit(b, start_inner, Type.u64_type);
+    const end_inner = b.resolveInst(data.end);
+    const end = try coerceInnerImplicit(b, end_inner, Type.u64_type);
 
-    const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
+    var base_type = b.pool.indexToType(b.typeOf(base));
+    var is_ref = false;
+    if (@as(Type.Tag, base_type) == .ref) {
+        // fir wants ref semantics, so we have one level of indirection
+        base_type = b.pool.indexToType(base_type.ref.pointee);
+        is_ref = true;
+    }
+
     switch (base_type) {
-        .ref => |pointer| {
-            const pointee = b.pool.indexToKey(pointer.pointee).ty;
-            switch (pointee) {
-                .array => |arr| {
-                    // we construct a slice using a gep (base + start) for the ptr
-                    // and a len (end - start + 1)
-                    // TODO: should this be mutable or not
-                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = true } } });
-                    const ptr = ptr: {
-                        const pl = try b.sema.addExtra(Air.Inst.IndexRef{
-                            .base = base,
-                            .index = start,
-                            .ty = element_ptr,
-                        });
-                        break :ptr try b.add(.{ .index_ref = .{ .pl = pl } });
-                    };
-                    const len = len: {
-                        const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
-                        const one = try b.add(.{ .constant = .u64_one });
-                        const inc = try b.add(.{ .add = .{ .l = sub, .r = one } });
-                        break :len inc;
-                    };
-
-                    const slice_type = try b.pool.getOrPut(.{ .ty = .{
-                        .slice = .{ .element = arr.element },
-                    } });
-                    const pl = try b.sema.addExtra(Air.Inst.SliceInit{
-                        .ptr = ptr,
-                        .len = len,
-                        .ty = slice_type,
-                    });
-
-                    const ref = try b.add(.{ .slice_init = .{ .pl = pl } });
-                    try b.mapInst(inst, ref);
-                },
-                .slice, .many_pointer => unreachable, // unimplemented
-                else => unreachable, // TODO: emit error
-            }
-        },
         .array => |arr| {
             // we construct a slice using a gep (base + start) for the ptr
             // and a len (end - start + 1)
-            // TODO: huge issue here, we need to promote the array to stack
             // TODO: should this be mutable or not
-            const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = true } } });
             const ptr = ptr: {
-                const pl = try b.sema.addExtra(Air.Inst.IndexRef{
-                    .base = base,
-                    .index = start,
-                    .ty = element_ptr,
-                });
-                break :ptr try b.add(.{ .index_ref = .{ .pl = pl } });
+                if (is_ref) {
+                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = true } } });
+                    break :ptr try b.addIndexRef(base, start, element_ptr);
+                } else {
+                    const alloc = try pushInner(b, base, false);
+                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = false } } });
+                    break :ptr try b.addIndexRef(alloc, start, element_ptr);
+                }
             };
             const len = len: {
                 const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
@@ -1380,7 +1413,7 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
             try b.mapInst(inst, ref);
         },
         .slice, .many_pointer => unreachable, // unimplemented
-        else => unreachable,
+        else => unreachable, // TODO: emit error
     }
 }
 
@@ -1469,65 +1502,31 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
 fn fieldVal(b: *Block, inst: Fir.Index) !void {
     const field_val = b.fir.get(inst);
     const data = field_val.data.field_val;
-    const base = b.resolveInst(data.base);
-    const base_type = b.sema.tempAir().typeOf(base);
+    var base = b.resolveInst(data.base);
     const field_string = b.pool.getString(data.field).?;
-    switch (b.pool.indexToKey(base_type).ty) {
-        // reading a field from a pointer by value - emit a ref + load
-        .ref => |pointer| {
-            const pointee = b.pool.indexToType(pointer.pointee);
-            switch (pointee) {
-                // reading a field from a value by value - emit a val
-                .slice => |slice| {
-                    _ = slice;
-                    unreachable;
-                    // // slices only have two runtime fields - ptr and len
-                    // if (std.mem.eql(u8, field_string, "ptr")) {
-                    //     const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element } } });
-                    //     const access = try b.add(.{ .slice_ptr_val = .{
-                    //         .base = base,
-                    //         .ty = ty,
-                    //     } });
-                    //     try b.mapInst(inst, access);
-                    // } else if (std.mem.eql(u8, field_string, "len")) {
-                    //     const access = try b.add(.{ .slice_len_val = .{
-                    //         .base = base,
-                    //         .ty = .u64_type,
-                    //     } });
-                    //     try b.mapInst(inst, access);
-                    // } else {
-                    //     std.log.err("field access: no such field {s} for type slice", .{field_string});
-                    //     unreachable;
-                    // }
-                },
-                .array => |arr| {
-                    // slices only have two runtime fields - ptr and len
-                    if (std.mem.eql(u8, field_string, "len")) {
-                        const len = try b.addConstant(.{ .tv = .{
-                            .ty = .u64_type,
-                            .val = .{ .integer = arr.count },
-                        } });
-                        try b.mapInst(inst, len);
-                    } else {
-                        std.log.err("field access: no such field {s} for type array", .{field_string});
-                        unreachable;
-                    }
-                },
-                else => unreachable,
-            }
-        },
-        // reading a field from a value by value - emit a val
+
+    var base_type = b.pool.indexToType(b.typeOf(base));
+    var is_ref = false;
+    if (@as(Type.Tag, base_type) == .ref) {
+        // fir wants ref semantics, so we have one level of indirection
+        base_type = b.pool.indexToType(base_type.ref.pointee);
+        is_ref = true;
+    }
+
+    switch (base_type) {
         .slice => |slice| {
             // slices only have two runtime fields - ptr and len
             if (std.mem.eql(u8, field_string, "ptr")) {
                 // TODO: should this be mutable or not
-                const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element, .mutable = true } } });
+                const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element, .mutable = false } } });
+                if (is_ref) base = try b.add(.{ .load = .{ .ptr = base } });
                 const access = try b.add(.{ .slice_ptr_val = .{
                     .base = base,
                     .ty = ty,
                 } });
                 try b.mapInst(inst, access);
             } else if (std.mem.eql(u8, field_string, "len")) {
+                if (is_ref) base = try b.add(.{ .load = .{ .ptr = base } });
                 const access = try b.add(.{ .slice_len_val = .{
                     .base = base,
                     .ty = .u64_type,
@@ -1539,7 +1538,7 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
             }
         },
         .array => |arr| {
-            // slices only have two runtime fields - ptr and len
+            // arrays only have one comptime field - len
             if (std.mem.eql(u8, field_string, "len")) {
                 const len = try b.addConstant(.{ .tv = .{
                     .ty = .u64_type,
@@ -1553,45 +1552,6 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
         },
         else => unreachable,
     }
-    // }
-    // switch (hg.insts.items(.tag)[data.operand]) {
-    //     .push, .alloca => {
-    //         const pointer_type = (try hg.resolveType(data.operand)).extended.cast(Type.Pointer).?;
-    //         const src_type = pointer_type.pointee;
-    //         // replace the generic field reference by a specific one - builtin, slice, array, structure
-    //         switch (src_type.kind()) {
-    //             // slices only have two runtime fields - ptr and len
-    //             .slice => {
-    //                 if (std.mem.eql(u8, field_string, "ptr")) {
-    //                     const ref = try b.add(.slice_ptr_ref, .{
-    //                         .operand = data.operand,
-    //                         .node = data.node,
-    //                     });
-    //                     const access = try b.add(.load, .{
-    //                         .operand = ref,
-    //                         .node = data.node,
-    //                     });
-    //                     try analysis.src_block.replaceAllUsesWith(inst, access);
-    //                 } else if (std.mem.eql(u8, field_string, "len")) {
-    //                     const ref = try b.add(.slice_len_ref, .{
-    //                         .operand = data.operand,
-    //                         .node = data.node,
-    //                     });
-    //                     const access = try b.add(.load, .{
-    //                         .operand = ref,
-    //                         .node = data.node,
-    //                     });
-    //                     try analysis.src_block.replaceAllUsesWith(inst, access);
-    //                 } else {
-    //                     std.log.err("field access: no such field {s} for type slice", .{field_string});
-    //                     unreachable;
-    //                 }
-    //             },
-    //             .array, .structure => unreachable, // unimplemented
-    //             else => unreachable,
-    //         }
-    //     },
-    // }
 }
 
 pub fn tempAir(sema: *Sema) Air {
