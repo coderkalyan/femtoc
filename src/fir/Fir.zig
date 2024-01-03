@@ -32,6 +32,8 @@ pub const Inst = struct {
         int: u64,
         // float literal (immediate)
         float: f64,
+        // boolean literal (immediate)
+        bool: bool,
         // "none" void literal (immediate)
         none,
         // string literal
@@ -127,6 +129,10 @@ pub const Inst = struct {
             src: Index,
             ty: Index,
         },
+        // converts a stack ref to an operable pointer
+        reftoptr: Index,
+        // converts a pointer to a stack ref
+        ptrtoref: Index,
 
         // performs a function call
         call: struct {

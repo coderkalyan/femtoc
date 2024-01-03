@@ -203,7 +203,15 @@ pub fn main() !void {
         try buffered_out.flush();
     }
 
-    try Sema.analyzeModule(gpa, &pool, &fir);
+    const air_errors = try Sema.analyzeModule(gpa, &pool, &fir);
+    if (air_errors.len > 0) {
+        const errors = try error_handler.LocatedSourceError.locateErrors(gpa, &ast, air_errors);
+        var error_renderer = error_handler.CompileErrorRenderer(2, @TypeOf(writer)).init(writer, gpa, &ast, input_filename.?, errors);
+
+        try error_renderer.render();
+        try buffered_out.flush();
+        std.os.exit(1);
+    }
 
     var air_arena = std.heap.ArenaAllocator.init(gpa);
     defer air_arena.deinit();

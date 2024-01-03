@@ -393,7 +393,7 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print("{s}(", .{@tagName(fir.tag(inst))});
                     switch (@TypeOf(data)) {
                         void => {},
-                        inline u32, u64, f64 => try writer.print("{}", .{data}),
+                        inline u32, u64, f64, bool => try writer.print("{}", .{data}),
                         Fir.Index => try writer.print("%{}", .{@intFromEnum(data)}),
                         InternPool.StringIndex => {
                             const str = fir.pool.getString(data).?;
@@ -626,6 +626,11 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     },
                     .comptime_float => "comptime_float",
                     .float => |float| std.fmt.allocPrint(self.arena, "f{}", .{float.width}),
+                    .bool => "bool",
+                    .ref => |ref| switch (ref.mutable) {
+                        false => std.fmt.allocPrint(self.arena, "{s} ref", .{try self.formatInterned(ref.pointee)}),
+                        true => std.fmt.allocPrint(self.arena, "{s} ref mut", .{try self.formatInterned(ref.pointee)}),
+                    },
                     .pointer => |pointer| std.fmt.allocPrint(self.arena, "{s}*", .{try self.formatInterned(pointer.pointee)}),
                     .many_pointer => |pointer| std.fmt.allocPrint(self.arena, "{s}[*]", .{try self.formatInterned(pointer.pointee)}),
                     .slice => |slice| std.fmt.allocPrint(self.arena, "{s}[]", .{try self.formatInterned(slice.element)}),

@@ -103,7 +103,7 @@ const ResultInfo = struct {
         // the expression should generate an lvalue reference/pointer to be used as a location to assign to
         ptr,
         // similar to ref, but applies to non-lvalues. the reference (&) operator uses this
-        // ptr,
+        ref,
         ty,
         any,
     };
@@ -235,13 +235,13 @@ fn floatLiteral(b: *Block, node: Node.Index) !Fir.Index {
 
 fn boolLiteral(b: *Block, node: Node.Index) !Fir.Index {
     const bool_token = b.tree.mainToken(node);
-    const value: u32 = switch (b.tree.tokenTag(bool_token)) {
-        .k_true => 1,
-        .k_false => 0,
+    const value: bool = switch (b.tree.tokenTag(bool_token)) {
+        .k_true => true,
+        .k_false => false,
         else => unreachable,
     };
     return b.add(.{
-        .data = .{ .int = value },
+        .data = .{ .bool = value },
         .loc = .{ .node = node },
     });
 }
@@ -317,6 +317,11 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
                     });
                     return error.HandledUserError;
                 },
+                // upgrade to const pointer
+                .ref => return b.add(.{
+                    .data = .{ .push = local_val.inst },
+                    .loc = .{ .node = node },
+                }),
                 .ty => {
                     try fg.errors.append(fg.gpa, .{
                         .tag = .named_var_type_context,
@@ -336,7 +341,7 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
                     .data = .{ .load = .{ .ptr = local_ptr.ptr } },
                     .loc = .{ .node = node },
                 }),
-                .ptr, .any => return local_ptr.ptr,
+                .ptr, .ref, .any => return local_ptr.ptr,
                 .ty => {
                     try fg.errors.append(fg.gpa, .{
                         .tag = .named_var_type_context,
@@ -350,7 +355,7 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
             const local_type = ident_scope.cast(Scope.LocalType).?;
             switch (ri.semantics) {
                 .ty, .any => return local_type.inst,
-                .val, .ptr => {
+                .val, .ptr, .ref => {
                     try fg.errors.append(fg.gpa, .{
                         .tag = .named_type_var_context,
                         .token = ident_token,
@@ -370,7 +375,7 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
                     .data = .{ .load = .{ .ptr = ptr } },
                     .loc = .{ .node = node },
                 }),
-                .ptr, .any => return ptr,
+                .ptr, .ref, .any => return ptr,
                 .ty => unreachable,
             }
         },
@@ -444,15 +449,25 @@ fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.I
     switch (b.tree.tokenTag(operator_token)) {
         // calculate a reference to the pointer and return it
         // TODO: switch this to ref semantics
-        .ampersand => return ptrExpr(b, scope, unary_expr),
+        .ampersand => {
+            const ref = try refExpr(b, scope, unary_expr);
+            return b.add(.{
+                .data = .{ .reftoptr = ref },
+                .loc = .{ .node = node },
+            });
+        },
         .asterisk => {
             const ptr = try valExpr(b, scope, unary_expr);
+            const ref = try b.add(.{
+                .data = .{ .ptrtoref = ptr },
+                .loc = .{ .node = node },
+            });
             switch (ri.semantics) {
                 .val => return b.add(.{
-                    .data = .{ .load = .{ .ptr = ptr } },
+                    .data = .{ .load = .{ .ptr = ref } },
                     .loc = .{ .node = node },
                 }),
-                .ptr, .any => return ptr,
+                .ptr, .ref, .any => return ref,
                 .ty => unreachable,
             }
         },
@@ -590,7 +605,9 @@ fn arrayInit(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
 }
 
 fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
+    const fg = b.fg;
     return switch (ri.semantics) {
+        // anything that can be an rvalue (most things except types)
         .val => switch (b.tree.data(node)) {
             .integer_literal => integerLiteral(b, node),
             .float_literal => floatLiteral(b, node),
@@ -615,23 +632,84 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .if_else => try ifElse(b, scope, node),
             else => {
                 std.log.err("expr (val semantics): unexpected node: {}\n", .{b.tree.data(node)});
-                return GenError.NotImplemented;
+                try fg.errors.append(fg.gpa, .{
+                    .tag = .invalid_val_expr,
+                    .token = b.tree.mainToken(node),
+                });
+                return error.HandledUserError;
             },
         },
+        // anything that can be an lvalue (assigned to)
         .ptr => switch (b.tree.data(node)) {
-            .integer_literal => integerLiteral(b, node),
-            .float_literal => floatLiteral(b, node),
-            .bool_literal => boolLiteral(b, node),
             .ident => identExpr(b, scope, ri, node),
-            .call => try call(b, scope, node),
-            .binary => try binary(b, scope, node),
+            // some types of unaries (like pointer assignment *apple = banana)
             .unary => try unary(b, scope, ri, node),
             .index => try indexAccess(b, scope, ri, node),
             // .field => try fieldAccess(b, scope, ri, node),
             .paren => try expr(b, scope, ri, b.tree.data(node).paren),
             else => {
+                std.log.err("expr (ptr semantics): unexpected node: {}\n", .{b.tree.data(node)});
+                try fg.errors.append(fg.gpa, .{
+                    .tag = .invalid_ptr_expr,
+                    .token = b.tree.mainToken(node),
+                });
+                return error.HandledUserError;
+            },
+        },
+        // can be used in any context that `val` can, but generates ptr semantics
+        .ref => switch (b.tree.data(node)) {
+            .ident => identExpr(b, scope, ri, node),
+            .index => try indexAccess(b, scope, ri, node),
+            .field => try fieldAccess(b, scope, ri, node),
+            .paren => try expr(b, scope, ri, b.tree.data(node).paren),
+            .unary => try unary(b, scope, ri, node),
+            // since temporaries can be referenced in femto, we upgrade these
+            // to const pointers using a push
+            .get_slice,
+            .integer_literal,
+            .float_literal,
+            .bool_literal,
+            .char_literal,
+            .string_literal,
+            .call,
+            .binary,
+            .fn_decl,
+            .array_init,
+            .block,
+            .if_else,
+            => {
+                const inner = switch (b.tree.data(node)) {
+                    .get_slice => try getSlice(b, scope, node),
+                    .integer_literal => try integerLiteral(b, node),
+                    .float_literal => try floatLiteral(b, node),
+                    .bool_literal => try boolLiteral(b, node),
+                    .char_literal => try charLiteral(b, node),
+                    .string_literal => try stringLiteral(b, node),
+                    .call => try call(b, scope, node),
+                    .binary => try binary(b, scope, node),
+                    .fn_decl => try fnDecl(b, scope, node),
+                    .array_init => try arrayInit(b, scope, node),
+                    .block => bl: {
+                        const block = try blockUnlinked(b, scope, node);
+                        try b.linkInst(block);
+                        break :bl block;
+                    },
+                    .if_else => try ifElse(b, scope, node),
+                    else => unreachable,
+                };
+
+                return b.add(.{
+                    .data = .{ .push = inner },
+                    .loc = .{ .node = node },
+                });
+            },
+            else => {
                 std.log.err("expr (ref semantics): unexpected node: {}\n", .{b.tree.data(node)});
-                return GenError.NotImplemented;
+                try fg.errors.append(fg.gpa, .{
+                    .tag = .invalid_ref_expr,
+                    .token = b.tree.mainToken(node),
+                });
+                return error.HandledUserError;
             },
         },
         .ty => switch (b.tree.data(node)) {
@@ -672,6 +750,11 @@ inline fn valExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
 
 inline fn ptrExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     const ri: ResultInfo = .{ .semantics = .ptr };
+    return expr(b, scope, ri, node);
+}
+
+inline fn refExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+    const ri: ResultInfo = .{ .semantics = .ref };
     return expr(b, scope, ri, node);
 }
 
@@ -773,7 +856,7 @@ fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             .data = .{ .index_val = .{ .base = operand, .index = index } },
             .loc = .{ .node = node },
         }),
-        .ptr => return b.add(.{
+        .ptr, .ref => return b.add(.{
             .data = .{ .index_ref = .{ .base = operand, .index = index } },
             .loc = .{ .node = node },
         }),
@@ -840,7 +923,7 @@ fn fieldAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
             .data = .{ .field_val = .{ .base = operand, .field = id } },
             .loc = .{ .node = node },
         }),
-        .ptr => return b.add(.{
+        .ptr, .ref => return b.add(.{
             .data = .{ .field_ref = .{ .base = operand, .field = id } },
             .loc = .{ .node = node },
         }),
@@ -982,26 +1065,8 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
     // instruction return value is stored in the scope (by caller) so that future
     // code that needs to access this constant can simply look up the identifier
     // and refer to the associated value instruction
-    const fg = b.fg;
     const const_decl = b.tree.data(node).const_decl;
-
-    const ident_index = b.tree.mainToken(node);
-    const ident_str = b.tree.tokenString(ident_index + 1);
-    const id = try fg.pool.getOrPutString(ident_str);
-    if (s.validateIdent(id)) |found| {
-        _ = found;
-    }
-
-    const ref = try valExpr(b, s, const_decl.val);
-    // _ = try b.addDebugValue(ref, id, node);
-
-    if (const_decl.ty == 0) {
-        // untyped (inferred) declaration
-        return ref;
-    } else {
-        const dest_ty = try typeExpr(b, s, const_decl.ty);
-        return try coerce(b, s, ref, dest_ty, node);
-    }
+    return constDeclInner(b, s, const_decl.val, const_decl.ty, node);
 }
 
 fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
@@ -1011,23 +1076,33 @@ fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
     // instruction return value is stored in the scope such that future
     // code that needs to access this constant can simply look up the identifier
     // and refer to the associated value instruction
-    const fg = b.fg;
     const const_decl = b.tree.data(node).const_decl_attr;
     const metadata = b.tree.extraData(const_decl.metadata, Node.DeclMetadata);
+    return constDeclInner(b, s, const_decl.val, metadata.ty, node);
+}
 
-    const ident_index = b.tree.mainToken(node);
-    const ident_str = b.tree.tokenString(ident_index + 1);
-    const id = try fg.pool.getOrPutString(ident_str);
-    const ref = try valExpr(b, s, const_decl.val);
-    _ = id;
+fn constDeclInner(b: *Block, s: *Scope, val: Node.Index, ty: Node.Index, node: Node.Index) !Fir.Index {
+    const fg = b.fg;
+    const ident_index = b.tree.mainToken(node) + 1;
+    const ident_str = b.tree.tokenString(ident_index);
+    // const id = try fg.pool.getOrPutString(ident_str);
+    if (builtin_types.has(ident_str)) {
+        try fg.errors.append(fg.gpa, .{
+            .tag = .shadows_builtin_type,
+            .token = ident_index,
+        });
+        return error.HandledUserError;
+    }
+
+    const inner = try valExpr(b, s, val);
     // _ = try b.addDebugValue(ref, id, node);
 
-    if (metadata.ty == 0) {
+    if (ty == 0) {
         // untyped (inferred) declaration
-        return ref;
+        return inner;
     } else {
-        const dest_ty = try typeExpr(b, s, metadata.ty);
-        return try coerce(b, s, ref, dest_ty, node);
+        const dest_ty = try typeExpr(b, s, ty);
+        return coerce(b, s, inner, dest_ty, node);
     }
 }
 

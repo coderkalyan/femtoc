@@ -122,6 +122,8 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
             .zext => try self.zext(inst),
             .sext => try self.sext(inst),
             .fpext => try self.fpext(inst),
+            .reftoptr => try self.reftoptr(inst),
+            .ptrtoref => try self.ptrtoref(inst),
 
             .slice_init => try self.sliceInit(inst),
             .array_init => try self.arrayInit(inst),
@@ -185,6 +187,7 @@ fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
         },
         .int,
         .float,
+        .bool,
         => {
             const val = try builder.context.resolveTv(tv);
             try self.map.put(self.arena, inst, val);
@@ -397,7 +400,7 @@ fn load(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const data = air.insts.items(.data)[@intFromEnum(inst)].load;
     const ptr = self.resolveInst(data.ptr);
     const pointer_type = self.pool.indexToKey(air.typeOf(data.ptr)).ty;
-    const pointee_type = self.pool.indexToKey(pointer_type.pointer.pointee).ty;
+    const pointee_type = self.pool.indexToKey(pointer_type.ref.pointee).ty;
     const ref = try self.builder.addLoad(ptr, pointee_type);
     try self.map.put(self.arena, inst, ref);
     return ref;
@@ -626,6 +629,22 @@ fn fpext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     return ref;
 }
 
+fn reftoptr(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].reftoptr;
+    const operand = self.resolveInst(data.operand);
+    try self.map.put(self.arena, inst, operand);
+    return operand;
+}
+
+fn ptrtoref(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].ptrtoref;
+    const operand = self.resolveInst(data.operand);
+    try self.map.put(self.arena, inst, operand);
+    return operand;
+}
+
 fn yield(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     // TODO: this doesn't actually work with yields in the middle
     const data = self.air.insts.items(.data)[@intFromEnum(inst)].yield;
@@ -750,7 +769,7 @@ fn indexRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const index = self.resolveInst(data.index);
 
     const base_type = self.pool.indexToKey(air.typeOf(data.base)).ty;
-    const pointee = self.pool.indexToKey(base_type.pointer.pointee).ty;
+    const pointee = self.pool.indexToKey(base_type.ref.pointee).ty;
     switch (pointee) {
         .array => {
             // since arrays are actually stored in memory (even though this is value semantics)

@@ -9,6 +9,8 @@ pub const Type = union(enum) {
     int: struct { sign: Sign, width: u8 },
     comptime_float,
     float: struct { width: u8 },
+    bool,
+    ref: struct { pointee: InternPool.Index, mutable: bool },
     pointer: struct { pointee: InternPool.Index },
     many_pointer: struct { pointee: InternPool.Index },
     slice: struct { element: InternPool.Index },
@@ -37,6 +39,9 @@ pub const Type = union(enum) {
             .sint_type => .{ .int = .{ .sign = .signed, .width = @intCast(data) } },
             .comptime_float_type => .{ .comptime_float = {} },
             .float_type => .{ .float = .{ .width = @intCast(data) } },
+            .bool_type => .{ .bool = {} },
+            .ref_const_type => .{ .ref = .{ .pointee = @enumFromInt(data), .mutable = false } },
+            .ref_mut_type => .{ .ref = .{ .pointee = @enumFromInt(data), .mutable = true } },
             .pointer_type => .{ .pointer = .{ .pointee = @enumFromInt(data) } },
             .many_pointer_type => .{ .many_pointer = .{ .pointee = @enumFromInt(data) } },
             .slice_type => .{ .slice = .{ .element = @enumFromInt(data) } },
@@ -88,18 +93,20 @@ pub const Type = union(enum) {
         }
     }
 
-    pub fn size(ty: Type, pool: *InternPool) usize {
+    pub fn size(ty: Type, pool: *InternPool) ?usize {
         return switch (ty) {
             .void => 0,
-            .comptime_int, .comptime_float => unreachable,
+            .comptime_int, .comptime_float => null,
             inline .int, .float => |num| switch (num.width) {
                 inline 1...127 => |width| comptime intSize(width),
                 else => unreachable,
             },
+            .bool => 1,
             .pointer => 8, // TODO: architecture dependent
             .array => |array| {
                 const element = pool.indexToKey(array.element).ty;
-                return element.size(pool) * array.count;
+                const element_size = element.size(pool) orelse return null;
+                return element_size * array.count;
             },
             .function => unreachable, // TODO
             else => unreachable,
@@ -130,6 +137,7 @@ pub const Type = union(enum) {
     pub const i64_type: Type = .{ .int = .{ .sign = .signed, .width = 64 } };
     pub const f32_type: Type = .{ .float = .{ .width = 32 } };
     pub const f64_type: Type = .{ .float = .{ .width = 64 } };
+    pub const bool_type: Type = .{ .bool = {} };
 };
 
 // pub fn kind(ty: Type, pool: *InternPool) Kind {

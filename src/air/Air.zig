@@ -98,6 +98,16 @@ pub const Inst = union(enum) {
         operand: Index,
         ty: InternPool.Index,
     },
+    // promotes a "ref" (internal stack reference type) to a pointer
+    reftoptr: struct {
+        operand: Index,
+        ty: InternPool.Index,
+    },
+    // demotes a pointer to a ref
+    ptrtoref: struct {
+        operand: Index,
+        ty: InternPool.Index,
+    },
     // initializes a slice with a ptr and len
     slice_init: struct {
         pl: ExtraIndex,
@@ -316,10 +326,11 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         => |un| return air.typeOf(un),
         .call => |call| {
             const ty = air.typeOf(call.function);
-            const function_type = pool.indexToKey(ty).ty;
-            return function_type.function.@"return";
+            const ptr_type = pool.indexToType(ty).pointer;
+            const function_type = pool.indexToType(ptr_type.pointee).function;
+            return function_type.@"return";
         },
-        inline .zext, .sext, .fpext => |cast| return cast.ty,
+        inline .zext, .sext, .fpext, .reftoptr, .ptrtoref => |cast| return cast.ty,
         .slice_init => |slice_init| {
             const data = air.extraData(Air.Inst.SliceInit, slice_init.pl);
             return data.ty;
@@ -346,6 +357,7 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             const ty = air.typeOf(load.ptr);
             const pointer_type = pool.indexToKey(ty).ty;
             switch (pointer_type) {
+                .ref => |ref| return ref.pointee,
                 .pointer => |pointer| return pointer.pointee,
                 .many_pointer => |many_pointer| return many_pointer.pointee,
                 else => unreachable,

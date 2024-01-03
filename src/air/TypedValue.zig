@@ -73,3 +73,5 @@ pub const u32_zero: TypedValue = .{ .ty = .u32_type, .val = .{ .integer = 0 } };
 pub const u32_one: TypedValue = .{ .ty = .u32_type, .val = .{ .integer = 1 } };
 pub const u64_zero: TypedValue = .{ .ty = .u64_type, .val = .{ .integer = 0 } };
 pub const u64_one: TypedValue = .{ .ty = .u64_type, .val = .{ .integer = 1 } };
+pub const bool_true: TypedValue = .{ .ty = .bool_type, .val = .{ .integer = 1 } };
+pub const bool_false: TypedValue = .{ .ty = .bool_type, .val = .{ .integer = 0 } };

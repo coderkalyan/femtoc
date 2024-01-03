@@ -73,12 +73,14 @@ pub fn resolveType(context: *Context, ty: Type) !c.LLVMTypeRef {
         .comptime_int => unreachable,
         .comptime_float => unreachable,
         .comptime_array => unreachable,
+        .ref => unreachable,
         .int => |int| c.LLVMIntTypeInContext(context.context, int.width),
         .float => |float| switch (float.width) {
             32 => c.LLVMFloatTypeInContext(context.context),
             64 => c.LLVMDoubleTypeInContext(context.context),
             else => unreachable,
         },
+        .bool => c.LLVMIntTypeInContext(context.context, 1),
         .function => |function| {
             const src_params = context.pool.extra.items[function.params.start..function.params.end];
             const params = try context.arena.alloc(c.LLVMTypeRef, src_params.len);
@@ -121,7 +123,9 @@ pub fn resolveTv(context: *Context, tv: TypedValue) !c.LLVMValueRef {
         .function,
         => unreachable,
         .int => |int| c.LLVMConstInt(llvm_type, @intCast(tv.val.integer), @intFromBool(int.sign == .signed)),
+        .bool => c.LLVMConstInt(llvm_type, @intCast(tv.val.integer), @intFromBool(false)),
         .float => c.LLVMConstReal(llvm_type, tv.val.float),
+        .ref,
         .pointer,
         .many_pointer,
         .slice,
@@ -367,7 +371,7 @@ pub const Builder = struct {
 
     pub fn addMemcpy(builder: *Builder, ty: Type, dest: c.LLVMValueRef, src: c.LLVMValueRef) !c.LLVMValueRef {
         const u32_type: Type = .{ .int = .{ .sign = .unsigned, .width = 32 } };
-        const size = try builder.addUint(u32_type, ty.size(builder.context.pool));
+        const size = try builder.addUint(u32_type, ty.size(builder.context.pool).?);
         const dest_align = c.LLVMGetAlignment(dest);
         const src_align = c.LLVMGetAlignment(src);
         return c.LLVMBuildMemCpy(builder.builder, dest, dest_align, src, src_align, size);

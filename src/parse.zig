@@ -949,7 +949,10 @@ const Parser = struct {
             .k_implies,
             .k_true,
             .k_false,
-            => try p.errors.append(.{ .tag = .var_shadows_keyword, .token = p.index }),
+            => {
+                try p.errors.append(.{ .tag = .shadows_keyword, .token = p.index });
+                _ = p.eatCurrentToken();
+            },
             else => try p.errors.append(.{ .tag = .missing_identifier, .token = p.index }),
         }
         const type_annotation = if (p.eatToken(.colon) == null) 0 else try p.expectType();

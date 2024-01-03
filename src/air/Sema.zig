@@ -6,6 +6,8 @@ const Coercion = @import("Coercion.zig");
 const coercion = @import("coercion.zig");
 const alu = @import("alu.zig");
 const Type = @import("type.zig").Type;
+const TypedValue = @import("TypedValue.zig");
+const error_handler = @import("../error_handler.zig");
 const Decl = Air.Decl;
 const Allocator = std.mem.Allocator;
 
@@ -28,6 +30,7 @@ function: ?struct {
     inst: Fir.Index,
     body_index: InternPool.AirIndex,
 },
+errors: *std.ArrayListUnmanaged(error_handler.SourceError),
 
 pub const Block = struct {
     sema: *Sema,
@@ -71,7 +74,7 @@ pub const Block = struct {
     }
 
     pub fn addIndexRef(b: *Block, base: Air.Index, index: Air.Index, element: InternPool.Index) !Air.Index {
-        const element_ptr = try b.pool.getOrPutType(.{ .pointer = .{ .pointee = element } });
+        const element_ptr = try b.pool.getOrPutType(.{ .ref = .{ .pointee = element, .mutable = true } });
         const pl = try b.sema.addExtra(Air.Inst.IndexRef{
             .base = base,
             .index = index,
@@ -88,7 +91,7 @@ pub const Block = struct {
     }
 };
 
-pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) !void {
+pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) ![]error_handler.SourceError {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     var globals = GlobalMap.init(arena.allocator());
@@ -97,6 +100,7 @@ pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) !void {
     const module_pl = fir.insts.items(.data)[@intFromEnum(fir.module_index)].module.insts;
     const slice = fir.extraData(Fir.Inst.ExtraSlice, module_pl);
     const module_globals = fir.extraSlice(slice);
+    var errors: std.ArrayListUnmanaged(error_handler.SourceError) = .{};
 
     // first pass - register all globals (forward declaration)
     for (module_globals) |global| {
@@ -118,13 +122,20 @@ pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) !void {
             .scratch = .{},
             .globals = &globals,
             .function = null,
+            .errors = &errors,
         };
-        try sema.analyzeGlobal(@enumFromInt(global));
+        sema.analyzeGlobal(@enumFromInt(global)) catch |err| if (err != error.HandledUserError) {
+            return err;
+        };
 
         if (sema.function) |_| {
-            try sema.analyzeFunctionBody();
+            sema.analyzeFunctionBody() catch |err| if (err != error.HandledUserError) {
+                return err;
+            };
         }
     }
+
+    return errors.toOwnedSlice(gpa);
 }
 
 fn registerGlobal(fir: *const Fir, pool: *InternPool, globals: *GlobalMap, global_inst: Fir.Index) !void {
@@ -165,6 +176,7 @@ fn analyzeGlobal(sema: *Sema, global_inst: Fir.Index) !void {
         switch (fir.insts.items(.tags)[i]) {
             .int => try integerLiteral(&b, inst),
             .float => try floatLiteral(&b, inst),
+            .bool => try boolLiteral(&b, inst),
             .none => try voidLiteral(&b, inst),
             .string => unreachable, // TODO
             .array => try array(&b, inst),
@@ -211,6 +223,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
         switch (fir.insts.items(.tags)[i]) {
             .int => try integerLiteral(&b, inst),
             .float => try floatLiteral(&b, inst),
+            .bool => try boolLiteral(&b, inst),
             .none => try voidLiteral(&b, inst),
             .string => try stringLiteral(&b, inst),
             .array => try array(&b, inst),
@@ -248,6 +261,8 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .bitwise_not => try bitwiseNot(&b, inst),
 
             .coerce => try firCoerce(&b, inst),
+            .reftoptr => try reftoptr(&b, inst),
+            .ptrtoref => try ptrtoref(&b, inst),
             .call => try call(&b, inst),
             .index_val => try indexVal(&b, inst),
             .index_ref => try indexRef(&b, inst),
@@ -433,6 +448,12 @@ fn floatLiteral(b: *Block, inst: Fir.Index) !void {
     try b.mapInst(inst, air_inst);
 }
 
+fn boolLiteral(b: *Block, inst: Fir.Index) !void {
+    const bool_inst = b.fir.get(inst);
+    const air_inst = try b.add(.{ .constant = if (bool_inst.data.bool) .bool_true else .bool_false });
+    try b.mapInst(inst, air_inst);
+}
+
 fn voidLiteral(b: *Block, inst: Fir.Index) !void {
     const air_inst = try b.add(.{ .constant = .none });
     try b.mapInst(inst, air_inst);
@@ -513,7 +534,7 @@ const builtin_types = std.ComptimeStringMap(InternPool.Index, .{
     .{ "i64", .i64_type },
     .{ "f32", .f32_type },
     .{ "f64", .f64_type },
-    .{ "bool", .u1_type },
+    .{ "bool", .bool_type },
     .{ "void", .void_type },
 });
 
@@ -672,6 +693,7 @@ fn analyzeFunctionBody(sema: *Sema) !void {
         .scratch = .{},
         .globals = sema.globals,
         .function = null,
+        .errors = sema.errors,
     };
     const toplevel = try body_sema.analyzeBodyBlock(data.body);
 
@@ -702,6 +724,38 @@ fn firCoerce(b: *Block, inst: Fir.Index) !void {
     try b.mapInst(inst, air_inst);
 }
 
+fn reftoptr(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
+    const reftoptr_inst = fir.get(inst);
+    const data = reftoptr_inst.data.reftoptr;
+
+    const operand = b.resolveInst(data);
+    const operand_type = b.pool.indexToType(b.typeOf(operand)).ref;
+    const ptr_type = try b.pool.getOrPutType(.{ .pointer = .{ .pointee = operand_type.pointee } });
+
+    const air_inst = try b.add(.{ .reftoptr = .{
+        .operand = operand,
+        .ty = ptr_type,
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
+fn ptrtoref(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
+    const ptrtoref_inst = fir.get(inst);
+    const data = ptrtoref_inst.data.ptrtoref;
+
+    const operand = b.resolveInst(data);
+    const operand_type = b.pool.indexToType(b.typeOf(operand)).pointer;
+    const ptr_type = try b.pool.getOrPutType(.{ .ref = .{ .pointee = operand_type.pointee, .mutable = true } });
+
+    const air_inst = try b.add(.{ .ptrtoref = .{
+        .operand = operand,
+        .ty = ptr_type,
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
 fn firParam(b: *Block, inst: Fir.Index) !void {
     const param = b.fir.get(inst);
     const data = param.data.param;
@@ -715,20 +769,31 @@ fn firParam(b: *Block, inst: Fir.Index) !void {
 }
 
 fn push(b: *Block, inst: Fir.Index) !void {
+    const sema = b.sema;
     const push_inst = b.fir.get(inst);
     const data = push_inst.data.push;
 
     const operand = b.resolveInst(data);
+    const ty = b.typeOf(operand);
+    if (b.pool.indexToType(ty).size(b.pool) == null) {
+        // unsized types cannot be pushed
+        try sema.errors.append(sema.gpa, .{
+            .tag = .unsized_type_alloc,
+            .token = sema.fir.tree.mainToken(push_inst.loc.node),
+        });
+        return error.HandledUserError;
+    }
+
     const alloc = try pushInner(b, operand);
     try b.mapInst(inst, alloc);
 }
 
 fn pushInner(b: *Block, operand: Air.Index) !Air.Index {
-    const ty = b.sema.tempAir().typeOf(operand);
-    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
+    const ty = b.typeOf(operand);
+    const ref_type = try b.pool.getOrPut(.{ .ty = .{ .ref = .{ .pointee = ty, .mutable = true } } });
     const alloc = try b.add(.{ .alloc = .{
         .slot_type = ty,
-        .pointer_type = pointer_type,
+        .pointer_type = ref_type,
     } });
     _ = try b.add(.{ .store = .{
         .ptr = alloc,
@@ -754,8 +819,8 @@ fn store(b: *Block, inst: Fir.Index) !void {
 
     const ptr = b.resolveInst(data.ptr);
     const val_inner = b.resolveInst(data.val);
-    const ptr_type = b.pool.indexToType(b.typeOf(ptr)).pointer;
-    const pointee_type = b.pool.indexToType(ptr_type.pointee);
+    const ref_type = b.pool.indexToType(b.typeOf(ptr)).ref;
+    const pointee_type = b.pool.indexToType(ref_type.pointee);
     const val = try coerceInnerImplicit(b, val_inner, pointee_type);
 
     const air_inst = try b.add(.{ .store = .{
@@ -1142,7 +1207,7 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
     const base_type = b.pool.indexToType(b.typeOf(base));
     switch (base_type) {
         // reading an index from a pointer by value - emit a ref + load
-        .pointer => |pointer| {
+        .ref => |pointer| {
             switch (b.pool.indexToType(pointer.pointee)) {
                 .array => |arr| {
                     // we want to avoid loading the entire aggregate (array) into a temporary,
@@ -1219,7 +1284,7 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
 
     const base_type = b.pool.indexToKey(b.sema.tempAir().typeOf(base)).ty;
     switch (base_type) {
-        .pointer => |pointer| {
+        .ref => |pointer| {
             const pointee = b.pool.indexToKey(pointer.pointee).ty;
             switch (pointee) {
                 .array => |arr| {
@@ -1384,7 +1449,7 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
     const field_string = b.pool.getString(data.field).?;
     switch (b.pool.indexToKey(base_type).ty) {
         // reading a field from a pointer by value - emit a ref + load
-        .pointer => |pointer| {
+        .ref => |pointer| {
             const pointee = b.pool.indexToType(pointer.pointee);
             switch (pointee) {
                 // reading a field from a value by value - emit a val

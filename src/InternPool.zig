@@ -47,6 +47,9 @@ const Tag = enum(u8) {
     uint_type,
     sint_type,
     float_type,
+    bool_type,
+    ref_const_type,
+    ref_mut_type,
     pointer_type,
     many_pointer_type,
     slice_type,
@@ -86,6 +89,7 @@ pub const Index = enum(u32) {
     i64_type,
     f32_type,
     f64_type,
+    bool_type,
     // common typed values, mirrors those in TypedValue
     none,
     u1_false,
@@ -96,6 +100,8 @@ pub const Index = enum(u32) {
     u32_one,
     u64_zero,
     u64_one,
+    bool_true,
+    bool_false,
 
     _,
 
@@ -116,6 +122,7 @@ pub const Index = enum(u32) {
         .{ .ty = Type.i64_type },
         .{ .ty = Type.f32_type },
         .{ .ty = Type.f64_type },
+        .{ .ty = Type.bool_type },
         .{ .tv = TypedValue.none },
         .{ .tv = TypedValue.u1_false },
         .{ .tv = TypedValue.u1_true },
@@ -125,6 +132,8 @@ pub const Index = enum(u32) {
         .{ .tv = TypedValue.u32_one },
         .{ .tv = TypedValue.u64_zero },
         .{ .tv = TypedValue.u64_one },
+        .{ .tv = TypedValue.bool_true },
+        .{ .tv = TypedValue.bool_false },
     };
 };
 
@@ -260,6 +269,9 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .sint_type,
         .comptime_float_type,
         .float_type,
+        .bool_type,
+        .ref_const_type,
+        .ref_mut_type,
         .pointer_type,
         .many_pointer_type,
         .slice_type,
@@ -349,6 +361,11 @@ fn putType(pool: *InternPool, key: Key) !void {
         },
         .comptime_float => pool.items.appendAssumeCapacity(.{ .tag = .comptime_float_type, .data = 64 }),
         .float => |float| pool.items.appendAssumeCapacity(.{ .tag = .float_type, .data = float.width }),
+        .bool => pool.items.appendAssumeCapacity(.{ .tag = .bool_type, .data = 0 }),
+        .ref => |ref| switch (ref.mutable) {
+            false => pool.items.appendAssumeCapacity(.{ .tag = .ref_const_type, .data = @intFromEnum(ref.pointee) }),
+            true => pool.items.appendAssumeCapacity(.{ .tag = .ref_mut_type, .data = @intFromEnum(ref.pointee) }),
+        },
         .pointer => |pointer| pool.items.appendAssumeCapacity(.{ .tag = .pointer_type, .data = @intFromEnum(pointer.pointee) }),
         .many_pointer => |pointer| pool.items.appendAssumeCapacity(.{
             .tag = .many_pointer_type,

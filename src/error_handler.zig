@@ -28,7 +28,7 @@ pub const SourceError = struct {
         unexpected_token,
 
         shadows_builtin_type,
-        var_shadows_keyword,
+        shadows_keyword,
         named_var_type_context,
         named_type_var_context,
         unknown_identifier,
@@ -39,6 +39,11 @@ pub const SourceError = struct {
         call_argcount,
         binary_diffsign,
         coerce_sint_to_uint,
+        invalid_val_expr,
+        invalid_ptr_expr,
+        invalid_ref_expr,
+
+        unsized_type_alloc,
     };
 };
 
@@ -93,7 +98,7 @@ pub const LocatedSourceError = struct {
 
     fn comparator(context: void, l: LocatedSourceError, r: LocatedSourceError) bool {
         _ = context;
-        return l.src_error.token <= r.src_error.token;
+        return l.src_error.token < r.src_error.token;
     }
 };
 
@@ -151,7 +156,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .unmatched_parenth => "Unmatched parenthesis",
                 .unexpected_token => "unexpected token",
                 .shadows_builtin_type => "identifier shadows builtin type",
-                .var_shadows_keyword => "variable name shadows builtin keyword",
+                .shadows_keyword => "identifier shadows builtin keyword",
                 .named_var_type_context => "use of variable identifier in type expression",
                 .named_type_var_context => "use of type identifier in expression",
                 .const_variable_assign => "cannot assign new value to constant",
@@ -162,6 +167,10 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .coerce_sint_to_uint => "cannot coerce signed integer to unsigned integer",
                 .invalid_lvalue => "cannot use expression as lvalue",
                 .invalid_type => "cannot use expression as type",
+                .unsized_type_alloc => "cannot create mutable variable of comptime or unsized type",
+                .invalid_val_expr => "cannot use expression as value",
+                .invalid_ptr_expr => "invalid expression for assignment location",
+                .invalid_ref_expr => "cannot take reference to expression",
             };
 
             r.stream.indent();
