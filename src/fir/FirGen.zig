@@ -179,6 +179,7 @@ fn module(fg: *FirGen, node: Node.Index) !Fir.Index {
 
     var module_scope: Scope.Module = .{};
     var namespace = Scope.Namespace.init(&module_scope.base);
+    var s = &namespace.base;
 
     // first pass through statements - "forward declare" all identifiers
     // in the toplevel namespace so that forward-referencing and recursive
@@ -199,7 +200,7 @@ fn module(fg: *FirGen, node: Node.Index) !Fir.Index {
     // so we can link node ids to instructions
     for (stmts) |stmt| {
         const id = try fg.globalIdentId(stmt);
-        const inst = try globalStatement(fg, &namespace.base, stmt);
+        const inst = try globalStatement(fg, &s, stmt);
         const global = try fg.add(.{
             .data = .{ .global = .{ .name = id, .block = inst } },
             .loc = .{ .node = stmt },
@@ -268,10 +269,11 @@ fn stringLiteral(b: *Block, node: Node.Index) !Fir.Index {
     });
 }
 
-fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
+fn identExpr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     const ident_token = b.tree.mainToken(node);
     const ident_str = b.tree.tokenString(ident_token);
+    const scope = s.*;
 
     // check identifier against builtin types
     if (builtin_types.has(ident_str)) {
@@ -318,10 +320,16 @@ fn identExpr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.In
                     return error.HandledUserError;
                 },
                 // upgrade to const pointer
-                .ref => return b.add(.{
-                    .data = .{ .push = local_val.inst },
-                    .loc = .{ .node = node },
-                }),
+                .ref => {
+                    const ptr = try b.add(.{
+                        .data = .{ .push = local_val.inst },
+                        .loc = .{ .node = node },
+                    });
+                    const ptr_scope = try b.fg.arena.create(Scope.LocalPtr);
+                    ptr_scope.* = Scope.LocalPtr.init(scope, local_val.ident, ptr);
+                    s.* = &ptr_scope.base;
+                    return ptr;
+                },
                 .ty => {
                     try fg.errors.append(fg.gpa, .{
                         .tag = .named_var_type_context,
@@ -431,7 +439,7 @@ fn binaryInner(b: *Block, node: Node.Index, op: Ast.TokenIndex, l: Fir.Index, r:
     }
 }
 
-fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn binary(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const operator_token = b.tree.mainToken(node);
     const tag = b.tree.tokenTag(operator_token);
     _ = tag;
@@ -442,7 +450,7 @@ fn binary(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     return binaryInner(b, node, operator_token, left, right);
 }
 
-fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
+fn unary(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
     const unary_expr = b.tree.data(node).unary;
     const operator_token = b.tree.mainToken(node);
 
@@ -512,7 +520,7 @@ fn unary(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.I
     }
 }
 
-fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn fnDecl(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const fn_decl = b.tree.data(node).fn_decl;
     const signature = b.tree.extraData(fn_decl.signature, Node.FnSignature);
@@ -523,7 +531,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     const params = b.tree.extra_data[signature.params_start..signature.params_end];
     try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
 
-    var s: *Scope = scope;
+    var s: **Scope = scope;
     for (params) |param| {
         const data = b.tree.data(param).param;
         const param_token = b.tree.mainToken(param);
@@ -539,12 +547,13 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
 
         const ref = param_index;
         var param_scope = try fg.arena.create(Scope.LocalVal);
-        param_scope.* = Scope.LocalVal.init(s, param_id, ref);
-        s = &param_scope.base;
+        param_scope.* = Scope.LocalVal.init(s.*, param_id, ref);
+        s.* = &param_scope.base;
     }
 
-    var body_scope = Block.init(b.fg, s);
+    var body_scope = Block.init(b.fg, s.*);
     defer body_scope.deinit();
+    s.* = &body_scope.base;
 
     const fir_params = fg.scratch.items[scratch_top..];
     const scratch_top_new = fg.scratch.items.len;
@@ -563,7 +572,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 
     // const body = try block(&body_scope, &body_scope.base, fn_decl.body, true);
-    try blockInner(&body_scope, &body_scope.base, fn_decl.body);
+    try blockInner(&body_scope, s, fn_decl.body);
     if (!blockReturns(&body_scope)) {
         // insert implicit return
         // TODO: find the closing brace as token
@@ -584,7 +593,7 @@ fn fnDecl(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn arrayInit(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn arrayInit(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const array_init = b.tree.data(node).array_init;
 
@@ -604,8 +613,9 @@ fn arrayInit(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
+fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
     const fg = b.fg;
+    // const scope = s.*;
     return switch (ri.semantics) {
         // anything that can be an rvalue (most things except types)
         .val => switch (b.tree.data(node)) {
@@ -614,22 +624,22 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .bool_literal => boolLiteral(b, node),
             .char_literal => charLiteral(b, node),
             .string_literal => stringLiteral(b, node),
-            .ident => identExpr(b, scope, ri, node),
-            .call => try call(b, scope, node),
-            .binary => try binary(b, scope, node),
-            .unary => try unary(b, scope, ri, node),
-            .fn_decl => try fnDecl(b, scope, node),
-            .array_init => try arrayInit(b, scope, node),
-            .index => try indexAccess(b, scope, ri, node),
-            .field => try fieldAccess(b, scope, ri, node),
-            .get_slice => try getSlice(b, scope, node),
-            .paren => try expr(b, scope, ri, b.tree.data(node).paren),
+            .ident => identExpr(b, s, ri, node),
+            .call => try call(b, s, node),
+            .binary => try binary(b, s, node),
+            .unary => try unary(b, s, ri, node),
+            .fn_decl => try fnDecl(b, s, node),
+            .array_init => try arrayInit(b, s, node),
+            .index => try indexAccess(b, s, ri, node),
+            .field => try fieldAccess(b, s, ri, node),
+            .get_slice => try getSlice(b, s, node),
+            .paren => try expr(b, s, ri, b.tree.data(node).paren),
             .block => {
-                const block = try blockUnlinked(b, scope, node);
+                const block = try blockUnlinked(b, s, node);
                 try b.linkInst(block);
                 return block;
             },
-            .if_else => try ifElse(b, scope, node),
+            .if_else => try ifElse(b, s, node),
             else => {
                 std.log.err("expr (val semantics): unexpected node: {}\n", .{b.tree.data(node)});
                 try fg.errors.append(fg.gpa, .{
@@ -641,12 +651,12 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
         },
         // anything that can be an lvalue (assigned to)
         .ptr => switch (b.tree.data(node)) {
-            .ident => identExpr(b, scope, ri, node),
+            .ident => identExpr(b, s, ri, node),
             // some types of unaries (like pointer assignment *apple = banana)
-            .unary => try unary(b, scope, ri, node),
-            .index => try indexAccess(b, scope, ri, node),
-            // .field => try fieldAccess(b, scope, ri, node),
-            .paren => try expr(b, scope, ri, b.tree.data(node).paren),
+            .unary => try unary(b, s, ri, node),
+            .index => try indexAccess(b, s, ri, node),
+            // .field => try fieldAccess(b, s, ri, node),
+            .paren => try expr(b, s, ri, b.tree.data(node).paren),
             else => {
                 std.log.err("expr (ptr semantics): unexpected node: {}\n", .{b.tree.data(node)});
                 try fg.errors.append(fg.gpa, .{
@@ -658,11 +668,11 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
         },
         // can be used in any context that `val` can, but generates ptr semantics
         .ref => switch (b.tree.data(node)) {
-            .ident => identExpr(b, scope, ri, node),
-            .index => try indexAccess(b, scope, ri, node),
-            .field => try fieldAccess(b, scope, ri, node),
-            .paren => try expr(b, scope, ri, b.tree.data(node).paren),
-            .unary => try unary(b, scope, ri, node),
+            .ident => identExpr(b, s, ri, node),
+            .index => try indexAccess(b, s, ri, node),
+            .field => try fieldAccess(b, s, ri, node),
+            .paren => try expr(b, s, ri, b.tree.data(node).paren),
+            .unary => try unary(b, s, ri, node),
             // since temporaries can be referenced in femto, we upgrade these
             // to const pointers using a push
             .get_slice,
@@ -679,22 +689,22 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .if_else,
             => {
                 const inner = switch (b.tree.data(node)) {
-                    .get_slice => try getSlice(b, scope, node),
+                    .get_slice => try getSlice(b, s, node),
                     .integer_literal => try integerLiteral(b, node),
                     .float_literal => try floatLiteral(b, node),
                     .bool_literal => try boolLiteral(b, node),
                     .char_literal => try charLiteral(b, node),
                     .string_literal => try stringLiteral(b, node),
-                    .call => try call(b, scope, node),
-                    .binary => try binary(b, scope, node),
-                    .fn_decl => try fnDecl(b, scope, node),
-                    .array_init => try arrayInit(b, scope, node),
+                    .call => try call(b, s, node),
+                    .binary => try binary(b, s, node),
+                    .fn_decl => try fnDecl(b, s, node),
+                    .array_init => try arrayInit(b, s, node),
                     .block => bl: {
-                        const block = try blockUnlinked(b, scope, node);
+                        const block = try blockUnlinked(b, s, node);
                         try b.linkInst(block);
                         break :bl block;
                     },
-                    .if_else => try ifElse(b, scope, node),
+                    .if_else => try ifElse(b, s, node),
                     else => unreachable,
                 };
 
@@ -713,13 +723,13 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             },
         },
         .ty => switch (b.tree.data(node)) {
-            .ident => identExpr(b, scope, ri, node),
-            .unary => try unary(b, scope, ri, node),
-            .pointer, .mut_pointer => try pointerType(b, scope, node),
-            .many_pointer => try manyPointerType(b, scope, node),
-            .array => try arrayType(b, scope, node),
-            .slice => try sliceType(b, scope, node),
-            .function => try fnType(b, scope, node),
+            .ident => identExpr(b, s, ri, node),
+            .unary => try unary(b, s, ri, node),
+            .pointer, .mut_pointer => try pointerType(b, s, node),
+            .many_pointer => try manyPointerType(b, s, node),
+            .array => try arrayType(b, s, node),
+            .slice => try sliceType(b, s, node),
+            .function => try fnType(b, s, node),
             else => {
                 std.log.err("expr (type semantics): unexpected node: {}\n", .{b.tree.data(node)});
                 return GenError.NotImplemented;
@@ -729,10 +739,10 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .integer_literal => integerLiteral(b, node),
             .float_literal => floatLiteral(b, node),
             .bool_literal => boolLiteral(b, node),
-            .ident => identExpr(b, scope, ri, node),
-            .call => try call(b, scope, node),
-            .binary => try binary(b, scope, node),
-            .unary => try unary(b, scope, ri, node),
+            .ident => identExpr(b, s, ri, node),
+            .call => try call(b, s, node),
+            .binary => try binary(b, s, node),
+            .unary => try unary(b, s, ri, node),
             // .index => try indexAccess(b, scope, ri, node),
             // .field => try fieldAccess(b, scope, ri, node),
             else => {
@@ -743,32 +753,32 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
     };
 }
 
-inline fn valExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+inline fn valExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     const ri: ResultInfo = .{ .semantics = .val };
-    return expr(b, scope, ri, node);
+    return expr(b, s, ri, node);
 }
 
-inline fn ptrExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+inline fn ptrExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     const ri: ResultInfo = .{ .semantics = .ptr };
-    return expr(b, scope, ri, node);
+    return expr(b, s, ri, node);
 }
 
-inline fn refExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+inline fn refExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     const ri: ResultInfo = .{ .semantics = .ref };
-    return expr(b, scope, ri, node);
+    return expr(b, s, ri, node);
 }
 
-inline fn typeExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+inline fn typeExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     const ri: ResultInfo = .{ .semantics = .ty };
-    return expr(b, scope, ri, node);
+    return expr(b, s, ri, node);
 }
 
-inline fn anyExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+inline fn anyExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     const ri: ResultInfo = .{ .semantics = .any };
-    return expr(b, scope, ri, node);
+    return expr(b, s, ri, node);
 }
 
-fn pointerType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn pointerType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     switch (b.tree.data(node)) {
         .pointer => |pointee| {
             const inner = try typeExpr(b, scope, pointee);
@@ -788,7 +798,7 @@ fn pointerType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     }
 }
 
-fn manyPointerType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn manyPointerType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const pointee = b.tree.data(node).many_pointer;
     const inner = try typeExpr(b, scope, pointee);
     return b.add(.{
@@ -797,7 +807,7 @@ fn manyPointerType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn arrayType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn arrayType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const array_type = b.tree.data(node).array;
     const element_type = try typeExpr(b, scope, array_type.element_type);
     const count = try valExpr(b, scope, array_type.count_expr);
@@ -808,7 +818,7 @@ fn arrayType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn sliceType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn sliceType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const element_type = b.tree.data(node).slice;
     const inner = try typeExpr(b, scope, element_type);
     return b.add(.{
@@ -818,7 +828,7 @@ fn sliceType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
 }
 
 // TODO: merge with fnDecl
-fn fnType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn fnType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const fn_type = b.tree.data(node).function;
     const signature = b.tree.extraData(fn_type, Node.FnSignature);
@@ -842,7 +852,7 @@ fn fnType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
+fn indexAccess(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
     const index_access = b.tree.data(node).index;
 
     const operand = try anyExpr(b, scope, index_access.operand);
@@ -875,7 +885,7 @@ fn indexAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
     }
 }
 
-fn getSlice(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn getSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const get_slice = b.tree.data(node).get_slice;
     const payload = b.tree.extraData(get_slice.range, Node.GetSlice);
@@ -921,7 +931,7 @@ fn getSlice(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     // }
 }
 
-fn fieldAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
+fn fieldAccess(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const field_val = b.tree.data(node).field;
     const field_token = b.tree.mainToken(node) + 1;
@@ -945,48 +955,47 @@ fn fieldAccess(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) Error
 // this function can modify the scope passed in if it encounters a declaration
 fn statement(b: *Block, s: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
-    const scope = s.*;
 
     return try switch (b.tree.data(node)) {
         .const_decl => {
-            const ret = try constDecl(b, scope, node);
+            const ret = try constDecl(b, s, node);
             const ident = b.tree.tokenString(b.tree.mainToken(node) + 1);
             const id = try fg.pool.getOrPutString(ident);
             const val_scope = try fg.arena.create(Scope.LocalVal);
-            val_scope.* = Scope.LocalVal.init(scope, id, ret);
+            val_scope.* = Scope.LocalVal.init(s.*, id, ret);
             s.* = &val_scope.base;
             return ret;
         },
         .const_decl_attr => {
-            const ret = try constDeclAttr(b, scope, node);
+            const ret = try constDeclAttr(b, s, node);
             const ident = b.tree.tokenString(b.tree.mainToken(node) + 1);
             const id = try fg.pool.getOrPutString(ident);
             const val_scope = try fg.arena.create(Scope.LocalVal);
-            val_scope.* = Scope.LocalVal.init(scope, id, ret);
+            val_scope.* = Scope.LocalVal.init(s.*, id, ret);
             s.* = &val_scope.base;
             return ret;
         },
         .var_decl => {
-            const ret = try varDecl(b, scope, node);
+            const ret = try varDecl(b, s, node);
             const ident = b.tree.tokenString(b.tree.mainToken(node) + 2);
             const id = try fg.pool.getOrPutString(ident);
             const ptr_scope = try fg.arena.create(Scope.LocalPtr);
-            ptr_scope.* = Scope.LocalPtr.init(scope, id, ret);
+            ptr_scope.* = Scope.LocalPtr.init(s.*, id, ret);
             s.* = &ptr_scope.base;
             return ret;
         },
-        .assign_simple => assignSimple(b, scope, node),
-        .assign_binary => assignBinary(b, scope, node),
-        .if_simple => ifSimple(b, scope, node),
-        .if_else => ifElse(b, scope, node),
-        .if_chain => ifChain(b, scope, node),
-        .return_val => returnStmt(b, scope, node),
-        .yield_val => yield(b, scope, node),
-        .loop_forever => loopForever(b, scope, node),
-        .loop_conditional => loopConditional(b, scope, node),
-        .loop_range => loopRange(b, scope, node),
-        .@"break" => loopBreak(b, scope, node),
-        .call => call(b, scope, node),
+        .assign_simple => assignSimple(b, s, node),
+        .assign_binary => assignBinary(b, s, node),
+        .if_simple => ifSimple(b, s, node),
+        .if_else => ifElse(b, s, node),
+        .if_chain => ifChain(b, s, node),
+        .return_val => returnStmt(b, s, node),
+        .yield_val => yield(b, s, node),
+        .loop_forever => loopForever(b, s, node),
+        .loop_conditional => loopConditional(b, s, node),
+        .loop_range => loopRange(b, s, node),
+        .@"break" => loopBreak(b, s, node),
+        .call => call(b, s, node),
         else => {
             std.log.err("statement: unexpected node: {}\n", .{b.tree.data(node)});
             return GenError.NotImplemented;
@@ -994,7 +1003,7 @@ fn statement(b: *Block, s: **Scope, node: Node.Index) Error!Fir.Index {
     };
 }
 
-fn globalStatement(fg: *FirGen, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn globalStatement(fg: *FirGen, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const data = fg.tree.data(node);
     return try switch (data) {
         .const_decl => globalConst(fg, scope, node),
@@ -1007,7 +1016,7 @@ fn globalStatement(fg: *FirGen, scope: *Scope, node: Node.Index) Error!Fir.Index
     };
 }
 
-fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn call(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const call_expr = b.tree.data(node).call;
     // TODO: probably use ref semantics
@@ -1038,25 +1047,26 @@ fn call(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn blockInner(b: *Block, scope: *Scope, node: Node.Index) Error!void {
+fn blockInner(b: *Block, scope: **Scope, node: Node.Index) Error!void {
     const data = b.tree.data(node).block;
 
-    var s: *Scope = scope;
+    var s: **Scope = scope;
     const stmts = b.tree.extra_data[data.stmts_start..data.stmts_end];
     for (stmts) |stmt| {
-        _ = try statement(b, &s, stmt);
+        _ = try statement(b, s, stmt);
     }
 }
 
-fn blockUnlinked(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
-    var inner = Block.init(b.fg, scope);
+fn blockUnlinked(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+    var inner = Block.init(b.fg, scope.*);
     defer inner.deinit();
+    var s = &inner.base;
 
-    try blockInner(&inner, &inner.base, node);
+    try blockInner(&inner, &s, node);
     return b.addBlockUnlinked(&inner, node);
 }
 
-fn coerce(b: *Block, s: *Scope, val: Fir.Index, dest_ty: Fir.Index, node: Node.Index) !Fir.Index {
+fn coerce(b: *Block, s: **Scope, val: Fir.Index, dest_ty: Fir.Index, node: Node.Index) !Fir.Index {
     _ = s;
     // generate a "type validation" marker instruction
     // this is a passthrough which takes in the above value reference
@@ -1069,7 +1079,7 @@ fn coerce(b: *Block, s: *Scope, val: Fir.Index, dest_ty: Fir.Index, node: Node.I
     });
 }
 
-fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
+fn constDecl(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     // "initializes" constant variables
     // this doesn't actually create any instructions for declaring the constant
     // instead, the value to set the constant to is computed, and the resulting
@@ -1080,7 +1090,7 @@ fn constDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
     return constDeclInner(b, s, const_decl.val, const_decl.ty, node);
 }
 
-fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
+fn constDeclAttr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     // "initializes" constant variables
     // this doesn't actually create any instructions for declaring the constant
     // instead, the value to set the constant to is computed, and the resulting
@@ -1092,7 +1102,7 @@ fn constDeclAttr(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
     return constDeclInner(b, s, const_decl.val, metadata.ty, node);
 }
 
-fn constDeclInner(b: *Block, s: *Scope, val: Node.Index, ty: Node.Index, node: Node.Index) !Fir.Index {
+fn constDeclInner(b: *Block, s: **Scope, val: Node.Index, ty: Node.Index, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     const ident_index = b.tree.mainToken(node) + 1;
     const ident_str = b.tree.tokenString(ident_index);
@@ -1117,7 +1127,7 @@ fn constDeclInner(b: *Block, s: *Scope, val: Node.Index, ty: Node.Index, node: N
     }
 }
 
-fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
+fn varDecl(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     // "initializes" mutable variables
     // unlike constant declarations, mutable variables are stored in "memory"
     // so we have to create alloc instructions in addition to computing the value
@@ -1141,32 +1151,32 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
     }
 }
 
-fn globalConst(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
+fn globalConst(fg: *FirGen, s: **Scope, node: Node.Index) !Fir.Index {
     // global constants are read only variable that exist at runtime
     // (they aren't inlined by the frontend, but can be by the backend)
     // they are created by initializing a inline block that contains the
     // constexpr instructions for computing the rvalue of the constant
     const const_decl = fg.tree.data(node).const_decl;
 
-    var b = Block.init(fg, s);
+    var b = Block.init(fg, s.*);
     defer b.deinit();
-    const scope = &b.base;
+    var scope = &b.base;
 
     const handle = try b.add(.{
         .data = .{ .global_handle = {} },
         .loc = .{ .node = node },
     });
 
-    var rvalue = try valExpr(&b, scope, const_decl.val);
+    var rvalue = try valExpr(&b, &scope, const_decl.val);
     if (const_decl.ty != 0) {
         // if this is typed, add a coerce and mark the global's type
-        const type_annotation = try typeExpr(&b, scope, const_decl.ty);
+        const type_annotation = try typeExpr(&b, &scope, const_decl.ty);
         _ = try b.add(.{
             .data = .{ .global_set_type = .{ .handle = handle, .ty = type_annotation } },
             .loc = .{ .node = node },
         });
 
-        rvalue = try coerce(&b, scope, rvalue, type_annotation, node);
+        rvalue = try coerce(&b, &scope, rvalue, type_annotation, node);
     } else {
         // generate a type inference, since global decls can't
         // postpone the problem like locals can
@@ -1191,7 +1201,7 @@ fn globalConst(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
     return Block.addBlockInlineUnlinked(fg, &b, node);
 }
 
-fn globalConstAttr(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
+fn globalConstAttr(fg: *FirGen, s: **Scope, node: Node.Index) !Fir.Index {
     // global constants are read only variable that exist at runtime
     // (they aren't inlined by the frontend, but can be by the backend)
     // they are created by initializing a inline block that contains the
@@ -1201,9 +1211,9 @@ fn globalConstAttr(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
     const const_decl = fg.tree.data(node).const_decl_attr;
     const metadata = fg.tree.extraData(const_decl.metadata, Node.DeclMetadata);
 
-    var b = Block.init(fg, s);
+    var b = Block.init(fg, s.*);
     defer b.deinit();
-    const scope = &b.base;
+    var scope = &b.base;
 
     const handle = try b.add(.{
         .data = .{ .global_handle = {} },
@@ -1233,21 +1243,21 @@ fn globalConstAttr(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
     var rvalue: ?Fir.Index = null;
     if (has_initializer) {
         std.debug.assert(const_decl.val != 0);
-        rvalue = try valExpr(&b, scope, const_decl.val);
+        rvalue = try valExpr(&b, &scope, const_decl.val);
     } else {
         std.debug.assert(const_decl.val == 0);
         std.debug.assert(metadata.ty != 0); // this should be a handled user error
     }
 
     if (metadata.ty != 0) {
-        const type_annotation = try typeExpr(&b, scope, metadata.ty);
+        const type_annotation = try typeExpr(&b, &scope, metadata.ty);
         _ = try b.add(.{
             .data = .{ .global_set_type = .{ .handle = handle, .ty = type_annotation } },
             .loc = .{ .node = node },
         });
 
         if (rvalue) |val| {
-            rvalue = try coerce(&b, scope, val, type_annotation, node);
+            rvalue = try coerce(&b, &scope, val, type_annotation, node);
         }
     } else {
         // generate a type inference, since global decls can't
@@ -1276,16 +1286,16 @@ fn globalConstAttr(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
     return Block.addBlockInlineUnlinked(fg, &b, node);
 }
 
-fn globalVar(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
+fn globalVar(fg: *FirGen, s: **Scope, node: Node.Index) !Fir.Index {
     // "initializes" mutable variables
     // unlike constant declarations, mutable variables are stored in "memory"
     // so we have to create alloc instructions in addition to computing the value
     // otherwise, this function operates like constDecl
     const var_decl = fg.tree.data(node).var_decl;
 
-    var b = Block.init(fg, s);
+    var b = Block.init(fg, s.*);
     defer b.deinit();
-    const scope = &b.base;
+    var scope = &b.base;
 
     const handle = try b.add(.{
         .data = .{ .global_handle = {} },
@@ -1296,16 +1306,16 @@ fn globalVar(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
         .loc = .{ .node = node },
     });
 
-    var rvalue = try valExpr(&b, scope, var_decl.val);
+    var rvalue = try valExpr(&b, &scope, var_decl.val);
     if (var_decl.ty != 0) {
         // if this is typed, add a coerce and mark the global's type
-        const type_annotation = try typeExpr(&b, scope, var_decl.ty);
+        const type_annotation = try typeExpr(&b, &scope, var_decl.ty);
         _ = try b.add(.{
             .data = .{ .global_set_type = .{ .handle = handle, .ty = type_annotation } },
             .loc = .{ .node = node },
         });
 
-        rvalue = try coerce(&b, scope, rvalue, type_annotation, node);
+        rvalue = try coerce(&b, &scope, rvalue, type_annotation, node);
         _ = try b.add(.{
             .data = .{ .global_set_init = .{ .handle = handle, .val = rvalue } },
             .loc = .{ .node = node },
@@ -1319,7 +1329,7 @@ fn globalVar(fg: *FirGen, s: *Scope, node: Node.Index) !Fir.Index {
     return Block.addBlockInlineUnlinked(fg, &b, node);
 }
 
-fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn assignSimple(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     const assign = b.tree.data(node).assign_simple;
 
@@ -1343,7 +1353,7 @@ fn assignSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn assignBinary(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     const assign = b.tree.data(node).assign_binary;
     const op = b.tree.mainToken(node);
@@ -1371,7 +1381,7 @@ fn assignBinary(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn ifSimple(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const if_simple = b.tree.data(node).if_simple;
 
     const condition = try valExpr(b, scope, if_simple.condition);
@@ -1382,7 +1392,7 @@ fn ifSimple(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn ifElse(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
+fn ifElse(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const if_else = b.tree.data(node).if_else;
 
     const condition = try valExpr(b, scope, if_else.condition);
@@ -1392,19 +1402,20 @@ fn ifElse(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
     return b.addBranchDouble(condition, exec_true, exec_false, node);
 }
 
-fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn ifChain(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const if_chain = b.tree.data(node).if_chain;
     const chain = b.tree.extraData(if_chain.chain, Node.IfChain);
 
     const condition = try valExpr(b, scope, if_chain.condition);
     const exec_true = try blockUnlinked(b, scope, chain.exec_true);
     const next = block: {
-        var block_scope = Block.init(b.fg, scope);
+        var block_scope = Block.init(b.fg, scope.*);
         defer block_scope.deinit();
+        var s = scope.*;
 
         _ = switch (b.tree.data(chain.next)) {
-            .if_simple => try ifSimple(&block_scope, &block_scope.base, chain.next),
-            .if_else => try ifElse(&block_scope, &block_scope.base, chain.next),
+            .if_simple => try ifSimple(&block_scope, &s, chain.next),
+            .if_else => try ifElse(&block_scope, &s, chain.next),
             else => unreachable,
         };
         break :block try b.addBlockUnlinked(&block_scope, node);
@@ -1413,7 +1424,7 @@ fn ifChain(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     return b.addBranchDouble(condition, exec_true, next, node);
 }
 
-fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn returnStmt(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const return_val = b.tree.data(node).return_val;
     const return_type = try b.add(.{
         .data = .{ .return_type = {} },
@@ -1433,7 +1444,7 @@ fn returnStmt(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn yield(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn yield(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const yield_val = b.tree.data(node).yield_val;
     const operand = try valExpr(b, scope, yield_val);
 
@@ -1443,11 +1454,12 @@ fn yield(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn loopConditionInner(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
-    var inner = Block.init(b.fg, scope);
+fn loopConditionInner(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
+    var inner = Block.init(b.fg, scope.*);
     defer inner.deinit();
+    var s = &inner.base;
 
-    const condition = try valExpr(&inner, &inner.base, node);
+    const condition = try valExpr(&inner, &s, node);
     _ = try inner.add(.{
         .data = .{ .yield_implicit = condition },
         .loc = .{ .token = undefined },
@@ -1455,7 +1467,7 @@ fn loopConditionInner(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     return b.addBlockUnlinked(&inner, node);
 }
 
-fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn loopForever(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const loop_forever = b.tree.data(node).loop_forever;
 
     const body = try blockUnlinked(b, scope, loop_forever.body);
@@ -1465,7 +1477,7 @@ fn loopForever(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn loopConditional(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const loop_conditional = b.tree.data(node).loop_conditional;
 
     const condition = try loopConditionInner(b, scope, loop_conditional.condition);
@@ -1473,25 +1485,25 @@ fn loopConditional(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
     return b.addLoopWhile(condition, body, node);
 }
 
-fn loopRange(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn loopRange(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const loop_range = b.tree.data(node).loop_range;
     const signature = b.tree.extraData(loop_range.signature, Node.RangeSignature);
 
-    var s: *Scope = scope;
+    var s = scope.*;
     _ = try statement(b, &s, signature.binding);
-    const condition = try loopConditionInner(b, s, signature.condition);
+    const condition = try loopConditionInner(b, &s, signature.condition);
 
     var inner = Block.init(b.fg, s);
     defer inner.deinit();
     s = &inner.base;
 
-    try blockInner(&inner, s, loop_range.body);
+    try blockInner(&inner, &s, loop_range.body);
     _ = try statement(&inner, &s, signature.afterthought);
     const body = try b.addBlockUnlinked(&inner, node);
     return b.addLoopWhile(condition, body, node);
 }
 
-fn loopBreak(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
+fn loopBreak(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     _ = scope;
     return b.add(.{
         .data = .{ .@"break" = {} },
