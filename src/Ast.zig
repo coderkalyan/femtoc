@@ -77,6 +77,7 @@ pub const Node = struct {
         // types
         // pointer type * to an underlying type
         pointer: Index,
+        mut_pointer: Index,
         // pointer type [*] to an underlying type
         many_pointer: Index,
         // slice type [] to an underlying type

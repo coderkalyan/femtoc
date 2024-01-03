@@ -147,12 +147,20 @@ pub const Inst = union(enum) {
         ty: InternPool.Index,
     },
 
-    // allocates a stack slot and returns a pointer to it
+    // allocates a stack slot and returns a const pointer to it
     alloc: struct {
         // type of the object being stored in the stack slot
         slot_type: InternPool.Index,
         // type of the pointer yielded by the alloc
-        // which is always slot_type*
+        // which is always slot_type *
+        pointer_type: InternPool.Index,
+    },
+    // allocates a stack slot and returns a mut pointer to it
+    alloc_mut: struct {
+        // type of the object being stored in the stack slot
+        slot_type: InternPool.Index,
+        // type of the pointer yielded by the alloc
+        // which is always slot_type *mut
         pointer_type: InternPool.Index,
     },
     // loads data from a memory address and returns a ref to the value
@@ -352,7 +360,7 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         },
         .slice_ptr_val => |slice_ptr_val| return slice_ptr_val.ty,
         .slice_len_val => |slice_len_val| return slice_len_val.ty,
-        .alloc => |alloc| return alloc.pointer_type,
+        inline .alloc, .alloc_mut => |alloc| return alloc.pointer_type,
         .load => |load| {
             const ty = air.typeOf(load.ptr);
             const pointer_type = pool.indexToKey(ty).ty;

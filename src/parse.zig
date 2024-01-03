@@ -565,10 +565,17 @@ const Parser = struct {
             inner = switch (p.token_tags[p.index]) {
                 .asterisk => node: {
                     const asterisk_token = p.eatToken(.asterisk).?;
-                    break :node try p.addNode(.{
-                        .main_token = asterisk_token,
-                        .data = .{ .pointer = inner },
-                    });
+                    if (p.eatToken(.k_mut)) |_| {
+                        break :node try p.addNode(.{
+                            .main_token = asterisk_token,
+                            .data = .{ .mut_pointer = inner },
+                        });
+                    } else {
+                        break :node try p.addNode(.{
+                            .main_token = asterisk_token,
+                            .data = .{ .pointer = inner },
+                        });
+                    }
                 },
                 .l_bracket => node: {
                     const l_bracket_token = p.eatCurrentToken();

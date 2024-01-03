@@ -44,6 +44,7 @@ pub const SourceError = struct {
         invalid_ref_expr,
 
         unsized_type_alloc,
+        const_pointer_write,
     };
 };
 
@@ -171,6 +172,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .invalid_val_expr => "cannot use expression as value",
                 .invalid_ptr_expr => "invalid expression for assignment location",
                 .invalid_ref_expr => "cannot take reference to expression",
+                .const_pointer_write => "cannot modify through const pointer",
             };
 
             r.stream.indent();

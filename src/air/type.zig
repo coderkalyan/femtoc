@@ -11,7 +11,7 @@ pub const Type = union(enum) {
     float: struct { width: u8 },
     bool,
     ref: struct { pointee: InternPool.Index, mutable: bool },
-    pointer: struct { pointee: InternPool.Index },
+    pointer: struct { pointee: InternPool.Index, mutable: bool },
     many_pointer: struct { pointee: InternPool.Index },
     slice: struct { element: InternPool.Index },
     array: struct { element: InternPool.Index, count: u32 },
@@ -42,7 +42,8 @@ pub const Type = union(enum) {
             .bool_type => .{ .bool = {} },
             .ref_const_type => .{ .ref = .{ .pointee = @enumFromInt(data), .mutable = false } },
             .ref_mut_type => .{ .ref = .{ .pointee = @enumFromInt(data), .mutable = true } },
-            .pointer_type => .{ .pointer = .{ .pointee = @enumFromInt(data) } },
+            .pointer_const_type => .{ .pointer = .{ .pointee = @enumFromInt(data), .mutable = false } },
+            .pointer_mut_type => .{ .pointer = .{ .pointee = @enumFromInt(data), .mutable = true } },
             .many_pointer_type => .{ .many_pointer = .{ .pointee = @enumFromInt(data) } },
             .slice_type => .{ .slice = .{ .element = @enumFromInt(data) } },
             .array_type => {
@@ -66,6 +67,12 @@ pub const Type = union(enum) {
         const asBytes = std.mem.asBytes;
         const seed = @intFromEnum(ty);
         return switch (ty) {
+            .pointer => |data| {
+                var hasher = Hash.init(seed);
+                hasher.update(asBytes(&data.pointee));
+                hasher.update(asBytes(&data.mutable));
+                return hasher.final();
+            },
             inline else => |data| return Hash.hash(seed, asBytes(&data)),
         };
     }

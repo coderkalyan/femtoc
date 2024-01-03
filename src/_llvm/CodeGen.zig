@@ -132,7 +132,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
             .slice_ptr_val => try self.slicePtrVal(inst),
             .slice_len_val => try self.sliceLenVal(inst),
 
-            .alloc => try self.alloc(inst),
+            .alloc, .alloc_mut => try self.alloc(inst),
             .load => try self.load(inst),
             .store => try self.store(inst),
 
@@ -370,8 +370,11 @@ fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst
 }
 
 fn alloc(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].alloc;
-    const ty = self.pool.indexToKey(data.slot_type).ty;
+    const slot_type = switch (self.air.insts.get(@intFromEnum(inst))) {
+        inline .alloc, .alloc_mut => |data| data.slot_type,
+        else => unreachable,
+    };
+    const ty = self.pool.indexToKey(slot_type).ty;
 
     const ref = try self.allocaInner(ty);
     try self.map.put(self.arena, inst, ref);
@@ -818,7 +821,8 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
                 try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // first element (ptr)
             };
             const ptr_gep = try builder.addGetElementPtr(base_type, base, &indices);
-            const ptr = try builder.addLoad(ptr_gep, .{ .pointer = .{ .pointee = slice_type.element } });
+            // TODO: should this be mutable or not
+            const ptr = try builder.addLoad(ptr_gep, .{ .pointer = .{ .pointee = slice_type.element, .mutable = true } });
             var gep2_indices = .{index};
             const gep = try builder.addGetElementPtr(element_type, ptr, &gep2_indices);
             const access = try builder.addLoad(gep, element_type);

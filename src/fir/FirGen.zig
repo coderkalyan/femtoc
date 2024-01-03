@@ -715,7 +715,7 @@ fn expr(b: *Block, scope: *Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
         .ty => switch (b.tree.data(node)) {
             .ident => identExpr(b, scope, ri, node),
             .unary => try unary(b, scope, ri, node),
-            .pointer => try pointerType(b, scope, node),
+            .pointer, .mut_pointer => try pointerType(b, scope, node),
             .many_pointer => try manyPointerType(b, scope, node),
             .array => try arrayType(b, scope, node),
             .slice => try sliceType(b, scope, node),
@@ -769,12 +769,23 @@ inline fn anyExpr(b: *Block, scope: *Scope, node: Node.Index) !Fir.Index {
 }
 
 fn pointerType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
-    const pointee = b.tree.data(node).pointer;
-    const inner = try typeExpr(b, scope, pointee);
-    return b.add(.{
-        .data = .{ .pointer_type = .{ .pointee = inner } },
-        .loc = .{ .node = node },
-    });
+    switch (b.tree.data(node)) {
+        .pointer => |pointee| {
+            const inner = try typeExpr(b, scope, pointee);
+            return b.add(.{
+                .data = .{ .pointer_type = .{ .pointee = inner, .mutable = false } },
+                .loc = .{ .node = node },
+            });
+        },
+        .mut_pointer => |pointee| {
+            const inner = try typeExpr(b, scope, pointee);
+            return b.add(.{
+                .data = .{ .pointer_type = .{ .pointee = inner, .mutable = true } },
+                .loc = .{ .node = node },
+            });
+        },
+        else => unreachable,
+    }
 }
 
 fn manyPointerType(b: *Block, scope: *Scope, node: Node.Index) Error!Fir.Index {
@@ -1116,7 +1127,7 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
     if (var_decl.ty == 0) {
         // untyped (inferred) declaration
         return b.add(.{
-            .data = .{ .push = val },
+            .data = .{ .push_mut = val },
             .loc = .{ .node = node },
         });
     } else {
@@ -1124,7 +1135,7 @@ fn varDecl(b: *Block, s: *Scope, node: Node.Index) !Fir.Index {
         const dest_ty = try typeExpr(b, s, var_decl.ty);
         const coerced = try coerce(b, s, val, dest_ty, node);
         return b.add(.{
-            .data = .{ .push = coerced },
+            .data = .{ .push_mut = coerced },
             .loc = .{ .node = node },
         });
     }

@@ -47,6 +47,7 @@ pub const Inst = struct {
         // build a pointer * to an underlying type
         pointer_type: struct {
             pointee: Index,
+            mutable: bool,
         },
         // build a many pointer [*] to an underlying type
         many_pointer_type: struct {
@@ -182,10 +183,13 @@ pub const Inst = struct {
         },
 
         // pushes a value onto the stack and returns the memory address
-        // generated when a mutable variable is encountered in ast
+        // generated when a const variable requires a reference
         // this is later split into an alloca and a store
         push: Index,
+        // same as above, but the stack reference will be mutable
         // loads data from a memory address and returns a ref to the value
+        // generated when a mutable variable is encountered in ast
+        push_mut: Index,
         load: struct {
             ptr: Index,
         },

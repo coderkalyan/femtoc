@@ -272,7 +272,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             // .field_ref => try fieldRef(&b, inst),
 
             .load_global => try loadGlobal(&b, inst),
-            .push => try push(&b, inst),
+            .push, .push_mut => try push(&b, inst),
             .load => try load(&b, inst),
             .store => try store(&b, inst),
 
@@ -389,12 +389,10 @@ pub fn addConstant(sema: *Sema, key: InternPool.Key) !Air.Index {
 fn globalHandle(b: *Block, inst: Fir.Index, decl: InternPool.Index) !void {
     // const decl_index = b.pool.indexToKey(decl).decl;
     // const decl_data = b.pool.decls.at(@intFromEnum(decl_index));
-    const ty = ty: {
-        const decl_index = b.pool.indexToKey(decl).decl;
-        const decl_data = b.pool.decls.at(@intFromEnum(decl_index));
-        break :ty decl_data.ty;
-    };
-    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
+    const decl_index = b.pool.indexToKey(decl).decl;
+    const decl_data = b.pool.decls.at(@intFromEnum(decl_index));
+    const ty = decl_data.ty;
+    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty, .mutable = decl_data.mutable } } });
     const air_inst = try b.add(.{ .load_decl = .{
         .ip_index = decl,
         .ty = pointer_type,
@@ -551,7 +549,7 @@ fn pointerType(b: *Block, inst: Fir.Index) !void {
     const pointer_type = b.fir.get(inst);
     const data = pointer_type.data.pointer_type;
     const pointee = b.resolveInterned(data.pointee);
-    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = pointee } } });
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = pointee, .mutable = data.mutable } } });
     try b.mapInterned(inst, ip_index);
 }
 
@@ -731,7 +729,7 @@ fn reftoptr(b: *Block, inst: Fir.Index) !void {
 
     const operand = b.resolveInst(data);
     const operand_type = b.pool.indexToType(b.typeOf(operand)).ref;
-    const ptr_type = try b.pool.getOrPutType(.{ .pointer = .{ .pointee = operand_type.pointee } });
+    const ptr_type = try b.pool.getOrPutType(.{ .pointer = .{ .pointee = operand_type.pointee, .mutable = operand_type.mutable } });
 
     const air_inst = try b.add(.{ .reftoptr = .{
         .operand = operand,
@@ -747,7 +745,7 @@ fn ptrtoref(b: *Block, inst: Fir.Index) !void {
 
     const operand = b.resolveInst(data);
     const operand_type = b.pool.indexToType(b.typeOf(operand)).pointer;
-    const ptr_type = try b.pool.getOrPutType(.{ .ref = .{ .pointee = operand_type.pointee, .mutable = true } });
+    const ptr_type = try b.pool.getOrPutType(.{ .ref = .{ .pointee = operand_type.pointee, .mutable = operand_type.mutable } });
 
     const air_inst = try b.add(.{ .ptrtoref = .{
         .operand = operand,
@@ -771,7 +769,19 @@ fn firParam(b: *Block, inst: Fir.Index) !void {
 fn push(b: *Block, inst: Fir.Index) !void {
     const sema = b.sema;
     const push_inst = b.fir.get(inst);
-    const data = push_inst.data.push;
+    var mutable: bool = undefined;
+    var data: Fir.Index = undefined;
+    switch (push_inst.data) {
+        .push => |operand| {
+            data = operand;
+            mutable = false;
+        },
+        .push_mut => |operand| {
+            data = operand;
+            mutable = true;
+        },
+        else => unreachable,
+    }
 
     const operand = b.resolveInst(data);
     const ty = b.typeOf(operand);
@@ -784,17 +794,23 @@ fn push(b: *Block, inst: Fir.Index) !void {
         return error.HandledUserError;
     }
 
-    const alloc = try pushInner(b, operand);
+    const alloc = try pushInner(b, operand, mutable);
     try b.mapInst(inst, alloc);
 }
 
-fn pushInner(b: *Block, operand: Air.Index) !Air.Index {
+fn pushInner(b: *Block, operand: Air.Index, mutable: bool) !Air.Index {
     const ty = b.typeOf(operand);
-    const ref_type = try b.pool.getOrPut(.{ .ty = .{ .ref = .{ .pointee = ty, .mutable = true } } });
-    const alloc = try b.add(.{ .alloc = .{
-        .slot_type = ty,
-        .pointer_type = ref_type,
-    } });
+    const ref_type = try b.pool.getOrPut(.{ .ty = .{ .ref = .{ .pointee = ty, .mutable = mutable } } });
+    const alloc = switch (mutable) {
+        false => try b.add(.{ .alloc = .{
+            .slot_type = ty,
+            .pointer_type = ref_type,
+        } }),
+        true => try b.add(.{ .alloc_mut = .{
+            .slot_type = ty,
+            .pointer_type = ref_type,
+        } }),
+    };
     _ = try b.add(.{ .store = .{
         .ptr = alloc,
         .val = operand,
@@ -814,12 +830,20 @@ fn load(b: *Block, inst: Fir.Index) !void {
 }
 
 fn store(b: *Block, inst: Fir.Index) !void {
+    const sema = b.sema;
     const store_inst = b.fir.get(inst);
     const data = store_inst.data.store;
 
     const ptr = b.resolveInst(data.ptr);
     const val_inner = b.resolveInst(data.val);
     const ref_type = b.pool.indexToType(b.typeOf(ptr)).ref;
+    if (!ref_type.mutable) {
+        try sema.errors.append(sema.gpa, .{
+            .tag = .const_pointer_write,
+            .token = sema.fir.tree.mainToken(store_inst.loc.node),
+        });
+        return error.HandledUserError;
+    }
     const pointee_type = b.pool.indexToType(ref_type.pointee);
     const val = try coerceInnerImplicit(b, val_inner, pointee_type);
 
@@ -860,12 +884,10 @@ fn loadGlobal(b: *Block, inst: Fir.Index) !void {
     const data = load_global.data.load_global;
 
     const ip_index = b.sema.globals.get(data.name).?;
-    const ty = ty: {
-        const decl_index = b.pool.indexToKey(ip_index).decl;
-        const decl = b.pool.decls.at(@intFromEnum(decl_index));
-        break :ty decl.ty;
-    };
-    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty } } });
+    const decl_index = b.pool.indexToKey(ip_index).decl;
+    const decl = b.pool.decls.at(@intFromEnum(decl_index));
+    const ty = decl.ty;
+    const pointer_type = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = ty, .mutable = decl.mutable } } });
     const air_inst = try b.add(.{ .load_decl = .{
         .ip_index = ip_index,
         .ty = pointer_type,
@@ -1259,7 +1281,8 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
         // reading a field from a value by reference - emit a val + alloc + store
         .array => {
             const access = try b.addIndexVal(base, index);
-            const ref = try pushInner(b, access);
+            // TODO: should this be mutable?
+            const ref = try pushInner(b, access, false);
             try b.mapInst(inst, ref);
         },
         .slice, .many_pointer => unreachable, // unimplemented
@@ -1290,7 +1313,8 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
                 .array => |arr| {
                     // we construct a slice using a gep (base + start) for the ptr
                     // and a len (end - start + 1)
-                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
+                    // TODO: should this be mutable or not
+                    const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = true } } });
                     const ptr = ptr: {
                         const pl = try b.sema.addExtra(Air.Inst.IndexRef{
                             .base = base,
@@ -1326,7 +1350,8 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
             // we construct a slice using a gep (base + start) for the ptr
             // and a len (end - start + 1)
             // TODO: huge issue here, we need to promote the array to stack
-            const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element } } });
+            // TODO: should this be mutable or not
+            const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = true } } });
             const ptr = ptr: {
                 const pl = try b.sema.addExtra(Air.Inst.IndexRef{
                     .base = base,
@@ -1495,7 +1520,8 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
         .slice => |slice| {
             // slices only have two runtime fields - ptr and len
             if (std.mem.eql(u8, field_string, "ptr")) {
-                const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element } } });
+                // TODO: should this be mutable or not
+                const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element, .mutable = true } } });
                 const access = try b.add(.{ .slice_ptr_val = .{
                     .base = base,
                     .ty = ty,

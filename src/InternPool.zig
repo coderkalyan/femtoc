@@ -50,7 +50,8 @@ const Tag = enum(u8) {
     bool_type,
     ref_const_type,
     ref_mut_type,
-    pointer_type,
+    pointer_const_type,
+    pointer_mut_type,
     many_pointer_type,
     slice_type,
     array_type,
@@ -272,7 +273,8 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .bool_type,
         .ref_const_type,
         .ref_mut_type,
-        .pointer_type,
+        .pointer_const_type,
+        .pointer_mut_type,
         .many_pointer_type,
         .slice_type,
         .array_type,
@@ -366,7 +368,10 @@ fn putType(pool: *InternPool, key: Key) !void {
             false => pool.items.appendAssumeCapacity(.{ .tag = .ref_const_type, .data = @intFromEnum(ref.pointee) }),
             true => pool.items.appendAssumeCapacity(.{ .tag = .ref_mut_type, .data = @intFromEnum(ref.pointee) }),
         },
-        .pointer => |pointer| pool.items.appendAssumeCapacity(.{ .tag = .pointer_type, .data = @intFromEnum(pointer.pointee) }),
+        .pointer => |pointer| switch (pointer.mutable) {
+            false => pool.items.appendAssumeCapacity(.{ .tag = .pointer_const_type, .data = @intFromEnum(pointer.pointee) }),
+            true => pool.items.appendAssumeCapacity(.{ .tag = .pointer_mut_type, .data = @intFromEnum(pointer.pointee) }),
+        },
         .many_pointer => |pointer| pool.items.appendAssumeCapacity(.{
             .tag = .many_pointer_type,
             .data = @intFromEnum(pointer.pointee),
@@ -545,11 +550,15 @@ test "pointer type intern" {
     const u32_index = try pool.getOrPut(u32_key);
     try std.testing.expect(u8_index != u32_index);
 
-    const u8_ptr_key: Key = .{ .ty = .{ .pointer = .{ .pointee = u8_index } } };
-    const u32_ptr_key: Key = .{ .ty = .{ .pointer = .{ .pointee = u32_index } } };
+    const u8_ptr_key: Key = .{ .ty = .{ .pointer = .{ .pointee = u8_index, .mutable = false } } };
+    const u32_ptr_key: Key = .{ .ty = .{ .pointer = .{ .pointee = u32_index, .mutable = false } } };
     const u8_ptr_index = try pool.getOrPut(u8_ptr_key);
     const u32_ptr_index = try pool.getOrPut(u32_ptr_key);
     try std.testing.expect(u8_ptr_index != u32_ptr_index);
     try std.testing.expectEqual(u8_ptr_index, try pool.getOrPut(u8_ptr_key));
     try std.testing.expectEqual(u32_ptr_index, try pool.getOrPut(u32_ptr_key));
+    const u32_ptr_key2 = pool.indexToKey(u32_ptr_index);
+    try std.testing.expectEqual(u32_ptr_key, u32_ptr_key2);
+    try std.testing.expectEqual(u32_ptr_key.hash64(), u32_ptr_key2.hash64());
+    try std.testing.expectEqual(u32_ptr_index, try pool.getOrPut(u32_ptr_key2));
 }
