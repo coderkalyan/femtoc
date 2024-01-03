@@ -53,6 +53,17 @@ pub fn fromInterned(pool: *InternPool, index: InternPool.Index) TypedValue {
     }
 }
 
+pub fn hash64(tv: TypedValue) u64 {
+    const asBytes = std.mem.asBytes;
+    const seed = @intFromEnum(tv.val);
+    var hash = std.hash.Wyhash.init(seed);
+    hash.update(asBytes(&tv.ty));
+    switch (tv.val) {
+        inline else => |data| hash.update(asBytes(&data)),
+    }
+    return hash.final();
+}
+
 pub const none: TypedValue = .{ .ty = .void_type, .val = .{ .none = {} } };
 pub const u1_false: TypedValue = .{ .ty = .u1_type, .val = .{ .integer = 0 } };
 pub const u1_true: TypedValue = .{ .ty = .u1_type, .val = .{ .integer = 1 } };

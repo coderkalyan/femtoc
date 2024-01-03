@@ -70,10 +70,9 @@ pub fn verify(context: *Context) void {
 pub fn resolveType(context: *Context, ty: Type) !c.LLVMTypeRef {
     return switch (ty) {
         .void => c.LLVMVoidTypeInContext(context.context),
-        .comptime_int,
-        .comptime_float,
-        .comptime_array,
-        => unreachable,
+        .comptime_int => unreachable,
+        .comptime_float => unreachable,
+        .comptime_array => unreachable,
         .int => |int| c.LLVMIntTypeInContext(context.context, int.width),
         .float => |float| switch (float.width) {
             32 => c.LLVMFloatTypeInContext(context.context),

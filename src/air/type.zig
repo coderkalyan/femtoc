@@ -56,6 +56,15 @@ pub const Type = union(enum) {
         };
     }
 
+    pub fn hash64(ty: Type) u64 {
+        const Hash = std.hash.Wyhash;
+        const asBytes = std.mem.asBytes;
+        const seed = @intFromEnum(ty);
+        return switch (ty) {
+            inline else => |data| return Hash.hash(seed, asBytes(&data)),
+        };
+    }
+
     pub fn maxInt(ty: Type) u64 {
         std.debug.assert(@as(std.meta.Tag(Type), ty) == .int);
         const width = ty.int.width;

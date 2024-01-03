@@ -124,8 +124,11 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
             .fpext => try self.fpext(inst),
 
             .slice_init => try self.sliceInit(inst),
+            .array_init => try self.arrayInit(inst),
             .index_ref => try self.indexRef(inst),
             .index_val => try self.indexVal(inst),
+            .slice_ptr_val => try self.slicePtrVal(inst),
+            .slice_len_val => try self.sliceLenVal(inst),
 
             .alloc => try self.alloc(inst),
             .load => try self.load(inst),
@@ -146,7 +149,6 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
             .param => try self.param(inst, @intCast(i)),
             .load_decl => {},
-            else => unreachable,
             // .slice_ptr_ref => try self.slicePtrRef(inst),
             // .slice_len_ref => try self.sliceLenRef(inst),
             // .slice_ptr_val => try self.slicePtrVal(inst),
@@ -191,13 +193,21 @@ fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
         .array => |array| {
             // llvm doesn't like immediate aggregates, so we quietly
             // store this in .data by creating an unnamed decl
-            const val = try builder.context.resolveTv(tv);
-            const global = try builder.context.addGlobal("", .{ .array = array });
-            c.LLVMSetGlobalConstant(global, 1);
-            c.LLVMSetInitializer(global, val);
-            c.LLVMSetUnnamedAddress(global, c.LLVMGlobalUnnamedAddr);
-            try self.map.put(self.arena, inst, global);
-            return global;
+            switch (self.pool.indexToType(array.element)) {
+                .comptime_int,
+                .comptime_float,
+                .comptime_array,
+                => return null,
+                else => {
+                    const val = try builder.context.resolveTv(tv);
+                    const global = try builder.context.addGlobal("", .{ .array = array });
+                    c.LLVMSetGlobalConstant(global, 1);
+                    c.LLVMSetInitializer(global, val);
+                    c.LLVMSetUnnamedAddress(global, c.LLVMGlobalUnnamedAddr);
+                    try self.map.put(self.arena, inst, global);
+                    return global;
+                },
+            }
         },
         else => unreachable, // unimplemented
     }
@@ -357,29 +367,28 @@ fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst
 }
 
 fn alloc(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-    const builder = self.builder;
     const data = self.air.insts.items(.data)[@intFromEnum(inst)].alloc;
     const ty = self.pool.indexToKey(data.slot_type).ty;
 
-    // LLVM prefers allocas to be at the beginning to participate in mem2reg optimization
+    const ref = try self.allocaInner(ty);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
+}
+
+fn allocaInner(self: *CodeGen, ty: Type) !c.LLVMValueRef {
+    const builder = self.builder;
     const prev = builder.getInsertBlock();
-    if (self.prev_alloca) |loc| {
-        // we have a previous alloca, so insert below that
-        if (c.LLVMGetNextInstruction(loc)) |next| {
-            c.LLVMPositionBuilder(builder.builder, self.entry, next);
-        } else {
-            c.LLVMPositionBuilderAtEnd(builder.builder, self.entry);
-        }
+    // LLVM prefers allocas to be at the beginning to participate in mem2reg optimization
+    const insert_loc = if (self.prev_alloca) |loc| c.LLVMGetNextInstruction(loc) else c.LLVMGetFirstInstruction(self.entry);
+    if (insert_loc) |loc| {
+        c.LLVMPositionBuilder(builder.builder, self.entry, loc);
     } else {
-        // first alloca, so position at beginning of entry
-        const first = c.LLVMGetFirstInstruction(self.entry);
-        c.LLVMPositionBuilder(builder.builder, self.entry, first);
+        builder.positionAtEnd(self.entry);
     }
+
     const ref = try builder.addAlloca(ty);
     self.prev_alloca = ref;
-    c.LLVMPositionBuilderAtEnd(builder.builder, prev);
-
-    try self.map.put(self.arena, inst, ref);
+    builder.positionAtEnd(prev);
     return ref;
 }
 
@@ -793,7 +802,7 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
             const ptr = try builder.addLoad(ptr_gep, .{ .pointer = .{ .pointee = slice_type.element } });
             const deref = try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0);
             indices = .{ deref, index };
-            const gep = try builder.addGetElementPtr(base_type, ptr, &indices);
+            const gep = try builder.addGetElementPtr(element_type, ptr, &indices);
             const access = try builder.addLoad(gep, element_type);
             try self.map.put(self.arena, inst, access);
             return access;
@@ -801,6 +810,42 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
         .many_pointer => unreachable, // TODO
         else => unreachable,
     }
+}
+
+fn slicePtrVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].slice_ptr_val;
+
+    const base = self.resolveInst(data.base);
+    const base_type = self.pool.indexToType(air.typeOf(data.base));
+    const ptr_type = self.pool.indexToType(data.ty);
+    const indices = .{
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // first element (ptr)
+    };
+    const gep = try builder.addGetElementPtr(base_type, base, &indices);
+    const access = try builder.addLoad(gep, ptr_type);
+    try self.map.put(self.arena, inst, access);
+    return access;
+}
+
+fn sliceLenVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].slice_len_val;
+
+    const base = self.resolveInst(data.base);
+    const base_type = self.pool.indexToType(air.typeOf(data.base));
+    const len_type = self.pool.indexToType(data.ty);
+    const indices = .{
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 1), // first element (len)
+    };
+    const gep = try builder.addGetElementPtr(base_type, base, &indices);
+    const access = try builder.addLoad(gep, len_type);
+    try self.map.put(self.arena, inst, access);
+    return access;
 }
 
 fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
@@ -813,7 +858,7 @@ fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const len = self.resolveInst(data.len);
     const slice_type = self.pool.indexToKey(air.typeOf(inst)).ty;
     // aggregate, so should be stored on the stack
-    const alloca = try builder.addAlloca(slice_type);
+    const alloca = try self.allocaInner(slice_type);
 
     // now insert both values in using 2x (gep + store)
     // const ptr_type = self.pool.indexToKey(slice_type.slice.element).ty;
@@ -829,6 +874,33 @@ fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     };
     gep = try builder.addGetElementPtr(slice_type, alloca, &indices);
     _ = builder.addStore(gep, len);
+
+    try self.map.put(self.arena, inst, alloca);
+    return alloca;
+}
+
+fn arrayInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const array_init = air.insts.items(.data)[@intFromEnum(inst)].array_init;
+    const slice = air.extraData(Air.Inst.ExtraSlice, array_init.elements);
+    const elements = air.extraSlice(slice);
+
+    // aggregate, so should be stored on the stack
+    const array_type = self.pool.indexToType(air.typeOf(inst));
+    const alloca = try self.allocaInner(array_type);
+
+    // insert each element with a gep + store
+    for (elements, 0..) |element, i| {
+        const val = self.resolveInst(@enumFromInt(element));
+        const indices = .{
+            try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+            try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, i), // ith element
+        };
+        const gep = try builder.addGetElementPtr(array_type, alloca, &indices);
+        c.LLVMSetIsInBounds(gep, @intFromBool(true));
+        _ = builder.addStore(gep, val);
+    }
 
     try self.map.put(self.arena, inst, alloca);
     return alloca;
@@ -872,18 +944,3 @@ fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 //     return gep;
 // }
 //
-// fn slicePtrVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-//     const air = self.air;
-//     const data = air.get(inst, .slice_ptr_val);
-//
-//     const slice = self.resolveInst(data.operand);
-//     return self.builder.addExtractValue(slice, 0);
-// }
-//
-// fn sliceLenVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-//     const air = self.air;
-//     const data = air.get(inst, .slice_ptr_val);
-//
-//     const slice = self.resolveInst(data.operand);
-//     return self.builder.addExtractValue(slice, 1);
-// }

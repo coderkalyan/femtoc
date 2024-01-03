@@ -226,10 +226,10 @@ pub const Key = union(enum) {
         const asBytes = std.mem.asBytes;
         const seed = @intFromEnum(key);
         return switch (key) {
+            .decl => |data| Hash.hash(seed, asBytes(&data)),
             inline .ty,
             .tv,
-            .decl,
-            => |data| Hash.hash(seed, asBytes(&data)),
+            => |data| return data.hash64(),
         };
     }
 
@@ -468,7 +468,7 @@ pub fn getString(pool: *InternPool, index: StringIndex) ?[:0]const u8 {
 }
 
 test "string intern" {
-    var interner = InternPool.init(std.testing.allocator);
+    var interner = try InternPool.init(std.testing.allocator);
     defer interner.deinit();
 
     try std.testing.expectEqual(interner.string_bytes.items.len, 0);
@@ -504,32 +504,32 @@ test "string intern" {
 }
 
 test "basic type intern" {
-    var pool = InternPool.init(std.testing.allocator);
+    var pool = try InternPool.init(std.testing.allocator);
     defer pool.deinit();
 
-    const u8_key = Key.initIntType(.unsigned, 8);
-    try std.testing.expectEqual(u8_key, Key{
-        .int_type = .{ .is_comptime = false, .sign = .unsigned, .width = 8 },
-    });
+    const u8_key: Key = .{ .ty = .{ .int = .{ .sign = .unsigned, .width = 8 } } };
     const u8_index = try pool.getOrPut(u8_key);
     const u8_key2 = pool.indexToKey(u8_index);
     try std.testing.expectEqual(u8_key, u8_key2);
+    try std.testing.expect(u8_key.eql(u8_key2, &pool));
+    try std.testing.expect(u8_key2.eql(u8_key, &pool));
+    try std.testing.expectEqual(u8_key.hash64(), u8_key2.hash64());
     const u8_index2 = try pool.getOrPut(u8_key2);
     try std.testing.expectEqual(u8_index, u8_index2);
 }
 
 test "pointer type intern" {
-    var pool = InternPool.init(std.testing.allocator);
+    var pool = try InternPool.init(std.testing.allocator);
     defer pool.deinit();
 
-    const u8_key = Key.initIntType(.unsigned, 8);
-    const u32_key = Key.initIntType(.unsigned, 32);
+    const u8_key: Key = .{ .ty = .{ .int = .{ .sign = .unsigned, .width = 8 } } };
+    const u32_key: Key = .{ .ty = .{ .int = .{ .sign = .unsigned, .width = 32 } } };
     const u8_index = try pool.getOrPut(u8_key);
     const u32_index = try pool.getOrPut(u32_key);
     try std.testing.expect(u8_index != u32_index);
 
-    const u8_ptr_key: Key = .{ .pointer_type = .{ .pointee = u8_index } };
-    const u32_ptr_key: Key = .{ .pointer_type = .{ .pointee = u32_index } };
+    const u8_ptr_key: Key = .{ .ty = .{ .pointer = .{ .pointee = u8_index } } };
+    const u32_ptr_key: Key = .{ .ty = .{ .pointer = .{ .pointee = u32_index } } };
     const u8_ptr_index = try pool.getOrPut(u8_ptr_key);
     const u32_ptr_index = try pool.getOrPut(u32_ptr_key);
     try std.testing.expect(u8_ptr_index != u32_ptr_index);

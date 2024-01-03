@@ -14,8 +14,7 @@
         }
     }
 
-    let tmp: u32 = 0;
-    count = tmp;
+    count = 0;
     for count < 100 {
         // if count == 50 {
             // continue;

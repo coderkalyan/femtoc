@@ -102,6 +102,11 @@ pub const Inst = union(enum) {
     slice_init: struct {
         pl: ExtraIndex,
     },
+    // initializes an array with a list of elements
+    array_init: struct {
+        ty: InternPool.Index,
+        elements: ExtraIndex,
+    },
 
     // indexes into an array, slice, or many pointer (passed by
     // reference) and returns a reference to the element
@@ -231,6 +236,8 @@ pub const Inst = union(enum) {
         len: Index,
         ty: InternPool.Index,
     };
+
+    pub const Tag = std.meta.Tag(Inst);
 };
 
 pub const Decl = struct {
@@ -317,6 +324,7 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             const data = air.extraData(Air.Inst.SliceInit, slice_init.pl);
             return data.ty;
         },
+        .array_init => |array_init| return array_init.ty,
         .index_ref => |index_ref| {
             const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
             return data.ty;

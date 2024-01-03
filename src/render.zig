@@ -384,6 +384,11 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print(")", .{});
                     try self.stream.newline();
                 },
+                .slice => |slice| {
+                    const data = fir.extraData(Fir.Inst.Slice, slice.pl);
+                    try writer.print("slice(base %{}, start %{}, end %{})", .{ @intFromEnum(data.base), @intFromEnum(data.start), @intFromEnum(data.end) });
+                    try self.stream.newline();
+                },
                 inline else => |data| {
                     try writer.print("{s}(", .{@tagName(fir.tag(inst))});
                     switch (@TypeOf(data)) {
@@ -556,17 +561,29 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try writer.print(")", .{});
                     try self.stream.newline();
                 },
-                // .array => |array| {
-                //     const slice = air.extraData(Fir.Inst.ExtraSlice, array);
-                //     const elements = air.extraSlice(slice);
-                //     try writer.print("array(", .{});
-                //     for (elements, 0..) |element, i| {
-                //         try writer.print("%{}", .{element});
-                //         if (i < elements.len - 1) try writer.print(", ", .{});
-                //     }
-                //     try writer.print(")", .{});
-                //     try self.stream.newline();
-                // },
+                .slice_init => |slice_init| {
+                    const data = air.extraData(Air.Inst.SliceInit, slice_init.pl);
+                    const ty = try self.formatInterned(data.ty);
+                    try writer.print("slice_init({s}, ptr %{}, len %{})", .{ ty, @intFromEnum(data.ptr), @intFromEnum(data.len) });
+                    try self.stream.newline();
+                },
+                .array_init => |array| {
+                    const slice = air.extraData(Air.Inst.ExtraSlice, array.elements);
+                    const elements = air.extraSlice(slice);
+                    try writer.print("array({s}", .{try self.formatInterned(array.ty)});
+                    for (elements, 0..) |element, i| {
+                        try writer.print("%{}", .{element});
+                        if (i < elements.len - 1) try writer.print(", ", .{});
+                    }
+                    try writer.print(")", .{});
+                    try self.stream.newline();
+                },
+                .index_ref => |index_ref| {
+                    const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
+                    const ty = try self.formatInterned(data.ty);
+                    try writer.print("index_ref({s}, base %{}, idx %{})", .{ ty, @intFromEnum(data.base), @intFromEnum(data.index) });
+                    try self.stream.newline();
+                },
                 inline else => |data| {
                     try writer.print("{s}(", .{@tagName(@as(std.meta.Tag(Air.Inst), air_inst))});
                     switch (@TypeOf(data)) {

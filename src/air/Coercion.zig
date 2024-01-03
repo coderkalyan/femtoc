@@ -168,9 +168,13 @@ fn array(self: *Coercion) Error!Air.Index {
     const b = self.b;
     const src_type = b.sema.tempAir().typeOf(self.src);
     const dest_type = b.pool.indexToKey(self.dest_type).ty;
+    const _src_type = b.pool.indexToType(src_type);
+    std.debug.print("coercing {} to {}\n", .{ _src_type, dest_type });
+    std.debug.print("src_type element: {} {}\n", .{ _src_type.array.element, b.pool.indexToType(_src_type.array.element) });
 
     switch (b.pool.indexToKey(src_type).ty) {
-        .comptime_array => |ty| {
+        // TODO: this might need to be thrown out
+        .array => |ty| {
             // first check that the lengths match
             if (ty.count != dest_type.array.count) {
                 return error.Truncated;
@@ -213,55 +217,71 @@ fn array(self: *Coercion) Error!Air.Index {
                 .val = .{ .array = .{ .start = elements_start, .end = elements_end } },
             } });
             return air_inst;
-            // try b.mapInst(self.src, air_inst);
-            // // try to upgrade this to a comptime known array
-            // var comptime_known = true;
-            // for (elements) |element| {
-            //     if (hg.insts.items(.tag)[element] != .constant) {
-            //         comptime_known = false;
-            //         break;
-            //     }
-            // }
-            //
-            // if (comptime_known) {
-            //     const handle_scratch_top = b.sema.scratch.items.len;
-            //     defer b.sema.scratch.shrinkRetainingCapacity(handle_scratch_top);
-            //     try b.sema.scratch.ensureUnusedCapacity(hg.arena, elements.len);
-            //
-            //     for (elements) |element| {
-            //         const element_data = hg.get(element, .constant);
-            //         b.sema.scratch.appendAssumeCapacity(element_data.val);
-            //     }
-            //     const comptime_elements = b.sema.scratch.items[handle_scratch_top..];
-            //     const value = try Value.createArray(hg.pool.arena, comptime_elements);
-            //     const new_inst = try b.add(.constant, .{
-            //         .ty = try b.addType(self.dest_type),
-            //         .val = try hg.pool.internValue(value),
-            //         .node = data.node,
-            //     });
-            //     try self.maybeReplaceWith(new_inst);
-            //     return new_inst;
-            // } else {
-            //     const new_inst = try b.addArrayInit(elements, data.node);
-            //     try self.maybeReplaceWith(new_inst);
-            //     return new_inst;
-            // }
         },
-        .array => {
-            // if the element type is comptime, and the destination type isn't,
-            // we can coerce each element over. otherwise, there's nothing to do
-            // const src_type = self.src_type.extended.cast(Type.Array).?;
-            // const dest_type = self.dest_type.extended.cast(Type.Array).?;
-            // switch (src_type.element.kind()) {
-            //     .comptime_uint, .comptime_sint, .comptime_float,
-            //     => {
-            //
-            //     },
-            //     else =>
-            // }
-            // std.debug.print("coerce array: {} {}\n", .{ src_type, dest_type });
-            unreachable;
-        },
+        // .array => |ty| {
+        //     _ = ty;
+        //     unreachable;
+        // first check that the lengths match
+        // if (ty.count != dest_type.array.count) {
+        //     return error.Truncated;
+        // }
+        //
+        // // now coerce every source element to the destination type
+        // // for (0..ty.count) |i| {
+        // //     const src = try b.addIndexVal
+        // // }
+        // const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+        // const tv = b.pool.indexToKey(src).tv;
+        // const comptime_array = tv.val.array;
+        // const src_elements = b.pool.extra.items[comptime_array.start..comptime_array.end];
+        // const scratch_top = b.sema.scratch.items.len;
+        // defer b.sema.scratch.shrinkRetainingCapacity(scratch_top);
+        // try b.sema.scratch.ensureUnusedCapacity(b.arena, src_elements.len);
+        // for (src_elements) |element| {
+        //     // TODO: can we avoid creating this temporary constant? might
+        //     // require some coercion refactoring
+        //     // for now, we add this without linking it to the block so
+        //     // it doesn't show up
+        //     const src_element = try b.sema.addConstant(b.pool.indexToKey(@enumFromInt(element)));
+        //     var coercion = Coercion{
+        //         .b = b,
+        //         .src = src_element,
+        //         .dest_type = dest_type.array.element,
+        //     };
+        //     const constant = try coercion.coerce();
+        //     // const constant: Air.Index = @enumFromInt(element);
+        //     const element_tv = b.sema.insts.get(@intFromEnum(constant)).constant;
+        //     b.sema.scratch.appendAssumeCapacity(@intFromEnum(element_tv));
+        // }
+
+        // const tvs = b.sema.scratch.items[scratch_top..];
+        // const elements_start: u32 = @intCast(b.pool.extra.items.len);
+        // try b.pool.extra.appendSlice(b.pool.gpa, tvs);
+        // const elements_end: u32 = @intCast(b.pool.extra.items.len);
+        // const air_inst = try b.addConstant(.{ .tv = .{
+        //     .ty = try b.pool.getOrPut(.{ .ty = .{ .array = .{
+        //         .element = dest_type.array.element,
+        //         .count = @intCast(src_elements.len),
+        //     } } }),
+        //     .val = .{ .array = .{ .start = elements_start, .end = elements_end } },
+        // } });
+        // return air_inst;
+        // },
+        // .array => {
+        // if the element type is comptime, and the destination type isn't,
+        // we can coerce each element over. otherwise, there's nothing to do
+        // const src_type = self.src_type.extended.cast(Type.Array).?;
+        // const dest_type = self.dest_type.extended.cast(Type.Array).?;
+        // switch (src_type.element.kind()) {
+        //     .comptime_uint, .comptime_sint, .comptime_float,
+        //     => {
+        //
+        //     },
+        //     else =>
+        // }
+        // std.debug.print("coerce array: {} {}\n", .{ src_type, dest_type });
+        //     unreachable;
+        // },
         else => return error.InvalidCoercion,
     }
 }

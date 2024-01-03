@@ -447,27 +447,59 @@ fn stringLiteral(b: *Block, inst: Fir.Index) !void {
 fn array(b: *Block, inst: Fir.Index) !void {
     const pl = b.fir.get(inst).data.array;
     const slice = b.fir.extraData(Fir.Inst.ExtraSlice, pl);
-    const elements = b.fir.extraSlice(slice);
+    const fir_elements = b.fir.extraSlice(slice);
 
-    // TODO: peer type resolution?
+    const element_types = try b.arena.alloc(Type, fir_elements.len);
     const scratch_top = b.sema.scratch.items.len;
     defer b.sema.scratch.shrinkRetainingCapacity(scratch_top);
-    try b.sema.scratch.ensureUnusedCapacity(b.arena, elements.len);
-    for (elements) |element| {
-        const constant = b.resolveInst(@enumFromInt(element));
-        const tv = b.sema.insts.get(@intFromEnum(constant)).constant;
-        b.sema.scratch.appendAssumeCapacity(@intFromEnum(tv));
+    try b.sema.scratch.ensureUnusedCapacity(b.arena, fir_elements.len);
+    for (fir_elements, 0..) |fir_element, i| {
+        const element = b.resolveInst(@enumFromInt(fir_element));
+        element_types[i] = b.pool.indexToType(b.typeOf(element));
+        b.sema.scratch.appendAssumeCapacity(@intFromEnum(element));
+    }
+    const dest_type = coercion.resolvePeerTypes(b.pool, element_types).?;
+
+    var is_constant = true;
+    const elements = b.sema.scratch.items[scratch_top..];
+    for (elements, 0..) |inner, i| {
+        // TODO: do this without emitting anything if possible
+        const dest = try coerceInnerImplicit(b, @enumFromInt(inner), dest_type);
+        elements[i] = @intFromEnum(dest);
+        if (b.sema.insts.items(.tags)[@intFromEnum(dest)] != .constant) is_constant = false;
     }
 
-    const tvs = b.sema.scratch.items[scratch_top..];
+    const dest_ip_index = try b.pool.getOrPut(.{ .ty = dest_type });
+    const array_type = try b.pool.getOrPut(.{ .ty = .{
+        .array = .{ .element = dest_ip_index, .count = @intCast(elements.len) },
+    } });
+
+    if (is_constant) {
+        // upgrade the elements from constants to typed values, and emit an array tv
+        for (elements, 0..) |constant, i| {
+            const tv = b.sema.insts.get(constant).constant;
+            elements[i] = @intFromEnum(tv);
+        }
+
+        const air_inst = try arrayConstantInner(b, array_type, elements);
+        try b.mapInst(inst, air_inst);
+    } else {
+        const air_inst = try b.add(.{ .array_init = .{
+            .ty = array_type,
+            .elements = try b.sema.addSlice(elements),
+        } });
+        try b.mapInst(inst, air_inst);
+    }
+}
+
+fn arrayConstantInner(b: *Block, ty: InternPool.Index, tvs: []u32) !Air.Index {
     const elements_start: u32 = @intCast(b.pool.extra.items.len);
     try b.pool.extra.appendSlice(b.pool.gpa, tvs);
     const elements_end: u32 = @intCast(b.pool.extra.items.len);
-    const air_inst = try b.addConstant(.{ .tv = .{
-        .ty = try b.pool.getOrPut(.{ .ty = .{ .comptime_array = .{ .count = @intCast(elements.len) } } }),
+    return b.addConstant(.{ .tv = .{
+        .ty = ty,
         .val = .{ .array = .{ .start = elements_start, .end = elements_end } },
     } });
-    try b.mapInst(inst, air_inst);
 }
 
 const builtin_types = std.ComptimeStringMap(InternPool.Index, .{
@@ -1353,8 +1385,46 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
     switch (b.pool.indexToKey(base_type).ty) {
         // reading a field from a pointer by value - emit a ref + load
         .pointer => |pointer| {
-            _ = pointer;
-            unreachable;
+            const pointee = b.pool.indexToType(pointer.pointee);
+            switch (pointee) {
+                // reading a field from a value by value - emit a val
+                .slice => |slice| {
+                    _ = slice;
+                    unreachable;
+                    // // slices only have two runtime fields - ptr and len
+                    // if (std.mem.eql(u8, field_string, "ptr")) {
+                    //     const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element } } });
+                    //     const access = try b.add(.{ .slice_ptr_val = .{
+                    //         .base = base,
+                    //         .ty = ty,
+                    //     } });
+                    //     try b.mapInst(inst, access);
+                    // } else if (std.mem.eql(u8, field_string, "len")) {
+                    //     const access = try b.add(.{ .slice_len_val = .{
+                    //         .base = base,
+                    //         .ty = .u64_type,
+                    //     } });
+                    //     try b.mapInst(inst, access);
+                    // } else {
+                    //     std.log.err("field access: no such field {s} for type slice", .{field_string});
+                    //     unreachable;
+                    // }
+                },
+                .array => |arr| {
+                    // slices only have two runtime fields - ptr and len
+                    if (std.mem.eql(u8, field_string, "len")) {
+                        const len = try b.addConstant(.{ .tv = .{
+                            .ty = .u64_type,
+                            .val = .{ .integer = arr.count },
+                        } });
+                        try b.mapInst(inst, len);
+                    } else {
+                        std.log.err("field access: no such field {s} for type array", .{field_string});
+                        unreachable;
+                    }
+                },
+                else => unreachable,
+            }
         },
         // reading a field from a value by value - emit a val
         .slice => |slice| {
