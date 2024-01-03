@@ -819,9 +819,8 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
             };
             const ptr_gep = try builder.addGetElementPtr(base_type, base, &indices);
             const ptr = try builder.addLoad(ptr_gep, .{ .pointer = .{ .pointee = slice_type.element } });
-            const deref = try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0);
-            indices = .{ deref, index };
-            const gep = try builder.addGetElementPtr(element_type, ptr, &indices);
+            var gep2_indices = .{index};
+            const gep = try builder.addGetElementPtr(element_type, ptr, &gep2_indices);
             const access = try builder.addLoad(gep, element_type);
             try self.map.put(self.arena, inst, access);
             return access;
