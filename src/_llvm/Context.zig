@@ -203,6 +203,11 @@ pub fn addConstStruct(context: *Context, vals: []c.LLVMValueRef) !c.LLVMValueRef
     return c.LLVMConstStructInContext(context.context, vals.ptr, @intCast(vals.len), 0);
 }
 
+// pub fn lookupIntrinsic(context: *Context, name: []const u8) c.LLVMValueRef {
+//     const id = c.LLVMLookupIntrinsicID(name.ptr, name.len);
+//     const decl = c.LLVMGetIntrinsicDeclaration(context.module, id,)
+// }
+
 pub const Builder = struct {
     arena: Allocator,
     context: *Context,

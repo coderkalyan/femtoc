@@ -1330,23 +1330,10 @@ fn globalVar(fg: *FirGen, s: **Scope, node: Node.Index) !Fir.Index {
 }
 
 fn assignSimple(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
-    const fg = b.fg;
     const assign = b.tree.data(node).assign_simple;
 
     const val = try valExpr(b, scope, assign.val);
-    const ptr = ptrExpr(b, scope, assign.ptr) catch |err| {
-        if (err == error.InvalidLvalue) {
-            // TODO: not really accurate?
-            // try fg.errors.append(fg.gpa, .{
-            //     .tag = .const_assign,
-            //     .token = b.tree.mainToken(node),
-            // });
-            _ = fg;
-            return error.ConstAssign;
-        } else {
-            return err;
-        }
-    };
+    const ptr = try ptrExpr(b, scope, assign.ptr);
     return b.add(.{
         .data = .{ .store = .{ .ptr = ptr, .val = val } },
         .loc = .{ .node = node },
@@ -1354,23 +1341,10 @@ fn assignSimple(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
 }
 
 fn assignBinary(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
-    const fg = b.fg;
     const assign = b.tree.data(node).assign_binary;
     const op = b.tree.mainToken(node);
 
-    const ptr = ptrExpr(b, scope, assign.ptr) catch |err| {
-        if (err == error.InvalidLvalue) {
-            // TODO: not really accurate?
-            // try fg.errors.append(fg.gpa, .{
-            //     .tag = .const_assign,
-            //     .token = b.tree.mainToken(node),
-            // });
-            _ = fg;
-            return error.ConstAssign;
-        } else {
-            return err;
-        }
-    };
+    const ptr = try ptrExpr(b, scope, assign.ptr);
     const base = try valExpr(b, scope, assign.ptr);
     const val = try valExpr(b, scope, assign.val);
     const bin = try binaryInner(b, node, op, base, val);

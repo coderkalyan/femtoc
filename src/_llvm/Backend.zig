@@ -5,6 +5,7 @@ const Type = @import("../air/type.zig").Type;
 const TypedValue = @import("../air/TypedValue.zig");
 const CodeGen = @import("CodeGen.zig");
 const Context = @import("Context.zig");
+const Scope = @import("Scope.zig");
 // const c = @cImport({
 //     @cInclude("femto_llvm.h");
 // });
@@ -62,7 +63,8 @@ pub fn generate(self: *Backend) !void {
                         .air = air,
                         .scratch = .{},
                         .map = .{},
-                        .control_flow = .{},
+                        // .control_flow = .{},
+                        .scope = undefined,
                     };
                     defer codegen.deinit();
                     try codegen.generate();

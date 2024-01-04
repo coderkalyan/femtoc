@@ -3,6 +3,7 @@ const Context = @import("Context.zig");
 const Air = @import("../air/Air.zig");
 const Type = @import("../air/type.zig").Type;
 const InternPool = @import("../InternPool.zig");
+const Scope = @import("Scope.zig");
 const Allocator = std.mem.Allocator;
 const c = Context.c;
 const ValueHandle = InternPool.ValueHandle;
@@ -15,31 +16,18 @@ pool: *InternPool,
 air: *const Air,
 scratch: std.ArrayListUnmanaged(c.LLVMValueRef),
 map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
-entry: c.LLVMBasicBlockRef = null,
-prev_alloca: c.LLVMValueRef = null,
-control_flow: std.ArrayListUnmanaged(ControlFlow),
+scope: *Scope,
 
 const Error = Allocator.Error || error{NotImplemented};
-
-const ControlFlow = union(enum) {
-    // basic blocks to jump to in a loop
-    loop: struct {
-        // points to the condition in a loop_while,
-        // and the entry in loop_forever
-        // used for "continue"
-        entry: c.LLVMBasicBlockRef,
-        // points to the loop exit
-        // used for "break"
-        exit: c.LLVMBasicBlockRef,
-    },
-    // basic blocks to jump to in an if/else statement
-};
 
 pub fn generate(self: *CodeGen) !void {
     var builder = self.builder;
 
-    self.entry = builder.appendBlock("entry");
-    builder.positionAtEnd(self.entry);
+    const entry = builder.appendBlock("entry");
+    var function_scope = Scope.Function.init(entry);
+    self.scope = &function_scope.base;
+
+    builder.positionAtEnd(entry);
     _ = try self.block(self.air.toplevel);
 }
 
@@ -78,9 +66,12 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
     const slice = air.extraData(Air.Inst.ExtraSlice, data.insts);
     const insts = air.extraSlice(slice);
 
+    // TODO: move this to block scope struct
     const after_block = self.builder.appendBlock("yield.exit");
     var yield_val: c.LLVMValueRef = null;
     var yield_jump: bool = false;
+    var block_scope = Scope.Block.init(self.scope, self.arena);
+    defer block_scope.deinit();
 
     for (insts) |i| {
         const inst: Air.Index = @enumFromInt(i);
@@ -378,6 +369,16 @@ fn alloc(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
     const ref = try self.allocaInner(ty);
     try self.map.put(self.arena, inst, ref);
+
+    // TODO: cache this
+    // const name = "llvm.lifetime.start";
+    // const id = c.LLVMLookupIntrinsicID(name.ptr, name.len);
+    // const context = self.builder.context;
+    // const params: []const c.LLVMTypeRef = &.{ c.LLVMIntTypeInContext(context.context, 64), c.LLVMPointerTypeInContext(context.context, 0) };
+    // const decl = c.LLVMGetIntrinsicDeclaration(context.module, id, @constCast(params.ptr), params.len);
+    // const decl_type = c.LLVMIntrinsicGetType(context.context, id, @constCast(params.ptr), params.len);
+    // const args: []const c.LLVMValueRef = &.{ try self.builder.addUint(Type.u64_type, ty.size(self.pool).?), ref };
+    // _ = c.LLVMBuildCall2(self.builder.builder, decl_type, decl, @constCast(args.ptr), @intCast(args.len), "");
     return ref;
 }
 
@@ -385,15 +386,16 @@ fn allocaInner(self: *CodeGen, ty: Type) !c.LLVMValueRef {
     const builder = self.builder;
     const prev = builder.getInsertBlock();
     // LLVM prefers allocas to be at the beginning to participate in mem2reg optimization
-    const insert_loc = if (self.prev_alloca) |loc| c.LLVMGetNextInstruction(loc) else c.LLVMGetFirstInstruction(self.entry);
+    const func = self.scope.resolve(.function).cast(Scope.Function).?;
+    const insert_loc = if (func.prev_alloca) |loc| c.LLVMGetNextInstruction(loc) else c.LLVMGetFirstInstruction(func.entry);
     if (insert_loc) |loc| {
-        c.LLVMPositionBuilder(builder.builder, self.entry, loc);
+        c.LLVMPositionBuilder(builder.builder, func.entry, loc);
     } else {
-        builder.positionAtEnd(self.entry);
+        builder.positionAtEnd(func.entry);
     }
 
     const ref = try builder.addAlloca(ty);
-    self.prev_alloca = ref;
+    func.prev_alloca = ref;
     builder.positionAtEnd(prev);
     return ref;
 }
@@ -594,8 +596,9 @@ fn loopWhile(self: *CodeGen, inst: Air.Index) !void {
     const entry_block = builder.appendBlock("loop.entry");
     const condition_block = builder.appendBlock("loop.cond");
     const exit_block = builder.appendBlock("loop.exit");
-    try self.control_flow.append(self.arena, .{ .loop = .{ .entry = condition_block, .exit = exit_block } });
-    defer _ = self.control_flow.pop();
+    var loop_scope = Scope.Loop.init(self.scope, condition_block, exit_block);
+    self.scope = &loop_scope.base;
+    defer self.scope = loop_scope.parent;
 
     builder.positionAtEnd(prev_block);
     builder.addBranch(condition_block);
@@ -625,8 +628,9 @@ fn loopForever(self: *CodeGen, inst: Air.Index) !void {
     const prev_block = builder.getInsertBlock();
     const entry_block = builder.appendBlock("loop.entry");
     const exit_block = builder.appendBlock("loop.exit");
-    try self.control_flow.append(self.arena, .{ .loop = .{ .entry = entry_block, .exit = exit_block } });
-    defer _ = self.control_flow.pop();
+    var loop_scope = Scope.Loop.init(self.scope, entry_block, exit_block);
+    self.scope = &loop_scope.base;
+    defer self.scope = loop_scope.parent;
 
     builder.positionAtEnd(prev_block);
     builder.addBranch(entry_block);
@@ -642,14 +646,14 @@ fn loopForever(self: *CodeGen, inst: Air.Index) !void {
 
 fn controlBreak(self: *CodeGen, inst: Air.Index) !void {
     _ = inst;
-    const loop_info = self.control_flow.items[self.control_flow.items.len - 1].loop;
-    self.builder.addBranch(loop_info.exit);
+    const loop_scope = self.scope.resolve(.loop).cast(Scope.Loop).?;
+    self.builder.addBranch(loop_scope.exit);
 }
 
 fn controlContinue(self: *CodeGen, inst: Air.Index) !void {
     _ = inst;
-    const loop_info = self.control_flow.items[self.control_flow.items.len - 1].loop;
-    self.builder.addBranch(loop_info.entry);
+    const loop_scope = self.scope.resolve(.loop).cast(Scope.Loop).?;
+    self.builder.addBranch(loop_scope.entry);
 }
 
 fn call(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
