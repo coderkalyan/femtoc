@@ -39,21 +39,28 @@ pub fn deinit(self: *Backend) void {
 pub fn generate(self: *Backend) !void {
     // first pass - forward declare
     // TODO: we can probably just have a single pass and have a "generate or get decl" function
-    var pool_iterator = self.pool.decls.iterator(0);
-    while (pool_iterator.next()) |decl| {
-        _ = try self.context.generateDecl(decl);
+    // var pool_iterator = self.pool.decls.iterator(0);
+    // while (pool_iterator.next()) |decl| {
+    //     _ = try self.context.generateDecl(decl);
+    // }
+    var decl_index: u32 = 0;
+    while (decl_index < self.pool.decls.len) : (decl_index += 1) {
+        _ = try self.context.generateDecl(@enumFromInt(decl_index));
     }
 
     // second pass - function body
-    pool_iterator = self.pool.decls.iterator(0);
-    while (pool_iterator.next()) |decl| {
+    // pool_iterator = self.pool.decls.iterator(0);
+    // while (pool_iterator.next()) |decl| {
+    decl_index = 0;
+    while (decl_index < self.pool.decls.len) : (decl_index += 1) {
+        const decl = self.pool.decls.at(decl_index);
         // search for function bodies
         if (decl.initializer) |initializer| {
             std.debug.print("{}\n", .{initializer});
             const tv = self.pool.indexToKey(initializer).tv;
             switch (tv.val) {
                 .body => |body| {
-                    const function = self.context.resolveDecl(decl);
+                    const function = self.context.resolveDecl(@enumFromInt(decl_index));
                     const air = self.pool.bodies.at(@intFromEnum(body));
                     var builder = Context.Builder.init(&self.context, function);
                     var codegen: CodeGen = .{

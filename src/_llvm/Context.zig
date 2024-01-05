@@ -16,6 +16,7 @@ arena: Allocator,
 context: c.LLVMContextRef,
 module: c.LLVMModuleRef,
 pool: *InternPool,
+decl_map: std.AutoHashMapUnmanaged(InternPool.DeclIndex, c.LLVMValueRef),
 
 pub const Error = error{
     VerificationError,
@@ -30,12 +31,14 @@ pub fn init(arena: Allocator, name: [:0]const u8, pool: *InternPool) Context {
         .context = context,
         .module = module,
         .pool = pool,
+        .decl_map = .{},
     };
 }
 
 pub fn deinit(context: *Context) void {
     c.LLVMDisposeModule(context.module);
     c.LLVMContextDispose(context.context);
+    context.decl_map.deinit(context.arena);
 }
 
 // prints to stderr
@@ -131,22 +134,35 @@ pub fn resolveTv(context: *Context, tv: TypedValue) !c.LLVMValueRef {
         .slice,
         => unreachable, // TODO
         .array => {
-            const array = tv.val.array;
-            const src_elements = context.pool.extra.items[array.start..array.end];
-            var elements = try context.arena.alloc(c.LLVMValueRef, src_elements.len);
-            for (src_elements, 0..) |src_element, i| {
-                const element_tv = context.pool.indexToKey(@enumFromInt(src_element)).tv;
-                elements[i] = try context.resolveTv(element_tv);
-            }
+            switch (tv.val) {
+                .array => |array| {
+                    const src_elements = context.pool.extra.items[array.start..array.end];
+                    var elements = try context.arena.alloc(c.LLVMValueRef, src_elements.len);
+                    for (src_elements, 0..) |src_element, i| {
+                        const element_tv = context.pool.indexToKey(@enumFromInt(src_element)).tv;
+                        elements[i] = try context.resolveTv(element_tv);
+                    }
 
-            return c.LLVMConstArray(llvm_type, elements.ptr, @intCast(elements.len));
+                    return c.LLVMConstArray(llvm_type, elements.ptr, @intCast(elements.len));
+                },
+                .string => |string| {
+                    const bytes = context.pool.getString(string).?;
+                    return c.LLVMConstStringInContext(context.context, bytes.ptr, @intCast(bytes.len), @intFromBool(false));
+                },
+                else => unreachable,
+            }
         },
     };
 }
 
-pub fn generateDecl(context: *Context, decl: *const Decl) !c.LLVMValueRef {
+// pub fn generateDecl(context: *Context, decl: *const Decl) !c.LLVMValueRef {
+pub fn generateDecl(context: *Context, decl_index: InternPool.DeclIndex) !c.LLVMValueRef {
     const pool = context.pool;
-    const name = pool.getString(decl.name.?).?;
+    const decl = pool.decls.at(@intFromEnum(decl_index));
+    const name = switch (decl.name) {
+        .named => |name| pool.getString(name).?,
+        .unnamed => "",
+    };
 
     const ty = pool.indexToKey(decl.ty).ty;
     const llvm_decl = switch (ty) {
@@ -169,6 +185,12 @@ pub fn generateDecl(context: *Context, decl: *const Decl) !c.LLVMValueRef {
         .external => c.LLVMSetLinkage(llvm_decl, c.LLVMExternalLinkage),
     }
 
+    switch (decl.name) {
+        .unnamed => c.LLVMSetUnnamedAddress(llvm_decl, c.LLVMGlobalUnnamedAddr),
+        else => {},
+    }
+
+    try context.decl_map.put(context.arena, decl_index, llvm_decl);
     return llvm_decl;
 }
 
@@ -184,15 +206,26 @@ pub fn addGlobal(context: *Context, name: [:0]const u8, ty: Type) !c.LLVMValueRe
 
 // given a decl (by index into the intern pool), returns an LLVMValueRef to that decl
 // works on both globals and functions
-pub fn resolveDecl(context: *Context, decl: *const Decl) c.LLVMValueRef {
-    // TODO: what happens when the name is unavailable
-    const name = context.pool.getString(decl.name.?).?;
-    const ty = context.pool.indexToKey(decl.ty).ty;
-    if (@as(std.meta.Tag(Type), ty) == .function) {
-        return c.LLVMGetNamedFunction(context.module, name);
-    } else {
-        return c.LLVMGetNamedGlobal(context.module, name);
-    }
+// pub fn resolveDecl(context: *Context, decl: *const Decl) c.LLVMValueRef {
+//     // TODO: what happens when the name is unavailable
+//     const name = context.pool.getString(decl.name.?).?;
+//     const ty = context.pool.indexToKey(decl.ty).ty;
+//     if (@as(std.meta.Tag(Type), ty) == .function) {
+//         return c.LLVMGetNamedFunction(context.module, name);
+//     } else {
+//         return c.LLVMGetNamedGlobal(context.module, name);
+//     }
+// }
+
+pub fn resolveDecl(context: *Context, decl_index: InternPool.DeclIndex) c.LLVMValueRef {
+    return context.decl_map.get(decl_index).?;
+    // const name = context.pool.getString(decl.name.?).?;
+    // const ty = context.pool.indexToKey(decl.ty).ty;
+    // if (@as(std.meta.Tag(Type), ty) == .function) {
+    //     return c.LLVMGetNamedFunction(context.module, name);
+    // } else {
+    //     return c.LLVMGetNamedGlobal(context.module, name);
+    // }
 }
 
 pub fn addConstString(context: *Context, string: []const u8) !c.LLVMValueRef {

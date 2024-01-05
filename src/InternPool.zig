@@ -64,6 +64,7 @@ const Tag = enum(u8) {
     float_tv,
     array_tv,
     body_tv,
+    string_tv,
 
     decl,
 };
@@ -173,6 +174,11 @@ pub const ArrayTypedValue = struct {
 pub const BodyTypedValue = struct {
     ty: Index,
     body: AirIndex,
+};
+
+pub const StringTypedValue = struct {
+    ty: Index,
+    string: StringIndex,
 };
 
 pub fn init(gpa: Allocator) !InternPool {
@@ -286,6 +292,7 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .float_tv,
         .array_tv,
         .body_tv,
+        .string_tv,
         => .{ .tv = TypedValue.fromInterned(pool, index) },
         .decl => .{ .decl = @enumFromInt(data) },
     };
@@ -433,6 +440,13 @@ fn putTypedValue(pool: *InternPool, key: Key) !void {
                 .body = body,
             });
             pool.items.appendAssumeCapacity(.{ .tag = .body_tv, .data = pl });
+        },
+        .string => |string| {
+            const pl = try pool.addExtra(StringTypedValue{
+                .ty = tv.ty,
+                .string = string,
+            });
+            pool.items.appendAssumeCapacity(.{ .tag = .string_tv, .data = pl });
         },
     }
 }

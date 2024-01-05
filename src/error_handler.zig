@@ -46,6 +46,7 @@ pub const SourceError = struct {
         unsized_type_alloc,
         const_pointer_write,
         not_indexable,
+        operator_invalid,
     };
 };
 
@@ -175,6 +176,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
                 .invalid_ref_expr => "cannot take reference to expression",
                 .const_pointer_write => "cannot modify through const pointer",
                 .not_indexable => "type does not support indexing",
+                .operator_invalid => "invalid operator for type",
             };
 
             r.stream.indent();

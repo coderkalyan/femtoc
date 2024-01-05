@@ -14,6 +14,7 @@ pub const Value = union(enum) {
     float: f64,
     array: InternPool.ExtraSlice,
     body: InternPool.AirIndex,
+    string: InternPool.StringIndex,
 };
 
 pub fn fromInterned(pool: *InternPool, index: InternPool.Index) TypedValue {
@@ -47,6 +48,13 @@ pub fn fromInterned(pool: *InternPool, index: InternPool.Index) TypedValue {
             return .{
                 .ty = body.ty,
                 .val = .{ .body = body.body },
+            };
+        },
+        .string_tv => {
+            const string = pool.extraData(InternPool.StringTypedValue, data);
+            return .{
+                .ty = string.ty,
+                .val = .{ .string = string.string },
             };
         },
         else => unreachable,

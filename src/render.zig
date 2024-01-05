@@ -454,7 +454,10 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         fn renderDecl(self: *Self, decl: *const Decl) !void {
             const writer = self.stream.writer();
 
-            const name = self.pool.getString(decl.name.?).?;
+            const name = switch (decl.name) {
+                .named => |name| self.pool.getString(name).?,
+                .unnamed => "unnamed",
+            };
             try writer.print("Air decl: {s}", .{name});
             try self.stream.newline();
             try writer.print("mutable: {}", .{decl.mutable});
@@ -655,12 +658,16 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                             break :fmt str;
                         },
                         .body => "body unimplemented",
+                        .string => |string| self.pool.getString(string).?,
                     };
                     return std.fmt.allocPrint(self.arena, "{s}({s})", .{ ty, val });
                 },
                 .decl => |decl_index| {
                     const decl = self.pool.decls.at(@intFromEnum(decl_index));
-                    return self.pool.getString(decl.name.?).?;
+                    return switch (decl.name) {
+                        .named => |name| self.pool.getString(name).?,
+                        .unnamed => "unnamed",
+                    };
                 },
             };
         }

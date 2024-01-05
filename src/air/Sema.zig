@@ -144,7 +144,7 @@ fn registerGlobal(fir: *const Fir, pool: *InternPool, globals: *GlobalMap, globa
     const decl_ip_index = try pool.getOrPut(.{ .decl = decl_index });
     const decl = pool.decls.at(@intFromEnum(decl_index));
     decl.* = .{
-        .name = global.name,
+        .name = .{ .named = global.name },
         .ty = undefined, // must be set
         .initializer = null,
         .mutable = false,
@@ -458,9 +458,45 @@ fn voidLiteral(b: *Block, inst: Fir.Index) !void {
 }
 
 fn stringLiteral(b: *Block, inst: Fir.Index) !void {
-    const string = b.fir.get(inst);
-    _ = string;
-    // TODO
+    const pool = b.pool;
+    const string_inst = b.fir.get(inst);
+    const literal = pool.getString(string_inst.data.string).?;
+    const decl_index = try pool.addOneDecl();
+    const decl_ip_index = try pool.getOrPut(.{ .decl = decl_index });
+    const decl = pool.decls.at(@intFromEnum(decl_index));
+
+    const buffer_type = try pool.getOrPutType(.{ .array = .{ .element = .u8_type, .count = @intCast(literal.len + 1) } });
+    const buffer_tv = try pool.getOrPut(.{ .tv = .{
+        .ty = buffer_type,
+        .val = .{ .string = string_inst.data.string },
+    } });
+    decl.* = .{
+        .name = .{ .unnamed = {} },
+        .ty = buffer_type,
+        .initializer = buffer_tv,
+        .mutable = false,
+        .linkage = .internal,
+    };
+
+    const ptr = try b.add(.{ .load_decl = .{
+        .ip_index = decl_ip_index,
+        .ty = buffer_type,
+    } });
+    const len = try b.add(.{ .constant = try pool.getOrPut(.{ .tv = .{
+        .ty = .u64_type,
+        .val = .{ .integer = literal.len },
+    } }) });
+    const slice_type = try b.pool.getOrPut(.{ .ty = .{
+        .slice = .{ .element = .u8_type },
+    } });
+    const pl = try b.sema.addExtra(Air.Inst.SliceInit{
+        .ptr = ptr,
+        .len = len,
+        .ty = slice_type,
+    });
+
+    const air_inst = try b.add(.{ .slice_init = .{ .pl = pl } });
+    try b.mapInst(inst, air_inst);
 }
 
 fn array(b: *Block, inst: Fir.Index) !void {
@@ -918,48 +954,60 @@ fn binaryInner(b: *Block, l: Air.Index, r: Air.Index, comptime tag: std.meta.Tag
     const rconst = b.sema.insts.items(.data)[@intFromEnum(r)].constant;
     const ltv = b.pool.indexToKey(lconst).tv;
     const rtv = b.pool.indexToKey(rconst).tv;
-    const lty = b.pool.indexToKey(ltv.ty).ty;
+    // const lty = b.pool.indexToKey(ltv.ty).ty;
     // const rty = b.pool.indexToKey(rtv.ty).ty;
 
     // at this point, we expect both types to be the same
     // so we just switch on the left one
     const result = switch (tag) {
-        .add => switch (lty) {
-            .int => |int| switch (int.sign) {
-                .unsigned => try alu.uadd(ltv.val.integer, rtv.val.integer),
-                .signed => try alu.sadd(ltv.val.integer, rtv.val.integer),
-            },
-            .float => unreachable, // big sadge, not implemented
-            else => unreachable,
-        },
-        .sub => try alu.sadd(ltv.val.integer, alu.negate(rtv.val.integer)),
-        .mul => switch (lty) {
-            .int => |int| switch (int.sign) {
-                .unsigned => try alu.umul(ltv.val.integer, rtv.val.integer),
-                .signed => try alu.smul(ltv.val.integer, rtv.val.integer),
-            },
-            .float => unreachable, // big sadge, not implemented
-            else => unreachable,
-        },
-        .div => switch (lty) {
-            .int => |int| switch (int.sign) {
-                .unsigned => try alu.udiv(ltv.val.integer, rtv.val.integer),
-                .signed => try alu.sdiv(ltv.val.integer, rtv.val.integer),
-            },
-            .float => unreachable, // big sadge, not implemented
-            else => unreachable,
-        },
-        .mod => unreachable, // not implemented
-        // .lsl => try
+        .add => @addWithOverflow(ltv.val.integer, rtv.val.integer)[0],
+        .sub => @subWithOverflow(ltv.val.integer, rtv.val.integer)[0],
+        .mul => @mulWithOverflow(ltv.val.integer, rtv.val.integer)[0],
+        .div => @divTrunc(ltv.val.integer, rtv.val.integer),
+        .mod => @rem(ltv.val.integer, rtv.val.integer),
+        .lsl => @shlWithOverflow(ltv.val.integer, rtv.val.integer)[0],
+        .lsr => unreachable, // TODO
         else => unreachable,
     };
+    // const result = switch (tag) {
+    //     .add => switch (lty) {
+    //         .int => |int| switch (int.sign) {
+    //             .unsigned => try alu.uadd(ltv.val.integer, rtv.val.integer),
+    //             .signed => try alu.sadd(ltv.val.integer, rtv.val.integer),
+    //         },
+    //         .float => unreachable, // big sadge, not implemented
+    //         else => unreachable,
+    //     },
+    //     .sub => try alu.sadd(ltv.val.integer, alu.negate(rtv.val.integer)),
+    //     .mul => switch (lty) {
+    //         .int => |int| switch (int.sign) {
+    //             .unsigned => try alu.umul(ltv.val.integer, rtv.val.integer),
+    //             .signed => try alu.smul(ltv.val.integer, rtv.val.integer),
+    //         },
+    //         .float => unreachable, // big sadge, not implemented
+    //         else => unreachable,
+    //     },
+    //     .div => switch (lty) {
+    //         .int => |int| switch (int.sign) {
+    //             .unsigned => try alu.udiv(ltv.val.integer, rtv.val.integer),
+    //             .signed => try alu.sdiv(ltv.val.integer, rtv.val.integer),
+    //         },
+    //         .float => unreachable, // big sadge, not implemented
+    //         else => unreachable,
+    //     },
+    //     .mod => unreachable, // not implemented
+    //     // .lsl => try
+    //     else => unreachable,
+    // };
 
     return b.addConstant(.{ .tv = .{
         .ty = ltv.ty,
         .val = .{ .integer = result },
     } });
 }
+
 fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Data)) !void {
+    const sema = b.sema;
     const fir = b.fir;
     const binary = fir.get(inst);
     const data = @field(binary.data, @tagName(tag));
@@ -984,16 +1032,20 @@ fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst
     };
 
     const dest_type = coercion.resolvePeerTypes(b.pool, &.{ lty, rty }).?;
+    switch (dest_type) {
+        .comptime_int, .int, .comptime_float, .float => {},
+        else => {
+            try sema.errors.append(sema.gpa, .{
+                .tag = .operator_invalid,
+                .token = sema.fir.tree.mainToken(binary.loc.node),
+            });
+            return error.HandledUserError;
+        },
+    }
     l = try coerceInnerImplicit(b, l, dest_type);
     r = try coerceInnerImplicit(b, r, dest_type);
     const new_arith = try binaryInner(b, l, r, air_tag);
     try b.mapInst(inst, new_arith);
-
-    // if (lty.kind() == .comptime_uint or lty.kind() == .comptime_sint) {
-    //     if (rty.kind() == .comptime_uint or rty.kind() == .comptime_sint) {
-    //         return b.analyzeComptimeArithmetic(b, inst);
-    //     }
-    // }
 }
 
 fn binaryCmp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Data)) !void {
@@ -1317,27 +1369,8 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
         .slice => |slice| {
             // because of the extra level of indirection, we first load the
             // slice into a temporary, and then emit an index ref on that
-            // this is potentially non-optimal because we may not need the
-            // len field to be loaded, but its a small cost and the optimizer
-            // should handle it pretty well.
-            // TODO: can we improve on this?
             const val = try b.add(.{ .load = .{ .ptr = base } });
             const ref = try b.addIndexRef(val, index, slice.element);
-            // const ptr = if (is_ref) {
-            //     unreachable;
-            // } else base: {
-            //     const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element, .mutable = false } } });
-            //     break :base try b.add(.{ .slice_ptr_val = .{
-            //         .base = base,
-            //         .ty = ty,
-            //     } });
-            // };
-            // const ref = if (is_ref) ref: {
-            //     break :ref try b.addIndexRef(base, index, arr.element);
-            // } else ref: {
-            //     const val = try b.addIndexVal(base, index);
-            //     break :ref try pushInner(b, val, false);
-            // };
             try b.mapInst(inst, ref);
         },
         .many_pointer => |ptr| {
@@ -1412,7 +1445,27 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
             const ref = try b.add(.{ .slice_init = .{ .pl = pl } });
             try b.mapInst(inst, ref);
         },
-        .slice, .many_pointer => unreachable, // unimplemented
+        .slice => |slice| {
+            const val = if (is_ref) try b.add(.{ .load = .{ .ptr = base } }) else base;
+            const ptr = try b.addIndexRef(val, start, slice.element);
+            const len = len: {
+                const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
+                const one = try b.add(.{ .constant = .u64_one });
+                const inc = try b.add(.{ .add = .{ .l = sub, .r = one } });
+                break :len inc;
+            };
+
+            const slice_type = try b.pool.getOrPut(.{ .ty = .{ .slice = slice } });
+            const pl = try b.sema.addExtra(Air.Inst.SliceInit{
+                .ptr = ptr,
+                .len = len,
+                .ty = slice_type,
+            });
+
+            const ref = try b.add(.{ .slice_init = .{ .pl = pl } });
+            try b.mapInst(inst, ref);
+        },
+        .many_pointer => unreachable, // unimplemented
         else => unreachable, // TODO: emit error
     }
 }
@@ -1518,7 +1571,7 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
             // slices only have two runtime fields - ptr and len
             if (std.mem.eql(u8, field_string, "ptr")) {
                 // TODO: should this be mutable or not
-                const ty = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = slice.element, .mutable = false } } });
+                const ty = try b.pool.getOrPut(.{ .ty = .{ .many_pointer = .{ .pointee = slice.element } } });
                 if (is_ref) base = try b.add(.{ .load = .{ .ptr = base } });
                 const access = try b.add(.{ .slice_ptr_val = .{
                     .base = base,

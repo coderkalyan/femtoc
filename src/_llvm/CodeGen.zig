@@ -45,8 +45,8 @@ fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
         .load_decl => {
             const load_decl = air.insts.items(.data)[i].load_decl;
             const decl_index = self.pool.indexToKey(load_decl.ip_index).decl;
-            const decl = self.pool.decls.at(@intFromEnum(decl_index));
-            return self.builder.context.resolveDecl(decl);
+            // const decl = self.pool.decls.at(@intFromEnum(decl_index));
+            return self.builder.context.resolveDecl(decl_index);
         },
         else => {
             // the instruction should exist

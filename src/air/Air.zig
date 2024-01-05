@@ -259,7 +259,8 @@ pub const Inst = union(enum) {
 };
 
 pub const Decl = struct {
-    name: ?InternPool.StringIndex,
+    // name: ?InternPool.StringIndex,
+    name: NamingStrategy,
     ty: InternPool.Index,
     initializer: ?InternPool.Index,
     mutable: bool,
@@ -268,6 +269,11 @@ pub const Decl = struct {
     pub const Linkage = enum {
         internal,
         external,
+    };
+
+    pub const NamingStrategy = union(enum) {
+        named: InternPool.StringIndex,
+        unnamed,
     };
 };
 

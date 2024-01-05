@@ -12,7 +12,7 @@ fn peerType(pool: *InternPool, src: Type, dest: Type) ?Type {
     // both comptime ints (make sure sign matches)
     if (src_tag == .comptime_int and dest_tag == .comptime_int) {
         if (src.comptime_int.sign != dest.comptime_int.sign) return null;
-        return src;
+        return dest;
     }
 
     // comptime int and fixed int
@@ -30,7 +30,7 @@ fn peerType(pool: *InternPool, src: Type, dest: Type) ?Type {
 
     // both comptime floats
     if (src_tag == .comptime_float and dest_tag == .comptime_float) {
-        return src;
+        return dest;
     }
 
     // comptime float and fixed float
@@ -41,6 +41,32 @@ fn peerType(pool: *InternPool, src: Type, dest: Type) ?Type {
     // both fixed floats (make sure dest is at least as large)
     if (src_tag == .float and dest_tag == .float) {
         if (src.float.width > dest.float.width) return null;
+        return dest;
+    }
+
+    // pointers to the same type, same mutability or dropping mutability
+    if (src_tag == .pointer and dest_tag == .float) {
+        if (src.pointer.pointee != dest.pointer.pointee) return null;
+        if (!src.pointer.mutable and dest.pointer.mutable) return null;
+        return dest;
+    }
+
+    // slices to the same type
+    if (src_tag == .slice and dest_tag == .slice) {
+        if (src.slice.element != dest.slice.element) return null;
+        return dest;
+    }
+
+    // many pointers to the same type
+    if (src_tag == .many_pointer and dest_tag == .many_pointer) {
+        if (src.many_pointer.pointee != dest.many_pointer.pointee) return null;
+        return dest;
+    }
+
+    // arrays to the same type and same size
+    if (src_tag == .array and dest_tag == .array) {
+        if (src.array.element != dest.array.element) return null;
+        if (src.array.count != dest.array.count) return null;
         return dest;
     }
 
