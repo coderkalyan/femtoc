@@ -1361,8 +1361,11 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
             const ref = if (is_ref) ref: {
                 break :ref try b.addIndexRef(base, index, arr.element);
             } else ref: {
-                const val = try b.addIndexVal(base, index);
-                break :ref try pushInner(b, val, false);
+                // TODO: should this case actually be used?
+                const ptr = try pushInner(b, base, false);
+                break :ref try b.addIndexRef(ptr, index, arr.element);
+                // const val = try b.addIndexVal(base, index);
+                // break :ref try pushInner(b, val, false);
             };
             try b.mapInst(inst, ref);
         },

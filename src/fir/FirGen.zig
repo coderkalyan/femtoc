@@ -884,7 +884,8 @@ fn structType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
 fn indexAccess(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
     const index_access = b.tree.data(node).subscript;
 
-    const operand = try anyExpr(b, scope, index_access.operand);
+    // const operand = try anyExpr(b, scope, index_access.operand);
+    const operand = try expr(b, scope, ri, index_access.operand);
     const index = access: {
         const inner = try valExpr(b, scope, index_access.index);
         // // TODO: actual variable length usize
