@@ -69,6 +69,10 @@ pub const Inst = struct {
             params: ExtraIndex,
             @"return": Index,
         },
+        // struct type given a set of fields
+        // struct_type: struct {
+        //     fields: ExtraIndex,
+        // },
         // yields the type of the current function body
         return_type,
         // extracts the type of a param from a function signature by index

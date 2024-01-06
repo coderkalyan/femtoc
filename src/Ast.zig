@@ -76,19 +76,24 @@ pub const Node = struct {
 
         // types
         // pointer type * to an underlying type
-        pointer: Index,
-        mut_pointer: Index,
+        pointer_type: Index,
+        mut_pointer_type: Index,
         // pointer type [*] to an underlying type
-        many_pointer: Index,
+        many_pointer_type: Index,
         // slice type [] to an underlying type
-        slice: Index,
+        slice_type: Index,
         // array type [n] to an underlying type
-        array: struct {
+        array_type: struct {
             element_type: Index,
             count_expr: Index,
         },
-        // function type
-        function: ExtraIndex,
+        // function type fn (param1: type, ...) type
+        function_type: ExtraIndex,
+        // struct type
+        struct_type: struct {
+            fields_start: ExtraIndex,
+            fields_end: ExtraIndex,
+        },
 
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
@@ -103,6 +108,8 @@ pub const Node = struct {
         // 'argc: u32'
         // main_token = name
         param: Index,
+        // struct field
+        field: Index,
 
         // literals
         // main_token = literal string
@@ -114,6 +121,11 @@ pub const Node = struct {
         // main_token = literal string
         char_literal,
         string_literal,
+        struct_literal: struct {
+            struct_type: Node.Index,
+            pl: ExtraIndex,
+        },
+        field_initializer: Node.Index,
 
         array_init: struct {
             elements_start: ExtraIndex,
@@ -143,7 +155,7 @@ pub const Node = struct {
             args_end: ExtraIndex,
         },
         // accesses an array/slice/many pointer element by index
-        index: struct {
+        subscript: struct {
             operand: Index,
             index: Index,
         },
@@ -153,7 +165,7 @@ pub const Node = struct {
         },
         // accesses a field by name (identifier)
         // main_token = '.'
-        field: Index,
+        member: Index,
 
         // declarations
         // constant declaration 'let x[: ty] = 1'

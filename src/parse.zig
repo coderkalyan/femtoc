@@ -43,7 +43,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
         .main_token = 0,
         .data = .{ .placeholder = {} },
     });
-    _ = try parser.parseModule();
+    _ = try parser.module();
 
     // copy parser results into an abstract syntax tree
     // that owns the source, token list, node list, and node extra data
@@ -112,27 +112,37 @@ const Parser = struct {
     }
 
     // eats the current token (whatever it is) and returns the index
-    fn eatCurrentToken(p: *Parser) TokenIndex {
+    fn eatCurrent(p: *Parser) TokenIndex {
         p.index += 1;
         return p.index - 1;
     }
 
-    // eats the current token if it matches a tag, and return null otherwise
-    fn eatToken(p: *Parser, tag: Token.Tag) ?TokenIndex {
+    // eats the current token if it matches a tag, and returns null otherwise
+    fn eat(p: *Parser, tag: Token.Tag) ?TokenIndex {
         if (p.token_tags[p.index] == tag) {
-            return p.eatCurrentToken();
+            return p.eatCurrent();
         } else {
             return null;
         }
     }
 
     // east the current token if it matches a tag, and errors otherwise
-    fn expectToken(p: *Parser, tag: Token.Tag) Error!TokenIndex {
-        if (p.eatToken(tag)) |token| {
+    fn expect(p: *Parser, tag: Token.Tag) Error!TokenIndex {
+        if (p.eat(tag)) |token| {
             return token;
         } else {
             return error.UnexpectedToken;
         }
+    }
+
+    inline fn current(p: *Parser) Token.Tag {
+        return p.token_tags[p.index];
+    }
+
+    // this can quite easily go out of bounds, so it should only be used
+    // after checking for the guard token (eof)
+    inline fn next(p: *Parser, offset: u32) Token.Tag {
+        return p.token_tags[p.index + offset];
     }
 
     fn addExtra(p: *Parser, extra: anytype) Allocator.Error!Node.Index {
@@ -144,6 +154,33 @@ const Parser = struct {
             p.extra.appendAssumeCapacity(@field(extra, field.name));
         }
         return len;
+    }
+
+    fn parseList(p: *Parser, comptime element: anytype, surround: struct { open: Token.Tag, close: Token.Tag }) !Node.ExtraRange {
+        _ = try p.expect(surround.open);
+
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        while (true) {
+            if (p.eat(surround.close)) |_| break;
+            const element_node = try @call(.auto, element, .{p});
+            try p.scratch.append(element_node);
+
+            if (p.current() == .comma) {
+                _ = p.eatCurrent();
+            } else if (p.current() != surround.close) {
+                return error.UnexpectedToken;
+            }
+        }
+
+        const elements = p.scratch.items[scratch_top..];
+        const extra_top = p.extra.items.len;
+        try p.extra.appendSlice(p.gpa, elements);
+        return .{
+            .start = @intCast(extra_top),
+            .end = @intCast(p.extra.items.len),
+        };
     }
 
     // TODO: refactor this into two seperate methods
@@ -223,7 +260,9 @@ const Parser = struct {
         }
     }
 
-    fn precedence(tag: Token.Tag) i32 {
+    const min_precedence: i32 = 0;
+
+    inline fn precedence(tag: Token.Tag) i32 {
         return switch (tag) {
             .k_or => 10,
             .k_and => 11,
@@ -248,11 +287,7 @@ const Parser = struct {
         };
     }
 
-    pub fn parseModule(p: *Parser) !Node.Index {
-        // each toplevel (file) may create any number of global statements
-        // so we collect the statement indices in the scratch list,
-        // append all of them to extra at the end, and return the
-        // range in extra containing those indices
+    pub fn module(p: *Parser) !Node.Index {
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -262,7 +297,7 @@ const Parser = struct {
                 .a_export,
                 .a_import,
                 .k_let,
-                => p.parseDecl() catch |err| {
+                => p.declaration() catch |err| {
                     if (err == Error.HandledUserError) {
                         while (true) {
                             // this should be cleaned up by the emitter fo the HandledUserError
@@ -279,6 +314,7 @@ const Parser = struct {
                     } else return err;
                     return;
                 },
+                .k_type => try p.parseTypeDecl(),
                 else => {
                     try p.errors.append(.{ .tag = .unexpected_tld_token, .token = p.index });
                     try consumeUntilValidTLD(p, false);
@@ -287,7 +323,7 @@ const Parser = struct {
             };
 
             try p.scratch.append(node);
-            _ = p.eatToken(.semi);
+            _ = p.eat(.semi);
         }
 
         const stmts = p.scratch.items[scratch_top..];
@@ -305,110 +341,105 @@ const Parser = struct {
         });
     }
 
-    fn expectExpr(p: *Parser) Error!Node.Index {
-        // declarations that aren't part of logical or arithmetic expressions,
-        // like string literals, function and aggregate declarations, etc,
-        // are parsed and returned here directly
-        // for everything else, we part in parsePrimaryExpr() and try to
-        // associate it with a binary companion (parseBinRExp())
-        return switch (p.token_tags[p.index]) {
-            .k_fn => p.expectFnDecl(),
-            else => {
-                const left_node = try p.parsePrimaryExpr();
-                switch (p.token_tags[p.index]) {
-                    .l_bracket => return p.expectIndex(left_node),
-                    // TODO: double dot
-                    .period => if (p.token_tags[p.index + 1] == .ident) {
-                        return p.expectField(left_node);
-                    } else {
-                        return p.parseBinRExpr(left_node, 0);
-                    },
-                    else => return p.parseBinRExpr(left_node, 0),
-                }
-            },
-        };
+    // expression parsing
+    fn expression(p: *Parser) Error!Node.Index {
+        const expr = try p.unary(true);
+        return p.associateBinary(expr, min_precedence);
     }
 
-    fn parsePrimaryExpr(p: *Parser) Error!Node.Index {
-        // parses an elementary expression such as a literal,
-        // variable value, function call, or parentheses
-        return switch (p.token_tags[p.index]) {
-            .l_paren => node: {
-                // even though parentheses aren't necessary due to the ast
-                // being nested, they are added to facilitate 1-1 mapping between
-                // source and ast for tooling and testing
-                const l_paren_token = try p.expectToken(.l_paren);
-                const inner_node = try p.expectExpr();
-                _ = try p.expectToken(.r_paren);
+    fn primary(p: *Parser, accept_l_brace: bool) Error!Node.Index {
+        return switch (p.current()) {
+            // even though parentheses aren't necessary due to the ast
+            // being nested, they are added to facilitate 1-1 mapping between
+            // source and ast for tooling and testing
+            .l_paren => {
+                const l_paren_token = try p.expect(.l_paren);
+                const inner_node = try p.expression();
+                _ = try p.expect(.r_paren);
 
-                break :node p.addNode(.{
+                return p.addNode(.{
                     .main_token = l_paren_token,
                     .data = .{ .paren = inner_node },
                 });
             },
-            .ident => switch (p.token_tags[p.index + 1]) {
-                .l_paren => p.expectCall(try p.expectIdent()),
-                else => p.expectIdent(),
-            },
-            .int_lit => expr: {
+            .ident => if (accept_l_brace and p.next(1) == .l_brace) p.structLiteral() else p.identifier(),
+            // const ident = try p.identifier();
+            // return switch (p.current()) {
+            //     .l_paren => p.call(ident),
+            //     .period => p.member(ident),
+            //     .l_bracket => return p.subscript(ident),
+            //     .l_brace => {
+            //         if (accept_l_brace) {
+            //             return p.structLiteral(ident);
+            //         } else {
+            //             return ident;
+            //         }
+            //     },
+            //     else => ident,
+            // };
+            // },
+            .k_fn => p.expectFnDecl(),
+            // switch (p.token_tags[p.index + 1]) {
+            //     .l_paren => p.call(try p.identifier()),
+            //     else => p.identifier(),
+            // },
+            .int_lit => {
                 const literal = p.addNode(.{
-                    .main_token = try p.expectToken(.int_lit),
+                    .main_token = p.eatCurrent(),
                     .data = .{
                         .integer_literal = p.integers[p.int_index],
                     },
                 });
                 p.int_index += 1;
-                break :expr literal;
+                return literal;
             },
             .float_lit => p.addNode(.{
-                .main_token = try p.expectToken(.float_lit),
-                .data = .{
-                    .float_literal = {},
-                },
+                .main_token = p.eatCurrent(),
+                .data = .{ .float_literal = {} },
             }),
             .k_true => p.addNode(.{
-                .main_token = try p.expectToken(.k_true),
+                .main_token = p.eatCurrent(),
                 .data = .{ .bool_literal = {} },
             }),
             .k_false => p.addNode(.{
-                .main_token = try p.expectToken(.k_false),
+                .main_token = p.eatCurrent(),
                 .data = .{ .bool_literal = {} },
             }),
             .char_lit => p.addNode(.{
-                .main_token = p.eatCurrentToken(),
+                .main_token = p.eatCurrent(),
                 .data = .{ .char_literal = {} },
             }),
             .str_lit => p.addNode(.{
-                .main_token = p.eatCurrentToken(),
+                .main_token = p.eatCurrent(),
                 .data = .{ .string_literal = {} },
             }),
-            .l_bracket => p.expectArrayInit(),
+            .l_bracket => p.arrayLiteral(),
             .l_brace => p.expectBlock(),
-            .k_if => p.parseConditional(),
-            .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
-                .main_token = try p.expectToken(p.token_tags[p.index]),
-                .data = .{ .unary = try p.parsePrimaryExpr() },
-            }),
+            .k_if => p.branch(),
+            // .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
+            //     .main_token = try p.expect(p.token_tags[p.index]),
+            //     .data = .{ .unary = try p.primary(true) },
+            // }),
             else => return Error.UnexpectedToken,
         };
     }
 
-    fn parseBinRExpr(p: *Parser, l: Node.Index, expr_precedence: i32) !Node.Index {
+    fn associateBinary(p: *Parser, l: Node.Index, expr_precedence: i32) !Node.Index {
         // tries to associate an existing "left side" node with a right side
         // in one or more binary expressions - operator precedence parsing
         var l_node = l;
         while (true) {
-            const prec = Parser.precedence(p.token_tags[p.index]);
+            const prec = precedence(p.current());
             if (prec < expr_precedence) {
                 return l_node;
             }
 
-            const op_token = try p.expectToken(p.token_tags[p.index]);
-            var r_node = try p.parsePrimaryExpr();
+            const op_token = p.eatCurrent();
+            var r_node = try p.unary(false);
 
-            const next_prec = Parser.precedence(p.token_tags[p.index]);
+            const next_prec = precedence(p.current());
             if (prec < next_prec) {
-                r_node = try p.parseBinRExpr(r_node, prec + 1);
+                r_node = try p.associateBinary(r_node, prec + 1);
             }
 
             l_node = try p.addNode(.{
@@ -421,31 +452,65 @@ const Parser = struct {
         }
     }
 
+    fn postfix(p: *Parser, accept_l_brace: bool) Error!Node.Index {
+        var expr = try p.primary(accept_l_brace);
+
+        while (true) {
+            expr = switch (p.current()) {
+                // handles both subscript and slice, since we can't
+                // yet predict far enough to know which it is
+                .l_bracket => try p.subscript(expr),
+                .period => try p.member(expr),
+                .l_paren => try p.call(expr),
+                else => return expr,
+            };
+        }
+    }
+
+    fn unary(p: *Parser, accept_l_brace: bool) Error!Node.Index {
+        switch (p.current()) {
+            .minus,
+            .bang,
+            .tilde,
+            .ampersand,
+            .asterisk,
+            => {
+                const unary_token = p.eatCurrent();
+                const expr = try p.unary(accept_l_brace);
+                return p.addNode(.{
+                    .main_token = unary_token,
+                    .data = .{ .unary = expr },
+                });
+            },
+            else => return p.postfix(accept_l_brace),
+        }
+    }
+
     // identifier used as an expression (like a variable or type name)
     // expressions that need an identifier, like a decl or struct init,
     // just use main_token
-    fn expectIdent(p: *Parser) !Node.Index {
-        const ident_token = try p.expectToken(.ident);
+    fn identifier(p: *Parser) !Node.Index {
+        const ident_token = try p.expect(.ident);
         return p.addNode(.{
             .main_token = ident_token,
             .data = .{ .ident = {} },
         });
     }
 
-    fn expectArrayInit(p: *Parser) !Node.Index {
-        const l_bracket_token = try p.expectToken(.l_bracket);
+    fn arrayLiteral(p: *Parser) !Node.Index {
+        const l_bracket_token = try p.expect(.l_bracket);
 
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
         while (true) {
-            if (p.eatToken(.r_bracket)) |_| break;
-
-            const element_node = try p.expectExpr();
+            if (p.eat(.r_bracket) != null) break;
+            const element_node = try p.expression();
             try p.scratch.append(element_node);
-            switch (p.token_tags[p.index]) {
-                .comma => _ = p.eatToken(.comma), // we tolerate a trailing comma
+
+            switch (p.current()) {
+                .comma => _ = p.eatCurrent(),
                 .r_bracket => {},
-                else => return Error.UnexpectedToken,
+                else => return error.UnexpectedToken,
             }
         }
 
@@ -461,25 +526,65 @@ const Parser = struct {
         });
     }
 
-    fn expectIndex(p: *Parser, operand: Node.Index) Error!Node.Index {
-        const l_bracket_token = try p.expectToken(.l_bracket);
-        const index = try p.expectExpr();
+    fn structLiteral(p: *Parser) Error!Node.Index {
+        const start_token = p.index;
+        const type_node = try p.identifier(); // TODO: this should be a proper type expression
 
-        if (p.token_tags[p.index] == .period_period) {
-            return p.expectGetSlice(l_bracket_token, operand, index);
-        }
-        _ = try p.expectToken(.r_bracket);
+        const fields = try p.parseList(fieldInitializer, .{ .open = .l_brace, .close = .r_brace });
+        const pl = try p.addExtra(fields);
 
         return p.addNode(.{
-            .main_token = l_bracket_token,
-            .data = .{ .index = .{ .operand = operand, .index = index } },
+            .main_token = start_token,
+            .data = .{ .struct_literal = .{ .struct_type = type_node, .pl = pl } },
         });
     }
 
-    fn expectGetSlice(p: *Parser, token: TokenIndex, op: Node.Index, start: Node.Index) Error!Node.Index {
-        _ = try p.expectToken(.period_period);
-        const end = try p.expectExpr();
-        _ = try p.expectToken(.r_bracket);
+    // .field = value
+    fn fieldInitializer(p: *Parser) !Node.Index {
+        var err = false;
+
+        _ = try p.expect(.period);
+        const ident_token = p.expect(.ident) catch token: {
+            try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
+            err = true;
+            break :token undefined;
+        };
+
+        _ = try p.expect(.equal);
+
+        const initializer = p.expression() catch node: {
+            try p.errors.append(.{ .tag = .missing_expression, .token = p.index });
+            err = true;
+            break :node undefined;
+        };
+
+        if (err) return error.HandledUserError;
+        return p.addNode(.{
+            .main_token = ident_token,
+            .data = .{ .field_initializer = initializer },
+        });
+    }
+
+    // operand[index]
+    fn subscript(p: *Parser, operand: Node.Index) Error!Node.Index {
+        const l_bracket_token = try p.expect(.l_bracket);
+        const index = try p.expression();
+        if (p.current() == .period_period) {
+            return p.slice(l_bracket_token, operand, index);
+        }
+        _ = try p.expect(.r_bracket);
+
+        return p.addNode(.{
+            .main_token = l_bracket_token,
+            .data = .{ .subscript = .{ .operand = operand, .index = index } },
+        });
+    }
+
+    // operand[start .. end]
+    fn slice(p: *Parser, token: TokenIndex, op: Node.Index, start: Node.Index) Error!Node.Index {
+        _ = try p.expect(.period_period);
+        const end = try p.expression();
+        _ = try p.expect(.r_bracket);
 
         const pl = try p.addExtra(Node.GetSlice{
             .start = start,
@@ -491,133 +596,121 @@ const Parser = struct {
         });
     }
 
-    fn expectField(p: *Parser, operand: Node.Index) Error!Node.Index {
-        const dot_token = try p.expectToken(.period);
-        _ = try p.expectToken(.ident);
+    // operand.member
+    fn member(p: *Parser, operand: Node.Index) Error!Node.Index {
+        const dot_token = try p.expect(.period);
+        _ = try p.expect(.ident);
 
         return p.addNode(.{
             .main_token = dot_token,
-            .data = .{ .field = operand },
+            .data = .{ .member = operand },
         });
     }
 
-    fn expectArgList(p: *Parser) !Node.ExtraRange {
-        _ = try p.expectToken(.l_paren);
-
-        // since each argument may create arbitrarily many nodes
-        // (arguments can be inline exprsesions),
-        // we collect the toplevel argument indices in the scratch list,
-        // append all of them to extra at the end, and return the
-        // range in extra containing those indices
-        const scratch_top = p.scratch.items.len;
-        defer p.scratch.shrinkRetainingCapacity(scratch_top);
-
-        while (true) {
-            if (p.eatToken(.r_paren)) |_| break;
-            const arg_node = try p.expectExpr();
-            try p.scratch.append(arg_node);
-            switch (p.token_tags[p.index]) {
-                .comma => _ = p.eatToken(.comma),
-                .r_paren => {},
-                else => return error.UnexpectedToken,
-            }
-        }
-
-        const params = p.scratch.items[scratch_top..];
-        const extra_top = p.extra.items.len;
-        try p.extra.appendSlice(p.gpa, params);
-        return Node.ExtraRange{
-            .start = @intCast(extra_top),
-            .end = @intCast(p.extra.items.len),
-        };
+    inline fn typeExpression(p: *Parser) !Node.Index {
+        return p.postfixType();
     }
 
-    fn expectType(p: *Parser) Error!Node.Index {
-        // parses a type as either an named identifier (u32, Point),
-        // function prototype, or aggregate prototype
-        var inner = switch (p.token_tags[p.index]) {
-            // .k_struct => p.parseStructProto(),
-            .k_fn => try p.expectFnType(),
+    fn postfixType(p: *Parser) Error!Node.Index {
+        var expr = try p.primaryType();
+
+        while (true) {
+            expr = switch (p.current()) {
+                .asterisk => try p.pointerType(expr),
+                .l_bracket => switch (p.next(1)) {
+                    .r_bracket => try p.sliceType(expr),
+                    .asterisk => try p.manyPointerType(expr),
+                    .eof => return expr,
+                    else => try p.arrayType(expr),
+                },
+                else => return expr,
+            };
+        }
+    }
+
+    fn primaryType(p: *Parser) Error!Node.Index {
+        return switch (p.current()) {
+            // even though parentheses aren't necessary due to the ast
+            // being nested, they are added to facilitate 1-1 mapping between
+            // source and ast for tooling and testing
+            .l_paren => {
+                const l_paren_token = try p.expect(.l_paren);
+                const inner_node = try p.typeExpression();
+                _ = try p.expect(.r_paren);
+
+                return p.addNode(.{
+                    .main_token = l_paren_token,
+                    .data = .{ .paren = inner_node },
+                });
+            },
+            .k_struct => try p.structType(),
+            .k_fn => try p.functionType(),
             .ident => node: {
-                const ident_token = try p.expectToken(.ident);
+                const ident_token = try p.expect(.ident);
                 break :node try p.addNode(.{
                     .main_token = ident_token,
                     .data = .{ .ident = {} },
                 });
-            },
-            .l_paren => node: {
-                // parentheses are used only for grouping in source code,
-                // and don't generate ast nodes since the ast nesting itself
-                // provides the correct grouping
-                _ = try p.expectToken(.l_paren);
-                const inner_node = try p.expectType();
-                _ = try p.expectToken(.r_paren);
-
-                break :node inner_node;
             },
             else => {
                 std.debug.print("{}\n", .{p.token_tags[p.index]});
                 return Error.UnexpectedToken;
             },
         };
+    }
 
-        while (true) {
-            inner = switch (p.token_tags[p.index]) {
-                .asterisk => node: {
-                    const asterisk_token = p.eatToken(.asterisk).?;
-                    if (p.eatToken(.k_mut)) |_| {
-                        break :node try p.addNode(.{
-                            .main_token = asterisk_token,
-                            .data = .{ .mut_pointer = inner },
-                        });
-                    } else {
-                        break :node try p.addNode(.{
-                            .main_token = asterisk_token,
-                            .data = .{ .pointer = inner },
-                        });
-                    }
-                },
-                .l_bracket => node: {
-                    const l_bracket_token = p.eatCurrentToken();
-                    switch (p.token_tags[p.index]) {
-                        .r_bracket => {
-                            // slice
-                            _ = p.eatCurrentToken();
-                            break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
-                                .slice = inner,
-                            } });
-                        },
-                        .asterisk => {
-                            // many pointer
-                            _ = p.eatCurrentToken();
-                            _ = try p.expectToken(.r_bracket);
-                            break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
-                                .many_pointer = inner,
-                            } });
-                        },
-                        else => {
-                            // array
-                            const count_expr = try p.expectExpr();
-                            _ = try p.expectToken(.r_bracket);
-                            break :node try p.addNode(.{ .main_token = l_bracket_token, .data = .{
-                                .array = .{ .element_type = inner, .count_expr = count_expr },
-                            } });
-                        },
-                    }
-                },
-                else => return inner,
-            };
+    fn pointerType(p: *Parser, ty: Node.Index) !Node.Index {
+        const asterisk_token = try p.expect(.asterisk);
+        if (p.eat(.k_mut) != null) {
+            return p.addNode(.{
+                .main_token = asterisk_token,
+                .data = .{ .mut_pointer_type = ty },
+            });
+        } else {
+            return p.addNode(.{
+                .main_token = asterisk_token,
+                .data = .{ .pointer_type = ty },
+            });
         }
     }
 
-    fn expectFnType(p: *Parser) !Node.Index {
-        const fn_token = try p.expectToken(.k_fn);
-        const params = try p.expectParamList();
-        if (p.expectType()) |return_ty| {
+    fn sliceType(p: *Parser, ty: Node.Index) !Node.Index {
+        const l_bracket_token = try p.expect(.l_bracket);
+        _ = try p.expect(.r_bracket);
+        return p.addNode(.{
+            .main_token = l_bracket_token,
+            .data = .{ .slice_type = ty },
+        });
+    }
+
+    fn manyPointerType(p: *Parser, ty: Node.Index) !Node.Index {
+        const l_bracket_token = try p.expect(.l_bracket);
+        _ = try p.expect(.asterisk);
+        _ = try p.expect(.r_bracket);
+        return p.addNode(.{
+            .main_token = l_bracket_token,
+            .data = .{ .many_pointer_type = ty },
+        });
+    }
+
+    fn arrayType(p: *Parser, ty: Node.Index) !Node.Index {
+        const l_bracket_token = try p.expect(.l_bracket);
+        const count = try p.expression();
+        _ = try p.expect(.r_bracket);
+        return p.addNode(.{
+            .main_token = l_bracket_token,
+            .data = .{ .array_type = .{ .element_type = ty, .count_expr = count } },
+        });
+    }
+
+    fn functionType(p: *Parser) !Node.Index {
+        const fn_token = try p.expect(.k_fn);
+        const params = try p.parseList(param, .{ .open = .l_paren, .close = .r_paren });
+        if (p.typeExpression()) |return_ty| {
             return p.addNode(.{
                 .main_token = fn_token,
                 .data = .{
-                    .function = try p.addExtra(Node.FnSignature{
+                    .function_type = try p.addExtra(Node.FnSignature{
                         .params_start = params.start,
                         .params_end = params.end,
                         .return_ty = return_ty,
@@ -633,11 +726,25 @@ const Parser = struct {
         }
     }
 
+    fn structType(p: *Parser) !Node.Index {
+        const struct_token = try p.expect(.k_struct);
+        const fields = try p.parseList(expectStructField, .{ .open = .l_brace, .close = .r_brace });
+        return p.addNode(.{
+            .main_token = struct_token,
+            .data = .{
+                .struct_type = .{
+                    .fields_start = fields.start,
+                    .fields_end = fields.end,
+                },
+            },
+        });
+    }
+
     fn expectFnDecl(p: *Parser) !Node.Index {
-        const fn_token = try p.expectToken(.k_fn);
-        const params = try p.expectParamList();
-        // const return_ty = try p.expectType();
-        if (p.expectType()) |return_ty| {
+        const fn_token = try p.expect(.k_fn);
+        const params = try p.parseList(param, .{ .open = .l_paren, .close = .r_paren });
+        // const return_ty = try p.typeExpression();
+        if (p.typeExpression()) |return_ty| {
             // const body = try p.expectBlock();
             if (p.expectBlock()) |body| {
                 return p.addNode(.{
@@ -676,72 +783,21 @@ const Parser = struct {
         }
     }
 
-    fn expectParamList(p: *Parser) Error!Node.ExtraRange {
-        _ = try p.expectToken(.l_paren);
-
-        // since each parameter may create multiple nodes (depending on type complexity)
-        // we collect the toplevel parameter indices in the scratch list,
-        // append all of them to extra at the end, and return the
-        // range in extra containing those indices
-        const scratch_top = p.scratch.items.len;
-        defer p.scratch.shrinkRetainingCapacity(scratch_top);
-
-        while (true) {
-            if (p.eatToken(.r_paren)) |_| break;
-
-            if (p.expectParam()) |param_node| {
-                try p.scratch.append(param_node);
-                switch (p.token_tags[p.index]) {
-                    .comma => _ = p.eatToken(.comma),
-                    .r_paren => {},
-                    else => return Error.UnexpectedToken,
-                }
-            } else |err| {
-                switch (err) {
-                    error.HandledUserError => {
-                        // eat until we're just left with an closing parenthesis or another comma to try and parse that arg
-                        while (true) {
-                            switch (p.token_tags[p.index]) {
-                                .comma => {
-                                    _ = p.eatToken(.comma);
-                                    break;
-                                },
-                                .r_paren => break,
-                                else => return Error.UnexpectedToken,
-                            }
-                            p.index += 1;
-                        }
-                        continue;
-                    },
-                    else => return err,
-                }
-            }
-        }
-
-        const params = p.scratch.items[scratch_top..];
-        const extra_top = p.extra.items.len;
-        try p.extra.appendSlice(p.gpa, params);
-        return Node.ExtraRange{
-            .start = @intCast(extra_top),
-            .end = @intCast(p.extra.items.len),
-        };
-    }
-
-    fn expectParam(p: *Parser) !Node.Index {
+    fn param(p: *Parser) !Node.Index {
         var err = false;
-        const ident_token = p.expectToken(.ident) catch token: {
+        const ident_token = p.expect(.ident) catch token: {
             // We're missing an identifier flag it
             try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
             err = true;
             break :token undefined;
         };
 
-        _ = p.expectToken(.colon) catch {
+        _ = p.expect(.colon) catch {
             // We're missing a colon flag it
             try p.errors.append(.{ .tag = .missing_colon, .token = p.index });
             err = true;
         };
-        const type_node = p.expectType() catch node: {
+        const type_node = p.typeExpression() catch node: {
             // We're missing a type annotation
             try p.errors.append(.{ .tag = .missing_type_annotation, .token = p.index });
             err = true;
@@ -755,35 +811,50 @@ const Parser = struct {
         });
     }
 
-    // parses a type declaration (type Point = ...)
-    fn expectTypeDecl(self: *Parser) !Node.Index {
-        const type_token = try self.expectToken(.k_type);
-        _ = try self.expectToken(.ident); // not stored, (main_token == type_token) + 1
-        _ = try self.expectToken(.equal);
-        const type_node = try self.expectType();
+    fn expectStructField(p: *Parser) !Node.Index {
+        var err = false;
+        const ident_token = p.expect(.ident) catch token: {
+            // We're missing an identifier flag it
+            try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
+            err = true;
+            break :token undefined;
+        };
 
-        return self.addNode(.{
-            .main_token = type_token,
-            .data = .{ .type_decl = type_node },
+        _ = p.expect(.colon) catch {
+            // We're missing a colon flag it
+            try p.errors.append(.{ .tag = .missing_colon, .token = p.index });
+            err = true;
+        };
+        const type_node = p.typeExpression() catch node: {
+            // We're missing a type annotation
+            try p.errors.append(.{ .tag = .missing_type_annotation, .token = p.index });
+            err = true;
+            break :node undefined;
+        };
+
+        if (err) return error.HandledUserError;
+        return p.addNode(.{
+            .main_token = ident_token,
+            .data = .{ .field = type_node },
         });
     }
 
-    // parses a distinct type declaration (distinct type Point = ...)
-    fn expectDistinctTypeDecl(self: *Parser) !Node.Index {
-        const distinct_token = try self.expectToken(.k_distinct);
-        _ = try self.expectToken(.k_type);
-        _ = try self.expectToken(.ident); // not stored, (main_token == distinct_token) + 2
-        _ = try self.expectToken(.equal);
-        const type_node = try self.expectType();
-
-        return self.addNode(.{
-            .main_token = distinct_token,
-            .data = .{ .distinct_type_decl = type_node },
-        });
-    }
+    // // parses a distinct type declaration (distinct type Point = ...)
+    // fn expectDistinctTypeDecl(self: *Parser) !Node.Index {
+    //     const distinct_token = try self.expect(.k_distinct);
+    //     _ = try self.expect(.k_type);
+    //     _ = try self.expect(.ident); // not stored, (main_token == distinct_token) + 2
+    //     _ = try self.expect(.equal);
+    //     const type_node = try self.typeExpression();
+    //
+    //     return self.addNode(.{
+    //         .main_token = distinct_token,
+    //         .data = .{ .distinct_type_decl = type_node },
+    //     });
+    // }
 
     fn expectBlock(p: *Parser) !Node.Index {
-        const l_brace_token = try p.expectToken(.l_brace);
+        const l_brace_token = try p.expect(.l_brace);
 
         // since each block may create an arbitrary number of statements,
         // we collect the toplevel statement indices in the scratch list,
@@ -793,8 +864,8 @@ const Parser = struct {
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
-            if (p.eatToken(.r_brace)) |_| break;
-            if (p.parseStatement()) |stmt_node| {
+            if (p.eat(.r_brace)) |_| break;
+            if (p.statement()) |stmt_node| {
                 try p.scratch.append(stmt_node);
             } else |err| switch (err) {
                 error.HandledUserError => continue,
@@ -815,18 +886,18 @@ const Parser = struct {
         });
     }
 
-    fn parseStatement(p: *Parser) Error!Node.Index {
+    fn statement(p: *Parser) Error!Node.Index {
         const node = switch (p.token_tags[p.index]) {
-            .k_let => p.parseDecl(),
-            .k_if => p.parseConditional(),
-            .k_for => p.parseLoop(),
-            .k_type => p.expectTypeDecl(),
-            .k_distinct => p.expectDistinctTypeDecl(),
-            .k_return => p.expectReturn(),
-            .k_yield => p.expectYield(),
-            .k_break => p.expectBreak(),
+            .k_let => p.declaration(),
+            .k_if => p.branch(),
+            .k_for => p.loop(),
+            .k_type => p.parseTypeDecl(),
+            // .k_distinct => p.expectDistinctTypeDecl(),
+            .k_return => p.ret(),
+            .k_yield => p.yield(),
+            .k_break => p.brk(),
             else => node: {
-                const expr = try p.expectExpr();
+                const expr = try p.expression();
                 break :node switch (p.token_tags[p.index]) {
                     .equal,
                     .plus_equal,
@@ -839,7 +910,7 @@ const Parser = struct {
                     .caret_equal,
                     .l_angle_l_angle_equal,
                     .r_angle_r_angle_equal,
-                    => p.parseAssignment(expr),
+                    => p.assignment(expr),
                     else => {
                         if (p.nodes.items(.data)[expr] == .call) {
                             // function calls can exist on their own
@@ -858,12 +929,13 @@ const Parser = struct {
             },
         };
 
-        _ = p.eatToken(.semi);
+        _ = p.eat(.semi);
         return node;
     }
 
-    fn expectCall(p: *Parser, ptr: Node.Index) !Node.Index {
-        const args_range = try p.expectArgList();
+    fn call(p: *Parser, ptr: Node.Index) !Node.Index {
+        // const args_range = try p.argumentList();
+        const args_range = try p.parseList(expression, .{ .open = .l_paren, .close = .r_paren });
 
         return p.addNode(.{
             .main_token = undefined,
@@ -875,11 +947,11 @@ const Parser = struct {
         });
     }
 
-    fn parseAssignment(p: *Parser, ptr: Node.Index) !Node.Index {
-        switch (p.token_tags[p.index]) {
+    fn assignment(p: *Parser, ptr: Node.Index) !Node.Index {
+        switch (p.current()) {
             .equal => {
-                const equal_token = try p.expectToken(.equal);
-                const val = try p.expectExpr();
+                const equal_token = try p.expect(.equal);
+                const val = try p.expression();
                 return p.addNode(.{
                     .main_token = equal_token,
                     .data = .{ .assign_simple = .{ .ptr = ptr, .val = val } },
@@ -893,8 +965,8 @@ const Parser = struct {
             .l_angle_l_angle_equal,
             .r_angle_r_angle_equal,
             => {
-                const operator_token = p.eatToken(p.token_tags[p.index]).?;
-                const val = try p.expectExpr();
+                const operator_token = p.eatCurrent();
+                const val = try p.expression();
                 return p.addNode(.{
                     .main_token = operator_token,
                     .data = .{ .assign_binary = .{ .ptr = ptr, .val = val } },
@@ -910,7 +982,7 @@ const Parser = struct {
         }
     }
 
-    fn parseDecl(p: *Parser) !Node.Index {
+    fn declaration(p: *Parser) !Node.Index {
         const scratch_top = p.scratch.items.len;
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -918,21 +990,21 @@ const Parser = struct {
             const attr = switch (p.token_tags[p.index]) {
                 inline .a_export,
                 .a_import,
-                => |tag| try p.parseAttr(tag),
+                => |tag| try p.attribute(tag),
                 else => break,
             };
             try p.scratch.append(attr);
         }
 
-        const let_token = try p.expectToken(.k_let);
+        const let_token = try p.expect(.k_let);
         var is_mut = false;
         if (p.token_tags[p.index] == .k_mut) {
-            _ = p.eatCurrentToken();
+            _ = p.eatCurrent();
             is_mut = true;
         }
 
         switch (p.token_tags[p.index]) {
-            .ident => _ = p.eatCurrentToken(),
+            .ident => _ = p.eatCurrent(),
             .k_use,
             .k_as,
             .k_fn,
@@ -958,22 +1030,22 @@ const Parser = struct {
             .k_false,
             => {
                 try p.errors.append(.{ .tag = .shadows_keyword, .token = p.index });
-                _ = p.eatCurrentToken();
+                _ = p.eatCurrent();
             },
             else => try p.errors.append(.{ .tag = .missing_identifier, .token = p.index }),
         }
-        const type_annotation = if (p.eatToken(.colon) == null) 0 else try p.expectType();
+        const type_annotation = if (p.eat(.colon) == null) 0 else try p.typeExpression();
 
         var is_definition = true;
         switch (p.token_tags[p.index]) {
-            .equal => _ = p.eatCurrentToken(),
+            .equal => _ = p.eatCurrent(),
             .semi => is_definition = false,
             else => try p.errors.append(.{ .tag = .missing_equals, .token = p.index }),
         }
 
         var rvalue: Node.Index = 0;
         if (is_definition) {
-            if (p.expectExpr()) |val| {
+            if (p.expression()) |val| {
                 rvalue = val;
             } else |err| switch (err) {
                 Error.UnexpectedToken => {
@@ -1026,64 +1098,91 @@ const Parser = struct {
         }
     }
 
-    fn expectReturn(p: *Parser) !Node.Index {
-        const ret_token = try p.expectToken(.k_return);
-        const return_val = if (p.token_tags[p.index] == .semi) null_node else try p.expectExpr();
+    fn parseTypeDecl(p: *Parser) !Node.Index {
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        const type_token = try p.expect(.k_type);
+
+        switch (p.token_tags[p.index]) {
+            .ident => _ = p.eatCurrent(),
+            .k_use,
+            .k_as,
+            .k_fn,
+            .k_return,
+            .k_let,
+            .k_mut,
+            .k_type,
+            .k_distinct,
+            .k_if,
+            .k_else,
+            .k_yield,
+            .k_struct,
+            .k_enum,
+            .k_variant,
+            .k_defer,
+            .k_for,
+            .k_break,
+            .k_or,
+            .k_and,
+            .k_xor,
+            .k_implies,
+            .k_true,
+            .k_false,
+            => {
+                try p.errors.append(.{ .tag = .shadows_keyword, .token = p.index });
+                _ = p.eatCurrent();
+            },
+            else => try p.errors.append(.{ .tag = .missing_identifier, .token = p.index }),
+        }
+
+        if (p.eat(.equal) == null) {
+            try p.errors.append(.{ .tag = .missing_equals, .token = p.index });
+        }
+
+        if (p.typeExpression()) |ty| {
+            return p.addNode(.{
+                .main_token = type_token,
+                .data = .{ .type_decl = ty },
+            });
+        } else |err| switch (err) {
+            Error.UnexpectedToken => {
+                try p.errors.append(.{ .tag = .missing_expression, .token = p.index });
+                try consumeUntilSemi(p);
+                return Error.HandledUserError;
+            },
+            else => return err,
+        }
+    }
+
+    fn ret(p: *Parser) !Node.Index {
+        const ret_token = try p.expect(.k_return);
+        const return_val = if (p.current() == .semi) null_node else try p.expression();
         return p.addNode(.{
             .main_token = ret_token,
             .data = .{ .return_val = return_val },
         });
     }
 
-    fn expectYield(p: *Parser) !Node.Index {
-        const yield_token = try p.expectToken(.k_yield);
-        const yield_val = try p.expectExpr();
+    fn yield(p: *Parser) !Node.Index {
+        const yield_token = try p.expect(.k_yield);
+        const yield_val = try p.expression();
         return p.addNode(.{
             .main_token = yield_token,
             .data = .{ .yield_val = yield_val },
         });
     }
 
-    fn parseConditional(p: *Parser) !Node.Index {
+    fn branch(p: *Parser) !Node.Index {
         // all conditional branches start with the if keyword
-        const if_token = try p.expectToken(.k_if);
+        const if_token = try p.expect(.k_if);
 
         // we have three kinds of if statements: simple, else, and chain
         // which we progressively try to match against
-        const condition = try p.expectExpr();
+        const condition = try p.expression();
         const exec_true = try p.expectBlock();
 
-        if (p.eatToken(.k_else)) |_| {
-            if (p.token_tags[p.index] == .k_if) {
-                // chained if
-                const next = try p.parseConditional();
-                const chain = try p.addExtra(Node.IfChain{
-                    .exec_true = exec_true,
-                    .next = next,
-                });
-                return p.addNode(.{
-                    .main_token = if_token,
-                    .data = .{ .if_chain = .{
-                        .condition = condition,
-                        .chain = chain,
-                    } },
-                });
-            } else {
-                // if else
-                const exec_false = try p.expectBlock();
-                const exec = try p.addExtra(Node.IfElse{
-                    .exec_true = exec_true,
-                    .exec_false = exec_false,
-                });
-                return p.addNode(.{
-                    .main_token = if_token,
-                    .data = .{ .if_else = .{
-                        .condition = condition,
-                        .exec = exec,
-                    } },
-                });
-            }
-        } else {
+        if (p.current() != .k_else) {
             // simple if
             return p.addNode(.{
                 .main_token = if_token,
@@ -1093,68 +1192,105 @@ const Parser = struct {
                 } },
             });
         }
-    }
 
-    fn parseLoop(p: *Parser) !Node.Index {
-        // all loops start with the for keyword
-        const for_token = try p.expectToken(.k_for);
-
-        // we have three kinds of loops: forever, conditional, range
-        // which we progressively try to match against
-        if (p.token_tags[p.index] == .l_brace) {
-            // forever loop
-            const body = try p.expectBlock();
-            return p.addNode(.{
-                .main_token = for_token,
-                .data = .{ .loop_forever = .{ .body = body } },
+        _ = p.eatCurrent();
+        if (p.current() == .k_if) {
+            // chained if
+            const chain_next = try p.branch();
+            const pl = try p.addExtra(Node.IfChain{
+                .exec_true = exec_true,
+                .next = chain_next,
             });
-        } else if (p.token_tags[p.index] == .k_let) {
-            // declaration = assume this is the binding, and we are in a range loop
-            const binding = try p.parseDecl();
-            _ = try p.expectToken(.semi);
-            const condition = try p.expectExpr();
-            _ = try p.expectToken(.semi);
-            const afterthought = try p.parseStatement();
-            const signature = try p.addExtra(Node.RangeSignature{
-                .binding = binding,
-                .condition = condition,
-                .afterthought = afterthought,
-            });
-
-            const body = try p.expectBlock();
             return p.addNode(.{
-                .main_token = for_token,
-                .data = .{ .loop_range = .{
-                    .signature = signature,
-                    .body = body,
+                .main_token = if_token,
+                .data = .{ .if_chain = .{
+                    .condition = condition,
+                    .chain = pl,
                 } },
             });
         } else {
-            // assume this is the condition of a conditional loop
-            const condition = try p.expectExpr();
-            const body = try p.expectBlock();
+            // if else
+            const exec_false = try p.expectBlock();
+            const exec = try p.addExtra(Node.IfElse{
+                .exec_true = exec_true,
+                .exec_false = exec_false,
+            });
             return p.addNode(.{
-                .main_token = for_token,
-                .data = .{ .loop_conditional = .{
+                .main_token = if_token,
+                .data = .{ .if_else = .{
                     .condition = condition,
-                    .body = body,
+                    .exec = exec,
                 } },
             });
         }
     }
 
-    fn expectBreak(p: *Parser) !Node.Index {
-        const break_token = try p.expectToken(.k_break);
+    fn loop(p: *Parser) !Node.Index {
+        // all loops start with the for keyword
+        const for_token = try p.expect(.k_for);
+
+        // we have three kinds of loops: forever, conditional, range
+        // which we progressively try to match against
+        switch (p.current()) {
+            .l_brace => {
+                // forever loop
+                const body = try p.expectBlock();
+                return p.addNode(.{
+                    .main_token = for_token,
+                    .data = .{ .loop_forever = .{ .body = body } },
+                });
+            },
+            // TODO: we should have a more rigorous way to determine this,
+            // and also let things that aren't declarations in the binding
+            .k_let => {
+                // declaration = assume this is the binding, and we are in a range loop
+                const binding = try p.declaration();
+                _ = try p.expect(.semi);
+                const condition = try p.expression();
+                _ = try p.expect(.semi);
+                const afterthought = try p.statement();
+                const signature = try p.addExtra(Node.RangeSignature{
+                    .binding = binding,
+                    .condition = condition,
+                    .afterthought = afterthought,
+                });
+
+                const body = try p.expectBlock();
+                return p.addNode(.{
+                    .main_token = for_token,
+                    .data = .{ .loop_range = .{
+                        .signature = signature,
+                        .body = body,
+                    } },
+                });
+            },
+            else => {
+                // assume this is the condition of a conditional loop
+                const condition = try p.expression();
+                const body = try p.expectBlock();
+                return p.addNode(.{
+                    .main_token = for_token,
+                    .data = .{ .loop_conditional = .{
+                        .condition = condition,
+                        .body = body,
+                    } },
+                });
+            },
+        }
+    }
+
+    fn brk(p: *Parser) !Node.Index {
+        const break_token = try p.expect(.k_break);
         return p.addNode(.{
             .main_token = break_token,
             .data = .{ .@"break" = {} },
         });
     }
 
-    fn parseAttr(p: *Parser, comptime tag: Token.Tag) !Node.Index {
-        const attr_token = try p.expectToken(tag);
+    fn attribute(p: *Parser, comptime tag: Token.Tag) !Node.Index {
+        const attr_token = try p.expect(tag);
         if (p.token_tags[p.index] == .l_paren) {
-            const args = try p.expectArgList();
+            const args = try p.parseList(expression, .{ .open = .l_paren, .close = .r_paren });
             return p.addNode(.{
                 .main_token = attr_token,
                 .data = .{ .attr_args = .{
