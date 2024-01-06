@@ -32,6 +32,8 @@ decls: std.SegmentedList(Decl, 0),
 // function bodies in the final object
 // similar to decls, but stores a list of Air instruction bodies (associated with decls)
 bodies: std.SegmentedList(Air, 0),
+// list of hashmaps that store field name (string index) -> index
+fields: std.SegmentedList(FieldMap, 0),
 
 const Item = struct {
     tag: Tag,
@@ -55,6 +57,7 @@ const Tag = enum(u8) {
     many_pointer_type,
     slice_type,
     array_type,
+    struct_type,
     comptime_array_type,
     function_type,
 
@@ -67,12 +70,14 @@ const Tag = enum(u8) {
     string_tv,
 
     decl,
+    field_map,
 };
 
 pub const ValueIndex = enum(u32) { _ };
 pub const DeclIndex = enum(u32) { _ };
 pub const AirIndex = enum(u32) { _ };
 pub const StringIndex = enum(u32) { _ };
+pub const FieldMapIndex = enum(u32) { _ };
 
 pub const Index = enum(u32) {
     // common types, mirrors those in Type
@@ -139,6 +144,9 @@ pub const Index = enum(u32) {
     };
 };
 
+// TODO: this could probably be a void->void array map with a context and adapter
+pub const FieldMap = std.AutoHashMapUnmanaged(InternPool.StringIndex, u32);
+
 pub const ExtraSlice = struct {
     start: u32,
     end: u32,
@@ -153,6 +161,11 @@ pub const FunctionType = struct {
     params_start: u32,
     params_end: u32,
     @"return": Index,
+};
+
+pub const StructType = struct {
+    fields: u32,
+    names: InternPool.Index,
 };
 
 pub const IntegerTypedValue = struct {
@@ -190,6 +203,7 @@ pub fn init(gpa: Allocator) !InternPool {
         .values = .{},
         .decls = .{},
         .bodies = .{},
+        .fields = .{},
         .string_bytes = .{},
         .string_table = .{},
     };
@@ -217,6 +231,7 @@ pub const Key = union(enum) {
     ty: Type,
     tv: TypedValue,
     decl: DeclIndex,
+    field_map: FieldMapIndex,
 
     const Adapter = struct {
         pool: *InternPool,
@@ -242,7 +257,7 @@ pub const Key = union(enum) {
         const asBytes = std.mem.asBytes;
         const seed = @intFromEnum(key);
         return switch (key) {
-            .decl => |data| Hash.hash(seed, asBytes(&data)),
+            inline .decl, .field_map => |data| Hash.hash(seed, asBytes(&data)),
             inline .ty,
             .tv,
             => |data| return data.hash64(),
@@ -284,6 +299,7 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .many_pointer_type,
         .slice_type,
         .array_type,
+        .struct_type,
         .comptime_array_type,
         .function_type,
         => .{ .ty = Type.fromInterned(pool, index) },
@@ -295,6 +311,7 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .string_tv,
         => .{ .tv = TypedValue.fromInterned(pool, index) },
         .decl => .{ .decl = @enumFromInt(data) },
+        .field_map => .{ .field_map = @enumFromInt(data) },
     };
 }
 
@@ -347,6 +364,10 @@ pub fn getOrPut(pool: *InternPool, key: Key) Allocator.Error!Index {
             .tag = .decl,
             .data = @intFromEnum(decl),
         }),
+        .field_map => |field_map| pool.items.appendAssumeCapacity(.{
+            .tag = .field_map,
+            .data = @intFromEnum(field_map),
+        }),
     }
     return @enumFromInt(pool.items.len - 1);
 }
@@ -390,6 +411,13 @@ fn putType(pool: *InternPool, key: Key) !void {
                 .count = array.count,
             });
             pool.items.appendAssumeCapacity(.{ .tag = .array_type, .data = pl });
+        },
+        .@"struct" => |st| {
+            const pl = try pool.addExtra(StructType{
+                .fields = try pool.addExtra(st.fields),
+                .names = st.names,
+            });
+            pool.items.appendAssumeCapacity(.{ .tag = .struct_type, .data = pl });
         },
         .comptime_array => |array| pool.items.appendAssumeCapacity(.{ .tag = .comptime_array_type, .data = @intCast(array.count) }),
         .function => |function| {
@@ -476,6 +504,12 @@ pub fn addOneBody(pool: *InternPool, ty: InternPool.Index) !AirIndex {
     _ = ty;
     _ = try pool.bodies.addOne(pool.gpa);
     const index: u32 = @intCast(pool.bodies.len - 1);
+    return @enumFromInt(index);
+}
+
+pub fn addOneFieldMap(pool: *InternPool) !FieldMapIndex {
+    _ = try pool.fields.addOne(pool.gpa);
+    const index: u32 = @intCast(pool.fields.len - 1);
     return @enumFromInt(index);
 }
 

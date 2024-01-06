@@ -106,7 +106,8 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
             .fcmp_lt,
             .fcmp_le,
             => |tag| try self.cmp(inst, tag),
-            .neg, .bitwise_inv => unreachable, // TODO
+            .neg => try self.neg(inst),
+            .bitwise_inv => unreachable, // TODO
 
             .call => try self.call(inst),
 
@@ -118,10 +119,12 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
             .slice_init => try self.sliceInit(inst),
             .array_init => try self.arrayInit(inst),
+            .struct_init => try self.structInit(inst),
             .index_ref => try self.indexRef(inst),
             .index_val => try self.indexVal(inst),
             .slice_ptr_val => try self.slicePtrVal(inst),
             .slice_len_val => try self.sliceLenVal(inst),
+            .field_val => try self.fieldVal(inst),
 
             .alloc, .alloc_mut => try self.alloc(inst),
             .load => try self.load(inst),
@@ -460,6 +463,16 @@ fn cmp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c
     const ref = self.builder.addCmp(tag, l, r);
     try self.map.put(self.arena, inst, ref);
     return ref;
+}
+
+fn neg(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].neg;
+    const operand = self.resolveInst(data);
+    const ty = self.pool.indexToType(self.air.typeOf(data));
+    const zero = try self.builder.addUint(ty, 0);
+    const sub = c.LLVMBuildSub(self.builder.builder, zero, operand, "");
+    try self.map.put(self.arena, inst, sub);
+    return sub;
 }
 
 fn branchSingle(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
@@ -801,6 +814,28 @@ fn sliceLenVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     return access;
 }
 
+fn fieldVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].field_val;
+
+    const base = self.resolveInst(data.base);
+    const base_type = self.pool.indexToType(air.typeOf(data.base));
+    const field_type = self.pool.indexToType(air.typeOf(inst));
+
+    const field_map_index = self.pool.indexToKey(base_type.@"struct".names).field_map;
+    const field_map = self.pool.fields.at(@intFromEnum(field_map_index));
+    const slot_index = field_map.get(data.name).?;
+    const indices = .{
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+        try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, slot_index), // ith field
+    };
+    const gep = try builder.addGetElementPtr(base_type, base, &indices);
+    const access = try builder.addLoad(gep, field_type);
+    try self.map.put(self.arena, inst, access);
+    return access;
+}
+
 fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
@@ -851,6 +886,33 @@ fn arrayInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
             try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, i), // ith element
         };
         const gep = try builder.addGetElementPtr(array_type, alloca, &indices);
+        c.LLVMSetIsInBounds(gep, @intFromBool(true));
+        _ = builder.addStore(gep, val);
+    }
+
+    try self.map.put(self.arena, inst, alloca);
+    return alloca;
+}
+
+fn structInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const builder = self.builder;
+    const struct_init = air.insts.items(.data)[@intFromEnum(inst)].struct_init;
+    const slice = air.extraData(Air.Inst.ExtraSlice, struct_init.fields);
+    const fields = air.extraSlice(slice);
+
+    // aggregate, so should be stored on the stack
+    const struct_type = self.pool.indexToType(air.typeOf(inst));
+    const alloca = try self.allocaInner(struct_type);
+
+    // insert each field with a gep + store - ensured to be in order
+    for (fields, 0..) |field, i| {
+        const val = self.resolveInst(@enumFromInt(field));
+        const indices = .{
+            try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0), // deref
+            try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, i), // ith field
+        };
+        const gep = try builder.addGetElementPtr(struct_type, alloca, &indices);
         c.LLVMSetIsInBounds(gep, @intFromBool(true));
         _ = builder.addStore(gep, val);
     }

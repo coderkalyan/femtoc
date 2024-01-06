@@ -542,8 +542,8 @@ const Parser = struct {
     fn fieldInitializer(p: *Parser) !Node.Index {
         var err = false;
 
-        _ = try p.expect(.period);
-        const ident_token = p.expect(.ident) catch token: {
+        const dot_token = try p.expect(.period);
+        _ = p.expect(.ident) catch token: {
             try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
             err = true;
             break :token undefined;
@@ -559,7 +559,7 @@ const Parser = struct {
 
         if (err) return error.HandledUserError;
         return p.addNode(.{
-            .main_token = ident_token,
+            .main_token = dot_token,
             .data = .{ .field_initializer = initializer },
         });
     }

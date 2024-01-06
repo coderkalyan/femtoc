@@ -638,6 +638,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     .many_pointer => |pointer| std.fmt.allocPrint(self.arena, "{s}[*]", .{try self.formatInterned(pointer.pointee)}),
                     .slice => |slice| std.fmt.allocPrint(self.arena, "{s}[]", .{try self.formatInterned(slice.element)}),
                     .array => |array| std.fmt.allocPrint(self.arena, "{s}[{}]", .{ try self.formatInterned(array.element), array.count }),
+                    .@"struct" => "struct unimplemented",
                     .comptime_array => std.fmt.allocPrint(self.arena, "comptime_array", .{}),
                     .function => |_| "function unimplemented",
                 },
@@ -669,6 +670,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                         .unnamed => "unnamed",
                     };
                 },
+                .field_map => "field map unimplemented", // TODO: do we need this?
             };
         }
     };

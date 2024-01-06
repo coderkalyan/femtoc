@@ -105,12 +105,24 @@ pub fn resolveType(context: *Context, ty: Type) !c.LLVMTypeRef {
             const element_type = try context.resolveType(context.pool.indexToKey(array.element).ty);
             return c.LLVMArrayType(element_type, array.count);
         },
+        .@"struct" => |st| {
+            const src_fields = context.pool.extra.items[st.fields.start..st.fields.end];
+            const fields = try context.arena.alloc(c.LLVMTypeRef, src_fields.len);
+            defer context.arena.free(fields);
+
+            for (src_fields, 0..) |field, i| {
+                const field_type = context.pool.indexToType(@enumFromInt(field));
+                fields[i] = try context.resolveType(field_type);
+            }
+
+            return c.LLVMStructTypeInContext(context.context, fields.ptr, @intCast(fields.len), @intFromBool(false));
+        },
         .slice => {
             // wide pointer consisting of pointer and usize len
             const ptr = c.LLVMPointerTypeInContext(context.context, 0);
             const len = c.LLVMInt64TypeInContext(context.context);
             var fields = .{ ptr, len };
-            return c.LLVMStructTypeInContext(context.context, @ptrCast(&fields), 2, 0);
+            return c.LLVMStructTypeInContext(context.context, @ptrCast(&fields), 2, @intFromBool(false));
         },
     };
 }
@@ -132,6 +144,7 @@ pub fn resolveTv(context: *Context, tv: TypedValue) !c.LLVMValueRef {
         .pointer,
         .many_pointer,
         .slice,
+        .@"struct",
         => unreachable, // TODO
         .array => {
             switch (tv.val) {

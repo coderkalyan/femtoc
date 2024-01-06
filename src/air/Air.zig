@@ -117,6 +117,11 @@ pub const Inst = union(enum) {
         ty: InternPool.Index,
         elements: ExtraIndex,
     },
+    // initializes an array with a list of fields (in order)
+    struct_init: struct {
+        ty: InternPool.Index,
+        fields: ExtraIndex,
+    },
 
     // indexes into an array, slice, or many pointer (passed by
     // reference) and returns a reference to the element
@@ -145,6 +150,12 @@ pub const Inst = union(enum) {
     slice_len_val: struct {
         base: Index,
         ty: InternPool.Index,
+    },
+    // extracts a field by name from a struct (passed by value)
+    // and returns it
+    field_val: struct {
+        base: Index,
+        name: InternPool.StringIndex,
     },
 
     // allocates a stack slot and returns a const pointer to it
@@ -350,6 +361,7 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             return data.ty;
         },
         .array_init => |array_init| return array_init.ty,
+        .struct_init => |struct_init| return struct_init.ty,
         .index_ref => |index_ref| {
             const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
             return data.ty;
@@ -366,6 +378,18 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         },
         .slice_ptr_val => |slice_ptr_val| return slice_ptr_val.ty,
         .slice_len_val => |slice_len_val| return slice_len_val.ty,
+        .field_val => |field_val| {
+            // TODO: this is pretty expensive, maybe we want to cache the type
+            // in the instruction
+            const struct_ip_index = air.typeOf(field_val.base);
+            const struct_type = pool.indexToType(struct_ip_index).@"struct";
+            const field_types = pool.extra.items[struct_type.fields.start..struct_type.fields.end];
+
+            const field_map_index = pool.indexToKey(struct_type.names).field_map;
+            const field_map = pool.fields.at(@intFromEnum(field_map_index));
+            const slot_index = field_map.get(field_val.name).?;
+            return @enumFromInt(field_types[slot_index]);
+        },
         inline .alloc, .alloc_mut => |alloc| return alloc.pointer_type,
         .load => |load| {
             const ty = air.typeOf(load.ptr);

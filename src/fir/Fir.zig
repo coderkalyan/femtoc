@@ -38,8 +38,13 @@ pub const Inst = struct {
         none,
         // string literal
         string: InternPool.StringIndex,
-        // array literal (list of possibly untyped items)
+        // array literal (list of items)
         array: ExtraIndex,
+        // struct literal
+        @"struct": struct {
+            ty: Index,
+            fields: ExtraIndex,
+        },
 
         // type expressions
         // builtin type, figure out what it is using the node location
@@ -70,9 +75,9 @@ pub const Inst = struct {
             @"return": Index,
         },
         // struct type given a set of fields
-        // struct_type: struct {
-        //     fields: ExtraIndex,
-        // },
+        struct_type: struct {
+            fields: ExtraIndex,
+        },
         // yields the type of the current function body
         return_type,
         // extracts the type of a param from a function signature by index
@@ -329,6 +334,16 @@ pub const Inst = struct {
         base: Index,
         start: Index,
         end: Index,
+    };
+
+    pub const StructField = struct {
+        name: InternPool.StringIndex,
+        ty: Index,
+    };
+
+    pub const StructFieldInitializer = struct {
+        name: InternPool.StringIndex,
+        val: Index,
     };
 };
 

@@ -180,12 +180,14 @@ fn analyzeGlobal(sema: *Sema, global_inst: Fir.Index) !void {
             .none => try voidLiteral(&b, inst),
             .string => unreachable, // TODO
             .array => try array(&b, inst),
+            .@"struct" => try firStruct(&b, inst),
             .builtin_type => try builtinType(&b, inst),
             .pointer_type => try pointerType(&b, inst),
             .many_pointer_type => try manyPointerType(&b, inst),
             .slice_type => try sliceType(&b, inst),
             .array_type => try arrayType(&b, inst),
             .function_type => try functionType(&b, inst),
+            .struct_type => try structType(&b, inst),
             .type_of => try firTypeOf(&b, inst),
             .function => try firFunction(&b, inst),
             .coerce => try firCoerce(&b, inst),
@@ -227,12 +229,14 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .none => try voidLiteral(&b, inst),
             .string => try stringLiteral(&b, inst),
             .array => try array(&b, inst),
+            .@"struct" => try firStruct(&b, inst),
             .builtin_type => try builtinType(&b, inst),
             .pointer_type => try pointerType(&b, inst),
             .many_pointer_type => try manyPointerType(&b, inst),
             .array_type => try arrayType(&b, inst),
             .slice_type => try sliceType(&b, inst),
             .function_type => try functionType(&b, inst),
+            .struct_type => try structType(&b, inst),
             .return_type => try returnType(&b, inst),
             .param_type => try paramType(&b, inst),
             .element_type => try elementType(&b, inst),
@@ -547,6 +551,36 @@ fn array(b: *Block, inst: Fir.Index) !void {
     }
 }
 
+fn firStruct(b: *Block, inst: Fir.Index) !void {
+    const data = b.fir.get(inst).data.@"struct";
+    const slice = b.fir.extraData(Fir.Inst.ExtraSlice, data.fields);
+    const fir_fields = b.fir.extraSlice(slice);
+
+    const struct_ip_index = b.resolveInterned(data.ty);
+    const struct_type = b.pool.indexToType(struct_ip_index).@"struct";
+    const field_map_index = b.pool.indexToKey(struct_type.names).field_map;
+    const field_map = b.pool.fields.at(@intFromEnum(field_map_index));
+    const field_types = b.pool.extra.items[struct_type.fields.start..struct_type.fields.end];
+
+    const scratch_top = b.sema.scratch.items.len;
+    defer b.sema.scratch.shrinkRetainingCapacity(scratch_top);
+    const fields = try b.sema.scratch.addManyAsSlice(b.arena, fir_fields.len);
+    for (fir_fields) |fir_field| {
+        const initializer = b.fir.extraData(Fir.Inst.StructFieldInitializer, @enumFromInt(fir_field));
+        const slot_index = field_map.get(initializer.name).?; // TODO: error if unknown field name
+        const inner = b.resolveInst(initializer.val);
+        const field_type = b.pool.indexToType(@enumFromInt(field_types[slot_index]));
+        const val = try coerceInnerImplicit(b, inner, field_type);
+        fields[slot_index] = @intFromEnum(val);
+    }
+
+    const air_inst = try b.add(.{ .struct_init = .{
+        .ty = struct_ip_index,
+        .fields = try b.sema.addSlice(fields),
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
 fn arrayConstantInner(b: *Block, ty: InternPool.Index, tvs: []u32) !Air.Index {
     const elements_start: u32 = @intCast(b.pool.extra.items.len);
     try b.pool.extra.appendSlice(b.pool.gpa, tvs);
@@ -645,6 +679,36 @@ fn functionType(b: *Block, inst: Fir.Index) !void {
     const ip_index = try b.pool.getOrPut(.{ .ty = .{ .function = .{
         .params = .{ .start = params_start, .end = params_end },
         .@"return" = return_type,
+    } } });
+    try b.mapInterned(inst, ip_index);
+}
+
+fn structType(b: *Block, inst: Fir.Index) !void {
+    const fir = b.fir;
+    const struct_type = fir.get(inst);
+    const data = struct_type.data.struct_type;
+
+    const field_map_index = try b.pool.addOneFieldMap();
+    const field_map = b.pool.fields.at(@intFromEnum(field_map_index));
+    field_map.* = .{};
+    const slice = fir.extraData(Fir.Inst.ExtraSlice, data.fields);
+    const fields = fir.extraSlice(slice);
+    const scratch_top = b.sema.scratch.items.len;
+    defer b.sema.scratch.shrinkRetainingCapacity(scratch_top);
+    try b.sema.scratch.ensureUnusedCapacity(b.arena, fields.len);
+    for (fields, 0..) |field, i| {
+        const fir_field = fir.extraData(Fir.Inst.StructField, @enumFromInt(field));
+        const ip_index = b.resolveInterned(fir_field.ty);
+        b.sema.scratch.appendAssumeCapacity(@intFromEnum(ip_index));
+        try field_map.put(b.pool.gpa, fir_field.name, @intCast(i));
+    }
+
+    const fields_start: u32 = @intCast(b.pool.extra.items.len);
+    try b.pool.extra.appendSlice(b.pool.gpa, b.sema.scratch.items[scratch_top..]);
+    const fields_end: u32 = @intCast(b.pool.extra.items.len);
+    const ip_index = try b.pool.getOrPut(.{ .ty = .{ .@"struct" = .{
+        .fields = .{ .start = fields_start, .end = fields_end },
+        .names = try b.pool.getOrPut(.{ .field_map = field_map_index }),
     } } });
     try b.mapInterned(inst, ip_index);
 }
@@ -1605,6 +1669,15 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
                 std.log.err("field access: no such field {s} for type array", .{field_string});
                 unreachable;
             }
+        },
+        .@"struct" => |st| {
+            // TODO: check that the field exists
+            _ = st;
+            const access = try b.add(.{ .field_val = .{
+                .base = base,
+                .name = data.field,
+            } });
+            try b.mapInst(inst, access);
         },
         else => unreachable,
     }

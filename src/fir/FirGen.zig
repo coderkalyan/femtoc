@@ -616,6 +616,37 @@ fn arrayLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
+fn structLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+    const fg = b.fg;
+    const struct_literal = b.tree.data(node).struct_literal;
+
+    const scratch_top = fg.scratch.items.len;
+    defer fg.scratch.shrinkRetainingCapacity(scratch_top);
+    const sl = b.tree.extraData(struct_literal.fields, Node.ExtraSlice);
+    const fields = b.tree.extraSlice(sl);
+    try fg.scratch.ensureUnusedCapacity(fg.arena, fields.len);
+    for (fields) |field| {
+        const field_data = b.tree.data(field).field_initializer;
+        const field_token = b.tree.mainToken(field) + 1;
+        const field_str = b.tree.tokenString(field_token);
+        std.debug.print("literal field: {s}\n", .{field_str});
+        const field_id = try fg.pool.getOrPutString(field_str);
+        const val = try valExpr(b, scope, field_data);
+        const pl = try fg.addExtra(Inst.StructFieldInitializer{
+            .name = field_id,
+            .val = val,
+        });
+        fg.scratch.appendAssumeCapacity(@intFromEnum(pl));
+    }
+
+    const pl = try fg.addSlice(fg.scratch.items[scratch_top..]);
+    const struct_type = try typeExpr(b, scope, struct_literal.struct_type);
+    return b.add(.{
+        .data = .{ .@"struct" = .{ .ty = struct_type, .fields = pl } },
+        .loc = .{ .node = node },
+    });
+}
+
 fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
     const fg = b.fg;
     // const scope = s.*;
@@ -627,12 +658,13 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .bool_literal => boolLiteral(b, node),
             .char_literal => charLiteral(b, node),
             .string_literal => stringLiteral(b, node),
+            .function_literal => try functionLiteral(b, s, node),
+            .array_literal => try arrayLiteral(b, s, node),
+            .struct_literal => try structLiteral(b, s, node),
             .ident => identExpr(b, s, ri, node),
             .call => try call(b, s, node),
             .binary => try binary(b, s, node),
             .unary => try unary(b, s, ri, node),
-            .function_literal => try functionLiteral(b, s, node),
-            .array_literal => try arrayLiteral(b, s, node),
             .subscript => try opSubscript(b, s, ri, node),
             .member => try opMember(b, s, ri, node),
             .slice => try opSlice(b, s, node),
@@ -858,31 +890,35 @@ fn functionType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
 }
 
 fn structType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
-    _ = b;
-    _ = scope;
-    _ = node;
-    unreachable;
-    // const fg = b.fg;
-    // const struct_type = b.tree.data(node).@"struct";
-    // const signature = b.tree.extraData(function_type, Node.FnSignature);
-    //
-    // const params = b.tree.extra_data[signature.params_start..signature.params_end];
-    // const scratch_top = fg.scratch.items.len;
-    // defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-    // try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
-    // for (params) |param| {
-    //     const data = b.tree.data(param).param;
-    //     const param_type = try typeExpr(b, scope, data);
-    //     fg.scratch.appendAssumeCapacity(@intFromEnum(param_type));
-    // }
-    //
-    // const param_types = fg.scratch.items[scratch_top..];
-    // const return_type = try typeExpr(b, scope, signature.return_ty);
-    // const pl = try fg.addSlice(param_types);
-    // return b.add(.{
-    //     .data = .{ .function_type = .{ .params = pl, .@"return" = return_type } },
-    //     .loc = .{ .node = node },
-    // });
+    const fg = b.fg;
+    const struct_type = b.tree.data(node).struct_type;
+
+    const sl = b.tree.extraData(struct_type.fields, Node.ExtraSlice);
+    const fields = b.tree.extraSlice(sl);
+    const scratch_top = fg.scratch.items.len;
+    defer fg.scratch.shrinkRetainingCapacity(scratch_top);
+    try fg.scratch.ensureUnusedCapacity(fg.arena, fields.len);
+
+    for (fields) |field| {
+        const data = b.tree.data(field).field;
+        const field_token = b.tree.mainToken(field);
+        const field_name = b.tree.tokenString(field_token);
+        std.debug.print("type field: {s}\n", .{field_name});
+        const id = try fg.pool.getOrPutString(field_name);
+        const field_type = try typeExpr(b, scope, data);
+        const struct_field = try fg.addExtra(Inst.StructField{
+            .name = id,
+            .ty = field_type,
+        });
+        fg.scratch.appendAssumeCapacity(@intFromEnum(struct_field));
+    }
+
+    const struct_fields = fg.scratch.items[scratch_top..];
+    const pl = try fg.addSlice(struct_fields);
+    return b.add(.{
+        .data = .{ .struct_type = .{ .fields = pl } },
+        .loc = .{ .node = node },
+    });
 }
 
 fn opSubscript(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {

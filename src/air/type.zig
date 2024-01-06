@@ -15,6 +15,7 @@ pub const Type = union(enum) {
     many_pointer: struct { pointee: InternPool.Index },
     slice: struct { element: InternPool.Index },
     array: struct { element: InternPool.Index, count: u32 },
+    @"struct": struct { fields: InternPool.ExtraSlice, names: InternPool.Index },
     // TODO: maybe get rid of this type
     comptime_array: struct { count: u32 },
     function: struct {
@@ -50,6 +51,11 @@ pub const Type = union(enum) {
             .array_type => {
                 const array = pool.extraData(InternPool.ArrayType, data);
                 return .{ .array = .{ .element = array.element, .count = array.count } };
+            },
+            .struct_type => {
+                const st = pool.extraData(InternPool.StructType, data);
+                const fields = pool.extraData(InternPool.ExtraSlice, st.fields);
+                return .{ .@"struct" = .{ .fields = fields, .names = st.names } };
             },
             .comptime_array_type => .{ .comptime_array = .{ .count = @intCast(data) } },
             .function_type => {
@@ -89,6 +95,10 @@ pub const Type = union(enum) {
                 hasher.update(asBytes(&data.count));
             },
             .comptime_array => |data| hasher.update(asBytes(&data.count)),
+            .@"struct" => |data| {
+                hasher.update(asBytes(&data.fields.start));
+                hasher.update(asBytes(&data.fields.end));
+            },
             .function => |data| {
                 hasher.update(asBytes(&data.@"return"));
                 hasher.update(asBytes(&data.params.start));
@@ -139,6 +149,7 @@ pub const Type = union(enum) {
                 return element_size * array.count;
             },
             .function => unreachable, // TODO
+            .@"struct" => unreachable, // TODO
             .ref => unreachable,
         };
     }
