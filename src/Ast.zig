@@ -91,8 +91,7 @@ pub const Node = struct {
         function_type: ExtraIndex,
         // struct type
         struct_type: struct {
-            fields_start: ExtraIndex,
-            fields_end: ExtraIndex,
+            fields: ExtraIndex,
         },
 
         // function declaration 'fn (params...) ret {body}'
@@ -123,13 +122,11 @@ pub const Node = struct {
         string_literal,
         struct_literal: struct {
             struct_type: Node.Index,
-            pl: ExtraIndex,
+            fields: ExtraIndex,
         },
         field_initializer: Node.Index,
-
-        array_init: struct {
-            elements_start: ExtraIndex,
-            elements_end: ExtraIndex,
+        array_literal: struct {
+            elements: ExtraIndex,
         },
 
         // complex expressions
@@ -141,8 +138,10 @@ pub const Node = struct {
             left: Index,
             right: Index,
         },
-        // unary expression '[+-!~]a'
+        // unary prefix expression '[+-!~]a'
         unary: Index,
+
+        // unary postfix expressions
         // function call 'foo(1, 2, 3)'
         // main_token = function name
         // args_start = start of argument array
@@ -151,15 +150,14 @@ pub const Node = struct {
         // move to extra data
         call: struct {
             ptr: Index,
-            args_start: ExtraIndex,
-            args_end: ExtraIndex,
+            args: ExtraIndex,
         },
         // accesses an array/slice/many pointer element by index
         subscript: struct {
             operand: Index,
             index: Index,
         },
-        get_slice: struct {
+        slice: struct {
             operand: Index,
             range: ExtraIndex,
         },
@@ -194,18 +192,15 @@ pub const Node = struct {
         // statements
         // block '{...}'
         // main_token = '{'
-        // stmts_start = start of statement array
-        // stmts_end = end of statement array
         block: struct {
-            stmts_start: ExtraIndex,
-            stmts_end: ExtraIndex,
+            stmts: ExtraIndex,
         },
 
         // attribute without arguments
         attr_simple,
         // attribute with arguments
         // range = argument indices
-        attr_args: ExtraRange,
+        attr_args: ExtraIndex,
 
         // constant declaration with attribute(s) '@export let x[: ty] = ...';
         const_decl_attr: struct {
@@ -293,8 +288,7 @@ pub const Node = struct {
 
         // body = body block node
         module: struct {
-            stmts_start: ExtraIndex,
-            stmts_end: ExtraIndex,
+            stmts: ExtraIndex,
         },
     };
 
@@ -308,7 +302,7 @@ pub const Node = struct {
     };
 
     // functionally identical to above, differentiated for clarity
-    pub const ExtraRange = struct {
+    pub const ExtraSlice = struct {
         start: ExtraIndex,
         end: ExtraIndex,
     };
@@ -316,11 +310,8 @@ pub const Node = struct {
     // extra data content
 
     // function signature, excluding return type
-    // params_start = start of parameter node index array
-    // params_end = end of parameter node index array
     pub const FnSignature = struct {
-        params_start: ExtraIndex,
-        params_end: ExtraIndex,
+        params: ExtraIndex,
         return_ty: Index,
     };
 
@@ -370,6 +361,12 @@ pub fn extraData(self: *const Ast, index: usize, comptime T: type) T {
         @field(result, field.name) = self.extra_data[index + i];
     }
     return result;
+}
+
+pub fn extraSlice(tree: *const Ast, sl: Ast.Node.ExtraSlice) []const u32 {
+    const start: u32 = @intCast(sl.start);
+    const end: u32 = @intCast(sl.end);
+    return tree.extra_data[start..end];
 }
 
 pub fn tokenString(tree: *const Ast, index: TokenIndex) []const u8 {

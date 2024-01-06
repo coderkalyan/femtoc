@@ -188,7 +188,8 @@ fn module(fg: *FirGen, node: Node.Index) !Fir.Index {
     // that haven't been irgen'ed yet
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-    var stmts = fg.tree.extra_data[data.stmts_start..data.stmts_end];
+    const sl = fg.tree.extraData(data.stmts, Node.ExtraSlice);
+    var stmts = fg.tree.extraSlice(sl);
     try fg.scratch.ensureUnusedCapacity(fg.arena, stmts.len);
 
     for (stmts) |stmt| {
@@ -528,7 +529,8 @@ fn fnDecl(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     // used to store parameters temporarily
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-    const params = b.tree.extra_data[signature.params_start..signature.params_end];
+    const sl = b.tree.extraData(signature.params, Node.ExtraSlice);
+    const params = b.tree.extraSlice(sl);
     try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
 
     var s: **Scope = scope;
@@ -593,13 +595,14 @@ fn fnDecl(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-fn arrayInit(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+fn arrayLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
-    const array_init = b.tree.data(node).array_init;
+    const array_literal = b.tree.data(node).array_literal;
 
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-    const elements = b.tree.extra_data[array_init.elements_start..array_init.elements_end];
+    const sl = b.tree.extraData(array_literal.elements, Node.ExtraSlice);
+    const elements = b.tree.extraSlice(sl);
     try fg.scratch.ensureUnusedCapacity(fg.arena, elements.len);
     for (elements) |element| {
         const element_index = try valExpr(b, scope, element);
@@ -629,10 +632,10 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .binary => try binary(b, s, node),
             .unary => try unary(b, s, ri, node),
             .fn_decl => try fnDecl(b, s, node),
-            .array_init => try arrayInit(b, s, node),
-            .subscript => try indexAccess(b, s, ri, node),
-            .member => try fieldAccess(b, s, ri, node),
-            .get_slice => try getSlice(b, s, node),
+            .array_literal => try arrayLiteral(b, s, node),
+            .subscript => try opSubscript(b, s, ri, node),
+            .member => try opMember(b, s, ri, node),
+            .slice => try opSlice(b, s, node),
             .paren => try expr(b, s, ri, b.tree.data(node).paren),
             .block => {
                 const block = try blockUnlinked(b, s, node);
@@ -654,8 +657,8 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .ident => identExpr(b, s, ri, node),
             // some types of unaries (like pointer assignment *apple = banana)
             .unary => try unary(b, s, ri, node),
-            .subscript => try indexAccess(b, s, ri, node),
-            // .member => try fieldAccess(b, s, ri, node),
+            .subscript => try opSubscript(b, s, ri, node),
+            // .member => try opMember(b, s, ri, node),
             .paren => try expr(b, s, ri, b.tree.data(node).paren),
             else => {
                 std.log.err("expr (ptr semantics): unexpected node: {}\n", .{b.tree.data(node)});
@@ -669,13 +672,13 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
         // can be used in any context that `val` can, but generates ptr semantics
         .ref => switch (b.tree.data(node)) {
             .ident => identExpr(b, s, ri, node),
-            .subscript => try indexAccess(b, s, ri, node),
-            .member => try fieldAccess(b, s, ri, node),
+            .subscript => try opSubscript(b, s, ri, node),
+            .member => try opMember(b, s, ri, node),
             .paren => try expr(b, s, ri, b.tree.data(node).paren),
             .unary => try unary(b, s, ri, node),
             // since temporaries can be referenced in femto, we upgrade these
             // to const pointers using a push
-            .get_slice,
+            .slice,
             .integer_literal,
             .float_literal,
             .bool_literal,
@@ -684,12 +687,12 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .call,
             .binary,
             .fn_decl,
-            .array_init,
+            .array_literal,
             .block,
             .if_else,
             => {
                 const inner = switch (b.tree.data(node)) {
-                    .get_slice => try getSlice(b, s, node),
+                    .slice => try opSlice(b, s, node),
                     .integer_literal => try integerLiteral(b, node),
                     .float_literal => try floatLiteral(b, node),
                     .bool_literal => try boolLiteral(b, node),
@@ -698,7 +701,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
                     .call => try call(b, s, node),
                     .binary => try binary(b, s, node),
                     .fn_decl => try fnDecl(b, s, node),
-                    .array_init => try arrayInit(b, s, node),
+                    .array_literal => try arrayLiteral(b, s, node),
                     .block => bl: {
                         const block = try blockUnlinked(b, s, node);
                         try b.linkInst(block);
@@ -744,8 +747,8 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .call => try call(b, s, node),
             .binary => try binary(b, s, node),
             .unary => try unary(b, s, ri, node),
-            // .index => try indexAccess(b, scope, ri, node),
-            // .member => try fieldAccess(b, scope, ri, node),
+            // .index => try opSubscript(b, scope, ri, node),
+            // .member => try opMember(b, scope, ri, node),
             else => {
                 std.log.err("expr (any semantics): unexpected node: {}\n", .{b.tree.data(node)});
                 return GenError.NotImplemented;
@@ -834,7 +837,8 @@ fn fnType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fn_type = b.tree.data(node).function_type;
     const signature = b.tree.extraData(fn_type, Node.FnSignature);
 
-    const params = b.tree.extra_data[signature.params_start..signature.params_end];
+    const sl = b.tree.extraData(signature.params, Node.ExtraSlice);
+    const params = b.tree.extraSlice(sl);
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
     try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
@@ -881,27 +885,11 @@ fn structType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     // });
 }
 
-fn indexAccess(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
-    const index_access = b.tree.data(node).subscript;
+fn opSubscript(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
+    const subscript = b.tree.data(node).subscript;
 
-    // const operand = try anyExpr(b, scope, index_access.operand);
-    const operand = try expr(b, scope, ri, index_access.operand);
-    const index = access: {
-        const inner = try valExpr(b, scope, index_access.index);
-        // // TODO: actual variable length usize
-        // // TODO: add back the coerce
-        // may not be needed, moving this to sema
-        // const usize_type = try b.addConstant(.{ .ty = .{ .int = .{ .sign = .unsigned, .width = 64 } } });
-        // break :access try b.add(.{ .coerce = .{
-        //
-        // } });
-        // break :access try b.add(.coerce, .{
-        //     .ty = usize_type,
-        //     .val = inner,
-        //     .node = index_access.index,
-        // });
-        break :access inner;
-    };
+    const operand = try expr(b, scope, ri, subscript.operand);
+    const index = try valExpr(b, scope, subscript.index);
     switch (ri.semantics) {
         .val => return b.add(.{
             .data = .{ .index_val = .{ .base = operand, .index = index } },
@@ -915,11 +903,11 @@ fn indexAccess(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Erro
     }
 }
 
-fn getSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+fn opSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
-    const get_slice = b.tree.data(node).get_slice;
-    const payload = b.tree.extraData(get_slice.range, Node.GetSlice);
-    const base = try anyExpr(b, scope, get_slice.operand);
+    const slice = b.tree.data(node).slice;
+    const payload = b.tree.extraData(slice.range, Node.GetSlice);
+    const base = try anyExpr(b, scope, slice.operand);
     const start = try valExpr(b, scope, payload.start);
     const end = try valExpr(b, scope, payload.end);
 
@@ -932,27 +920,6 @@ fn getSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
         .data = .{ .slice = .{ .pl = pl } },
         .loc = .{ .node = node },
     });
-    // // TODO: actual variable length usize
-    // const usize_type = try b.add(.ty, .{ .ty = Type.Common.u64_type });
-    // const start_index = try b.add(.coerce, .{
-    //     .ty = usize_type,
-    //     .val = start,
-    //     .node = payload.start,
-    // });
-    // const end_index = try b.add(.coerce, .{
-    //     .ty = usize_type,
-    //     .val = end,
-    //     .node = payload.end,
-    // });
-    // const type_of = try b.add(.type_of, .{ .operand = array, .node = node });
-    // const element_type = try b.add(.element_type, .{ .operand = type_of, .node = node });
-    // const len = try b.add(.sub, .{ .lref = end_index, .rref = start_index, .node = node });
-    // return try b.add(.slice_init, .{
-    //     .element_type = element_type,
-    //     .ptr = array, // TODO: pointer arithmetic
-    //     .len = len,
-    //     .node = node,
-    // });
 
     // switch (ri.semantics) {
     //     .val => return b.add(.load, .{ .operand = ptr, .node = node }),
@@ -961,7 +928,7 @@ fn getSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     // }
 }
 
-fn fieldAccess(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
+fn opMember(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const field_val = b.tree.data(node).member;
     const field_token = b.tree.mainToken(node) + 1;
@@ -1066,7 +1033,8 @@ fn call(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
 
-    const arg_nodes = b.tree.extra_data[call_expr.args_start..call_expr.args_end];
+    const sl = b.tree.extraData(call_expr.args, Node.ExtraSlice);
+    const arg_nodes = b.tree.extraSlice(sl);
     try fg.scratch.ensureUnusedCapacity(b.fg.arena, arg_nodes.len);
     for (arg_nodes, 0..) |arg_node, i| {
         const arg_inner = try valExpr(b, scope, arg_node);
@@ -1091,7 +1059,8 @@ fn blockInner(b: *Block, scope: **Scope, node: Node.Index) Error!void {
     const data = b.tree.data(node).block;
 
     var s: **Scope = scope;
-    const stmts = b.tree.extra_data[data.stmts_start..data.stmts_end];
+    const sl = b.tree.extraData(data.stmts, Node.ExtraSlice);
+    const stmts = b.tree.extraSlice(sl);
     for (stmts) |stmt| {
         _ = try statement(b, s, stmt);
     }

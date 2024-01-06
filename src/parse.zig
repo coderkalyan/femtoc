@@ -156,7 +156,23 @@ const Parser = struct {
         return len;
     }
 
-    fn parseList(p: *Parser, comptime element: anytype, surround: struct { open: Token.Tag, close: Token.Tag }) !Node.ExtraRange {
+    pub fn extraSlice(p: *Parser, sl: Ast.Node.ExtraSlice) []const u32 {
+        const start: u32 = @intFromEnum(sl.start);
+        const end: u32 = @intFromEnum(sl.end);
+        return p.extra.items[start..end];
+    }
+
+    pub fn addSlice(p: *Parser, sl: []const u32) !Ast.Node.ExtraIndex {
+        const start: u32 = @intCast(p.extra.items.len);
+        try p.extra.appendSlice(p.gpa, sl);
+        const end: u32 = @intCast(p.extra.items.len);
+        return p.addExtra(Ast.Node.ExtraSlice{
+            .start = @intCast(start),
+            .end = @intCast(end),
+        });
+    }
+
+    fn parseList(p: *Parser, comptime element: anytype, surround: struct { open: Token.Tag, close: Token.Tag }) !Node.ExtraIndex {
         _ = try p.expect(surround.open);
 
         const scratch_top = p.scratch.items.len;
@@ -175,12 +191,7 @@ const Parser = struct {
         }
 
         const elements = p.scratch.items[scratch_top..];
-        const extra_top = p.extra.items.len;
-        try p.extra.appendSlice(p.gpa, elements);
-        return .{
-            .start = @intCast(extra_top),
-            .end = @intCast(p.extra.items.len),
-        };
+        return p.addSlice(elements);
     }
 
     // TODO: refactor this into two seperate methods
@@ -292,7 +303,7 @@ const Parser = struct {
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
-            const node = switch (p.token_tags[p.index]) {
+            const node = switch (p.current()) {
                 .eof => break,
                 .a_export,
                 .a_import,
@@ -300,9 +311,9 @@ const Parser = struct {
                 => p.declaration() catch |err| {
                     if (err == Error.HandledUserError) {
                         while (true) {
-                            // this should be cleaned up by the emitter fo the HandledUserError
+                            // TODO: this should be cleaned up by the emitter fo the HandledUserError
                             // e.g. we should be either be at or next to a eof or let.
-                            switch (p.token_tags[p.index]) {
+                            switch (p.current()) {
                                 .eof, .k_let => {
                                     break;
                                 },
@@ -323,21 +334,15 @@ const Parser = struct {
             };
 
             try p.scratch.append(node);
-            _ = p.eat(.semi);
+            _ = try p.expect(.semi);
         }
 
         const stmts = p.scratch.items[scratch_top..];
-        const extra_top = p.extra.items.len;
-        try p.extra.appendSlice(p.gpa, stmts);
+        const pl = try p.addSlice(stmts);
 
         return p.addNode(.{
             .main_token = 0,
-            .data = .{
-                .module = .{
-                    .stmts_start = @intCast(extra_top),
-                    .stmts_end = @intCast(p.extra.items.len),
-                },
-            },
+            .data = .{ .module = .{ .stmts = pl } },
         });
     }
 
@@ -515,14 +520,10 @@ const Parser = struct {
         }
 
         const elements = p.scratch.items[scratch_top..];
-        const extra_top = p.extra.items.len;
-        try p.extra.appendSlice(p.gpa, elements);
+        const pl = try p.addSlice(elements);
         return p.addNode(.{
             .main_token = l_bracket_token,
-            .data = .{ .array_init = .{
-                .elements_start = @intCast(extra_top),
-                .elements_end = @intCast(p.extra.items.len),
-            } },
+            .data = .{ .array_literal = .{ .elements = pl } },
         });
     }
 
@@ -531,11 +532,9 @@ const Parser = struct {
         const type_node = try p.identifier(); // TODO: this should be a proper type expression
 
         const fields = try p.parseList(fieldInitializer, .{ .open = .l_brace, .close = .r_brace });
-        const pl = try p.addExtra(fields);
-
         return p.addNode(.{
             .main_token = start_token,
-            .data = .{ .struct_literal = .{ .struct_type = type_node, .pl = pl } },
+            .data = .{ .struct_literal = .{ .struct_type = type_node, .fields = fields } },
         });
     }
 
@@ -592,7 +591,7 @@ const Parser = struct {
         });
         return p.addNode(.{
             .main_token = token,
-            .data = .{ .get_slice = .{ .operand = op, .range = pl } },
+            .data = .{ .slice = .{ .operand = op, .range = pl } },
         });
     }
 
@@ -711,8 +710,7 @@ const Parser = struct {
                 .main_token = fn_token,
                 .data = .{
                     .function_type = try p.addExtra(Node.FnSignature{
-                        .params_start = params.start,
-                        .params_end = params.end,
+                        .params = params,
                         .return_ty = return_ty,
                     }),
                 },
@@ -731,12 +729,7 @@ const Parser = struct {
         const fields = try p.parseList(expectStructField, .{ .open = .l_brace, .close = .r_brace });
         return p.addNode(.{
             .main_token = struct_token,
-            .data = .{
-                .struct_type = .{
-                    .fields_start = fields.start,
-                    .fields_end = fields.end,
-                },
-            },
+            .data = .{ .struct_type = .{ .fields = fields } },
         });
     }
 
@@ -751,8 +744,7 @@ const Parser = struct {
                     .main_token = fn_token,
                     .data = .{ .fn_decl = .{
                         .signature = try p.addExtra(Node.FnSignature{
-                            .params_start = params.start,
-                            .params_end = params.end,
+                            .params = params,
                             .return_ty = return_ty,
                         }),
                         .body = body,
@@ -874,15 +866,11 @@ const Parser = struct {
         }
 
         const stmts = p.scratch.items[scratch_top..];
-        const extra_top = p.extra.items.len;
-        try p.extra.appendSlice(p.gpa, stmts);
+        const pl = try p.addSlice(stmts);
 
         return p.addNode(.{
             .main_token = l_brace_token,
-            .data = .{ .block = .{
-                .stmts_start = @intCast(extra_top),
-                .stmts_end = @intCast(p.extra.items.len),
-            } },
+            .data = .{ .block = .{ .stmts = pl } },
         });
     }
 
@@ -934,15 +922,13 @@ const Parser = struct {
     }
 
     fn call(p: *Parser, ptr: Node.Index) !Node.Index {
-        // const args_range = try p.argumentList();
-        const args_range = try p.parseList(expression, .{ .open = .l_paren, .close = .r_paren });
+        const args = try p.parseList(expression, .{ .open = .l_paren, .close = .r_paren });
 
         return p.addNode(.{
             .main_token = undefined,
             .data = .{ .call = .{
                 .ptr = ptr,
-                .args_start = args_range.start,
-                .args_end = args_range.end,
+                .args = args,
             } },
         });
     }
@@ -1293,10 +1279,7 @@ const Parser = struct {
             const args = try p.parseList(expression, .{ .open = .l_paren, .close = .r_paren });
             return p.addNode(.{
                 .main_token = attr_token,
-                .data = .{ .attr_args = .{
-                    .start = args.start,
-                    .end = args.end,
-                } },
+                .data = .{ .attr_args = args },
             });
         } else {
             return p.addNode(.{
