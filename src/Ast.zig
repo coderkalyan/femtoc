@@ -88,7 +88,10 @@ pub const Node = struct {
             count_expr: Index,
         },
         // function type fn (param1: type, ...) type
-        function_type: ExtraIndex,
+        function_type: struct {
+            params: ExtraIndex,
+            @"return": Index,
+        },
         // struct type
         struct_type: struct {
             fields: ExtraIndex,
@@ -96,10 +99,8 @@ pub const Node = struct {
 
         // function declaration 'fn (params...) ret {body}'
         // main_token = n/a
-        // proto = FnSignature {} 'fn (params...) ret'
-        // body = body block node
-        fn_decl: struct {
-            signature: ExtraIndex,
+        function_literal: struct {
+            ty: Index,
             body: Index,
         },
         // function parameter (in the declaration/prototype)
@@ -308,12 +309,6 @@ pub const Node = struct {
     };
 
     // extra data content
-
-    // function signature, excluding return type
-    pub const FnSignature = struct {
-        params: ExtraIndex,
-        return_ty: Index,
-    };
 
     // if else execution information
     // exec_true = block node to execute if condition is met

@@ -383,7 +383,7 @@ const Parser = struct {
             //     else => ident,
             // };
             // },
-            .k_fn => p.expectFnDecl(),
+            .k_fn => p.functionLiteral(),
             // switch (p.token_tags[p.index + 1]) {
             //     .l_paren => p.call(try p.identifier()),
             //     else => p.identifier(),
@@ -419,7 +419,7 @@ const Parser = struct {
                 .data = .{ .string_literal = {} },
             }),
             .l_bracket => p.arrayLiteral(),
-            .l_brace => p.expectBlock(),
+            .l_brace => p.block(),
             .k_if => p.branch(),
             // .minus, .bang, .tilde, .ampersand, .asterisk => p.addNode(.{
             //     .main_token = try p.expect(p.token_tags[p.index]),
@@ -705,14 +705,14 @@ const Parser = struct {
     fn functionType(p: *Parser) !Node.Index {
         const fn_token = try p.expect(.k_fn);
         const params = try p.parseList(param, .{ .open = .l_paren, .close = .r_paren });
-        if (p.typeExpression()) |return_ty| {
+        if (p.typeExpression()) |return_type| {
             return p.addNode(.{
                 .main_token = fn_token,
                 .data = .{
-                    .function_type = try p.addExtra(Node.FnSignature{
+                    .function_type = .{
                         .params = params,
-                        .return_ty = return_ty,
-                    }),
+                        .@"return" = return_type,
+                    },
                 },
             });
         } else |err| switch (err) {
@@ -726,53 +726,24 @@ const Parser = struct {
 
     fn structType(p: *Parser) !Node.Index {
         const struct_token = try p.expect(.k_struct);
-        const fields = try p.parseList(expectStructField, .{ .open = .l_brace, .close = .r_brace });
+        const fields = try p.parseList(structField, .{ .open = .l_brace, .close = .r_brace });
         return p.addNode(.{
             .main_token = struct_token,
             .data = .{ .struct_type = .{ .fields = fields } },
         });
     }
 
-    fn expectFnDecl(p: *Parser) !Node.Index {
-        const fn_token = try p.expect(.k_fn);
-        const params = try p.parseList(param, .{ .open = .l_paren, .close = .r_paren });
-        // const return_ty = try p.typeExpression();
-        if (p.typeExpression()) |return_ty| {
-            // const body = try p.expectBlock();
-            if (p.expectBlock()) |body| {
-                return p.addNode(.{
-                    .main_token = fn_token,
-                    .data = .{ .fn_decl = .{
-                        .signature = try p.addExtra(Node.FnSignature{
-                            .params = params,
-                            .return_ty = return_ty,
-                        }),
-                        .body = body,
-                    } },
-                });
-            } else |err| switch (err) {
-                Error.UnexpectedToken => {
-                    try p.errors.append(.{ .tag = .missing_fn_brace, .token = p.index });
-                    // TODO: revisit this, could be a better solution to
-                    try consumeUntilValidTLD(p, true);
-                    return Error.HandledUserError;
-                },
-                else => return err,
-            }
-        } else |err| switch (err) {
-            Error.UnexpectedToken => {
-                try p.errors.append(.{ .tag = .missing_return_type, .token = p.index });
-                // consume leftover block
-                if (p.expectBlock()) |_| {} else |block_err| {
-                    switch (block_err) {
-                        Error.UnexpectedToken => {},
-                        else => return block_err,
-                    }
-                }
-                return Error.HandledUserError;
-            },
-            else => return err,
-        }
+    fn functionLiteral(p: *Parser) !Node.Index {
+        const function_type = try p.functionType();
+        // TODO: there should be some better error recovery like consuming the block on error
+        const body = try p.block();
+        return p.addNode(.{
+            .main_token = undefined,
+            .data = .{ .function_literal = .{
+                .ty = function_type,
+                .body = body,
+            } },
+        });
     }
 
     fn param(p: *Parser) !Node.Index {
@@ -803,7 +774,7 @@ const Parser = struct {
         });
     }
 
-    fn expectStructField(p: *Parser) !Node.Index {
+    fn structField(p: *Parser) !Node.Index {
         var err = false;
         const ident_token = p.expect(.ident) catch token: {
             // We're missing an identifier flag it
@@ -845,7 +816,7 @@ const Parser = struct {
     //     });
     // }
 
-    fn expectBlock(p: *Parser) !Node.Index {
+    fn block(p: *Parser) !Node.Index {
         const l_brace_token = try p.expect(.l_brace);
 
         // since each block may create an arbitrary number of statements,
@@ -1166,7 +1137,7 @@ const Parser = struct {
         // we have three kinds of if statements: simple, else, and chain
         // which we progressively try to match against
         const condition = try p.expression();
-        const exec_true = try p.expectBlock();
+        const exec_true = try p.block();
 
         if (p.current() != .k_else) {
             // simple if
@@ -1196,7 +1167,7 @@ const Parser = struct {
             });
         } else {
             // if else
-            const exec_false = try p.expectBlock();
+            const exec_false = try p.block();
             const exec = try p.addExtra(Node.IfElse{
                 .exec_true = exec_true,
                 .exec_false = exec_false,
@@ -1220,7 +1191,7 @@ const Parser = struct {
         switch (p.current()) {
             .l_brace => {
                 // forever loop
-                const body = try p.expectBlock();
+                const body = try p.block();
                 return p.addNode(.{
                     .main_token = for_token,
                     .data = .{ .loop_forever = .{ .body = body } },
@@ -1241,7 +1212,7 @@ const Parser = struct {
                     .afterthought = afterthought,
                 });
 
-                const body = try p.expectBlock();
+                const body = try p.block();
                 return p.addNode(.{
                     .main_token = for_token,
                     .data = .{ .loop_range = .{
@@ -1253,7 +1224,7 @@ const Parser = struct {
             else => {
                 // assume this is the condition of a conditional loop
                 const condition = try p.expression();
-                const body = try p.expectBlock();
+                const body = try p.block();
                 return p.addNode(.{
                     .main_token = for_token,
                     .data = .{ .loop_conditional = .{

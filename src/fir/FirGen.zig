@@ -521,15 +521,15 @@ fn unary(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.
     }
 }
 
-fn fnDecl(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+fn functionLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
-    const fn_decl = b.tree.data(node).fn_decl;
-    const signature = b.tree.extraData(fn_decl.signature, Node.FnSignature);
+    const function_literal = b.tree.data(node).function_literal;
+    const function_type = b.tree.data(function_literal.ty).function_type;
 
     // used to store parameters temporarily
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-    const sl = b.tree.extraData(signature.params, Node.ExtraSlice);
+    const sl = b.tree.extraData(function_type.params, Node.ExtraSlice);
     const params = b.tree.extraSlice(sl);
     try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
 
@@ -566,15 +566,15 @@ fn fnDecl(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
         fg.scratch.appendAssumeCapacity(@intFromEnum(param_inst.data.param.ty));
     }
 
-    const return_type = try typeExpr(b, scope, signature.return_ty);
+    const return_type = try typeExpr(b, scope, function_type.@"return");
     const pl = try fg.addSlice(fg.scratch.items[scratch_top_new..]);
     const sig = try b.add(.{
         .data = .{ .function_type = .{ .params = pl, .@"return" = return_type } },
         .loc = .{ .node = node },
     });
 
-    // const body = try block(&body_scope, &body_scope.base, fn_decl.body, true);
-    try blockInner(&body_scope, s, fn_decl.body);
+    // const body = try block(&body_scope, &body_scope.base, function_literal.body, true);
+    try blockInner(&body_scope, s, function_literal.body);
     if (!blockReturns(&body_scope)) {
         // insert implicit return
         // TODO: find the closing brace as token
@@ -588,7 +588,7 @@ fn fnDecl(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
         });
     }
 
-    const body = try b.addBlockUnlinked(&body_scope, fn_decl.body);
+    const body = try b.addBlockUnlinked(&body_scope, function_literal.body);
     return b.add(.{
         .data = .{ .function = .{ .signature = sig, .body = body } },
         .loc = .{ .node = node },
@@ -631,7 +631,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .call => try call(b, s, node),
             .binary => try binary(b, s, node),
             .unary => try unary(b, s, ri, node),
-            .fn_decl => try fnDecl(b, s, node),
+            .function_literal => try functionLiteral(b, s, node),
             .array_literal => try arrayLiteral(b, s, node),
             .subscript => try opSubscript(b, s, ri, node),
             .member => try opMember(b, s, ri, node),
@@ -686,7 +686,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .string_literal,
             .call,
             .binary,
-            .fn_decl,
+            .function_literal,
             .array_literal,
             .block,
             .if_else,
@@ -700,7 +700,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
                     .string_literal => try stringLiteral(b, node),
                     .call => try call(b, s, node),
                     .binary => try binary(b, s, node),
-                    .fn_decl => try fnDecl(b, s, node),
+                    .function_literal => try functionLiteral(b, s, node),
                     .array_literal => try arrayLiteral(b, s, node),
                     .block => bl: {
                         const block = try blockUnlinked(b, s, node);
@@ -732,7 +732,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             .many_pointer_type => try manyPointerType(b, s, node),
             .array_type => try arrayType(b, s, node),
             .slice_type => try sliceType(b, s, node),
-            .function_type => try fnType(b, s, node),
+            .function_type => try functionType(b, s, node),
             .struct_type => try structType(b, s, node),
             else => {
                 std.log.err("expr (type semantics): unexpected node: {}\n", .{b.tree.data(node)});
@@ -831,17 +831,17 @@ fn sliceType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     });
 }
 
-// TODO: merge with fnDecl
-fn fnType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+// TODO: try to merge with functionLiteral
+fn functionType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
-    const fn_type = b.tree.data(node).function_type;
-    const signature = b.tree.extraData(fn_type, Node.FnSignature);
+    const function_type = b.tree.data(node).function_type;
 
-    const sl = b.tree.extraData(signature.params, Node.ExtraSlice);
+    const sl = b.tree.extraData(function_type.params, Node.ExtraSlice);
     const params = b.tree.extraSlice(sl);
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
     try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
+
     for (params) |param| {
         const data = b.tree.data(param).param;
         const param_type = try typeExpr(b, scope, data);
@@ -849,7 +849,7 @@ fn fnType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     }
 
     const param_types = fg.scratch.items[scratch_top..];
-    const return_type = try typeExpr(b, scope, signature.return_ty);
+    const return_type = try typeExpr(b, scope, function_type.@"return");
     const pl = try fg.addSlice(param_types);
     return b.add(.{
         .data = .{ .function_type = .{ .params = pl, .@"return" = return_type } },
@@ -864,7 +864,7 @@ fn structType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     unreachable;
     // const fg = b.fg;
     // const struct_type = b.tree.data(node).@"struct";
-    // const signature = b.tree.extraData(fn_type, Node.FnSignature);
+    // const signature = b.tree.extraData(function_type, Node.FnSignature);
     //
     // const params = b.tree.extra_data[signature.params_start..signature.params_end];
     // const scratch_top = fg.scratch.items.len;
