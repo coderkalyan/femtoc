@@ -61,6 +61,21 @@ fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
     }
 }
 
+fn elideLazy(self: *CodeGen, inst: Air.Index) Air.Index {
+    switch (self.air.insts.get(@intFromEnum(inst))) {
+        .load_lazy => |lazy| {
+            // encountered a load_lazy + index val, what we actually want to do is
+            // fuse these into an gep + load on the original load operand
+            // and elide the previously emitted load_lazy instruction
+            for (self.lazy.get(inst).?) |elide| {
+                c.LLVMInstructionEraseFromParent(elide);
+            }
+            return lazy.ptr;
+        },
+        else => return inst,
+    }
+}
+
 fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
     const air = self.air;
     const data = air.insts.items(.data)[@intFromEnum(block_inst)].block;
@@ -374,7 +389,7 @@ fn store(self: *CodeGen, inst: Air.Index) !void {
     // perform other optimizations
     const val_type = self.pool.indexToType(air.typeOf(data.val));
     switch (val_type) {
-        .array => _ = try builder.addMemcpy(val_type, addr, val),
+        .array => _ = try builder.addMemcpy(val_type, addr, self.resolveInst(self.elideLazy(data.val))),
         .slice => |slice| {
             // unroll a memcpy
             var indices = .{
@@ -681,7 +696,7 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const builder = self.builder;
     const data = air.insts.items(.data)[@intFromEnum(inst)].index_val;
 
-    var base = self.resolveInst(data.base);
+    var base = self.resolveInst(self.elideLazy(data.base));
     const index = self.resolveInst(data.index);
     const base_type = self.pool.indexToKey(air.typeOf(data.base)).ty;
     switch (base_type) {
@@ -689,18 +704,6 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
             // since arrays are actually stored in memory (even though this is value semantics)
             // we have an extra level of indirection
             // hence we emit a GEP + load
-            switch (air.insts.get(@intFromEnum(data.base))) {
-                .load_lazy => |lazy| {
-                    // encountered a load_lazy + index val, what we actually want to do is
-                    // fuse these into an gep + load on the original load operand
-                    // and elide the previously emitted load_lazy instruction
-                    base = self.resolveInst(lazy.ptr);
-                    for (self.lazy.get(data.base).?) |elide| {
-                        c.LLVMInstructionEraseFromParent(elide);
-                    }
-                },
-                else => {},
-            }
             const element_type = self.pool.indexToKey(array_type.element).ty;
             const deref = try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0);
             var indices = .{ deref, index };

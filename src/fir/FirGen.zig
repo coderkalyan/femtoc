@@ -112,6 +112,7 @@ const ResultInfo = struct {
     const Context = enum {
         none,
         elem,
+        store,
     };
 };
 
@@ -357,7 +358,7 @@ fn identExpr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index
                         .data = .{ .load = .{ .ptr = local_ptr.ptr } },
                         .loc = .{ .node = node },
                     }),
-                    .elem => return b.add(.{
+                    .elem, .store => return b.add(.{
                         .data = .{ .load_lazy = .{ .ptr = local_ptr.ptr } },
                         .loc = .{ .node = node },
                     }),
@@ -1204,7 +1205,7 @@ fn varDecl(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     // so we have to create alloc instructions in addition to computing the value
     // otherwise, this function operates like constDecl
     const var_decl = b.tree.data(node).var_decl;
-    const val = try valExpr(b, s, var_decl.val);
+    const val = try expr(b, s, .{ .semantics = .val, .ctx = .store }, var_decl.val);
     if (var_decl.ty == 0) {
         // untyped (inferred) declaration
         return b.add(.{
