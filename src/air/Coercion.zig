@@ -171,9 +171,7 @@ fn array(self: *Coercion) Error!Air.Index {
     const b = self.b;
     const src_type = b.sema.tempAir().typeOf(self.src);
     const dest_type = b.pool.indexToKey(self.dest_type).ty;
-    const _src_type = b.pool.indexToType(src_type);
-    std.debug.print("coercing {} to {}\n", .{ _src_type, dest_type });
-    std.debug.print("src_type element: {} {}\n", .{ _src_type.array.element, b.pool.indexToType(_src_type.array.element) });
+    // const _src_type = b.pool.indexToType(src_type);
 
     switch (b.pool.indexToKey(src_type).ty) {
         // TODO: this might need to be thrown out

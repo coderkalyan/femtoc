@@ -75,7 +75,6 @@ pub fn resolveType(context: *Context, ty: Type) !c.LLVMTypeRef {
         .void => c.LLVMVoidTypeInContext(context.context),
         .comptime_int => unreachable,
         .comptime_float => unreachable,
-        .comptime_array => unreachable,
         .ref => unreachable,
         .int => |int| c.LLVMIntTypeInContext(context.context, int.width),
         .float => |float| switch (float.width) {
@@ -134,7 +133,6 @@ pub fn resolveTv(context: *Context, tv: TypedValue) !c.LLVMValueRef {
         .void,
         .comptime_int,
         .comptime_float,
-        .comptime_array,
         .function,
         => unreachable,
         .int => |int| c.LLVMConstInt(llvm_type, @intCast(tv.val.integer), @intFromBool(int.sign == .signed)),
@@ -325,7 +323,28 @@ pub const Builder = struct {
     }
 
     // operators and arithmetic
-    pub const Cmp = enum {
+    pub const BinOp = enum {
+        add,
+        sub,
+        umul,
+        udiv,
+        urem,
+        smul,
+        sdiv,
+        srem,
+        sl,
+        lsr,
+        asr,
+        bitwise_or,
+        bitwise_and,
+        bitwise_xor,
+
+        fadd,
+        fsub,
+        fmul,
+        fdiv,
+        frem,
+
         cmp_ieq,
         cmp_ine,
 
@@ -347,6 +366,73 @@ pub const Builder = struct {
         cmp_flt,
         cmp_fgt,
     };
+
+    pub fn chooseBinary(builder: *Builder, tag: Air.Inst.Tag, ty: Type) BinOp {
+        _ = builder;
+        return switch (ty) {
+            .int => |int| switch (int.sign) {
+                .unsigned => switch (tag) {
+                    .add => .add,
+                    .sub => .sub,
+                    .mul => .umul,
+                    .div => .udiv,
+                    .mod => .umod,
+                    .lsl, .asl => .sl,
+                    .lsr => .lsr,
+                    .asr => .asr,
+                    .bitwise_or => .bitwise_or,
+                    .bitwise_and => .bitwise_and,
+                    .bitwise_xor => .bitwise_xor,
+                    else => unreachable,
+                },
+                .signed => switch (tag) {
+                    .add => .add,
+                    .sub => .sub,
+                    .mul => .smul,
+                    .div => .sdiv,
+                    .mod => .smod,
+                    .lsl, .asl => .sl,
+                    .lsr => .lsr,
+                    .asr => .asr,
+                    .bitwise_or => .bitwise_or,
+                    .bitwise_and => .bitwise_and,
+                    .bitwise_xor => .bitwise_xor,
+                    else => unreachable,
+                },
+            },
+            .float => switch (tag) {
+                .add => .fadd,
+                .sub => .fsub,
+                .mul => .fmul,
+                .div => .fdiv,
+                .mod => .fmod,
+                else => unreachable,
+            },
+        };
+    }
+
+    pub fn addBinary(builder: *Builder, op: BinOp, l: c.LLVMValueRef, r: c.LLVMValueRef) c.LLVMValueRef {
+        return switch (op) {
+            .cmp_ieq => c.LLVMBuildICmp(builder.builder, c.LLVMIntEQ, l, r, ""),
+            .cmp_ine => c.LLVMBuildICmp(builder.builder, c.LLVMIntNE, l, r, ""),
+
+            .cmp_ule => c.LLVMBuildICmp(builder.builder, c.LLVMIntULE, l, r, ""),
+            .cmp_uge => c.LLVMBuildICmp(builder.builder, c.LLVMIntUGE, l, r, ""),
+            .cmp_ult => c.LLVMBuildICmp(builder.builder, c.LLVMIntULT, l, r, ""),
+            .cmp_ugt => c.LLVMBuildICmp(builder.builder, c.LLVMIntUGT, l, r, ""),
+
+            .cmp_sle => c.LLVMBuildICmp(builder.builder, c.LLVMIntSLE, l, r, ""),
+            .cmp_sge => c.LLVMBuildICmp(builder.builder, c.LLVMIntSGE, l, r, ""),
+            .cmp_slt => c.LLVMBuildICmp(builder.builder, c.LLVMIntSLT, l, r, ""),
+            .cmp_sgt => c.LLVMBuildICmp(builder.builder, c.LLVMIntSGT, l, r, ""),
+
+            .cmp_fle => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOLE, l, r, ""),
+            .cmp_fge => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOGE, l, r, ""),
+            .cmp_flt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOLT, l, r, ""),
+            .cmp_fgt => c.LLVMBuildFCmp(builder.builder, c.LLVMRealOGT, l, r, ""),
+            else => unreachable,
+        };
+    }
 
     pub fn addCmp(builder: *Builder, comptime tag: std.meta.Tag(Air.Inst), lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
         return switch (tag) {

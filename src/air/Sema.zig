@@ -73,8 +73,8 @@ pub const Block = struct {
         return b.sema.tempAir().typeOf(inst);
     }
 
-    pub fn addIndexRef(b: *Block, base: Air.Index, index: Air.Index, element: InternPool.Index) !Air.Index {
-        const element_ptr = try b.pool.getOrPutType(.{ .ref = .{ .pointee = element, .mutable = true } });
+    pub fn addIndexRef(b: *Block, base: Air.Index, index: Air.Index, element: InternPool.Index, mutable: bool) !Air.Index {
+        const element_ptr = try b.pool.getOrPutType(.{ .ref = .{ .pointee = element, .mutable = mutable } });
         const pl = try b.sema.addExtra(Air.Inst.IndexRef{
             .base = base,
             .index = index,
@@ -278,6 +278,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .load_global => try loadGlobal(&b, inst),
             .push, .push_mut => try push(&b, inst),
             .load => try load(&b, inst),
+            .load_lazy => try loadLazy(&b, inst),
             .store => try store(&b, inst),
 
             .branch_single => try branchSingle(&b, inst),
@@ -362,7 +363,8 @@ pub fn addBlockUnlinked(sema: *Sema, inner: *Block) !Air.Index {
 
 fn resolveInst(sema: *Sema, fir_inst: Fir.Index) Air.Index {
     // TODO: globals
-    return sema.inst_map.get(fir_inst).?;
+    const air_inst = sema.inst_map.get(fir_inst).?;
+    return air_inst;
 }
 
 fn resolveInterned(sema: *Sema, fir_inst: Fir.Index) InternPool.Index {
@@ -380,6 +382,7 @@ fn resolveDecl(sema: *Sema, inst: Air.Index) *Decl {
 pub fn add(sema: *Sema, inst: Air.Inst) !Air.Index {
     const index: u32 = @intCast(sema.insts.len);
     try sema.insts.append(sema.gpa, inst);
+
     return @enumFromInt(index);
 }
 
@@ -929,6 +932,17 @@ fn load(b: *Block, inst: Fir.Index) !void {
     try b.mapInst(inst, air_inst);
 }
 
+fn loadLazy(b: *Block, inst: Fir.Index) !void {
+    const load_inst = b.fir.get(inst);
+    const data = load_inst.data.load_lazy;
+
+    const ptr = b.resolveInst(data.ptr);
+    const air_inst = try b.add(.{ .load_lazy = .{
+        .ptr = ptr,
+    } });
+    try b.mapInst(inst, air_inst);
+}
+
 fn store(b: *Block, inst: Fir.Index) !void {
     const sema = b.sema;
     const store_inst = b.fir.get(inst);
@@ -1343,7 +1357,9 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
 
     var base_type = b.pool.indexToType(b.typeOf(base));
     var is_ref = false;
+    var ref_mutable: bool = undefined;
     if (@as(Type.Tag, base_type) == .ref) {
+        ref_mutable = base_type.ref.mutable;
         // fir wants ref semantics, so we have one level of indirection
         base_type = b.pool.indexToType(base_type.ref.pointee);
         is_ref = true;
@@ -1356,7 +1372,8 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
                 // we want to avoid loading the entire aggregate (array) into a temporary,
                 // so we instead get a reference to the element and then perform a load
                 // this translates to a GEP in LLVM
-                const ref = try b.addIndexRef(base, index, arr.element);
+                // TODO: this code path probably shouldn't exist anymore
+                const ref = try b.addIndexRef(base, index, arr.element, ref_mutable);
                 break :access try b.add(.{ .load = .{ .ptr = ref } });
             } else try b.addIndexVal(base, index);
             try b.mapInst(inst, access);
@@ -1389,7 +1406,7 @@ fn indexVal(b: *Block, inst: Fir.Index) !void {
                 // we want to avoid loading the entire aggregate (array) into a temporary,
                 // so we instead get a reference to the element and then perform a load
                 // this translates to a GEP in LLVM
-                const ref = try b.addIndexRef(base, index, ptr.pointee);
+                const ref = try b.addIndexRef(base, index, ptr.pointee, ref_mutable);
                 break :access try b.add(.{ .load = .{ .ptr = ref } });
             } else try b.addIndexVal(base, index);
             try b.mapInst(inst, access);
@@ -1414,8 +1431,10 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
 
     var base_type = b.pool.indexToType(b.typeOf(base));
     var is_ref = false;
+    var ref_mutable: bool = undefined;
     if (@as(Type.Tag, base_type) == .ref) {
         // fir wants ref semantics, so we have one level of indirection
+        ref_mutable = base_type.ref.mutable;
         base_type = b.pool.indexToType(base_type.ref.pointee);
         is_ref = true;
     }
@@ -1423,11 +1442,11 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
     switch (base_type) {
         .array => |arr| {
             const ref = if (is_ref) ref: {
-                break :ref try b.addIndexRef(base, index, arr.element);
+                break :ref try b.addIndexRef(base, index, arr.element, ref_mutable);
             } else ref: {
                 // TODO: should this case actually be used?
                 const ptr = try pushInner(b, base, false);
-                break :ref try b.addIndexRef(ptr, index, arr.element);
+                break :ref try b.addIndexRef(ptr, index, arr.element, true); // TODO: array mutable
                 // const val = try b.addIndexVal(base, index);
                 // break :ref try pushInner(b, val, false);
             };
@@ -1437,12 +1456,12 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
             // because of the extra level of indirection, we first load the
             // slice into a temporary, and then emit an index ref on that
             const val = try b.add(.{ .load = .{ .ptr = base } });
-            const ref = try b.addIndexRef(val, index, slice.element);
+            const ref = try b.addIndexRef(val, index, slice.element, true); // TODO: slice mutable
             try b.mapInst(inst, ref);
         },
         .many_pointer => |ptr| {
             const ref = if (is_ref) ref: {
-                break :ref try b.addIndexRef(base, index, ptr.pointee);
+                break :ref try b.addIndexRef(base, index, ptr.pointee, ref_mutable);
             } else ref: {
                 const val = try b.addIndexVal(base, index);
                 break :ref try pushInner(b, val, false);
@@ -1486,11 +1505,11 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
             const ptr = ptr: {
                 if (is_ref) {
                     const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = true } } });
-                    break :ptr try b.addIndexRef(base, start, element_ptr);
+                    break :ptr try b.addIndexRef(base, start, element_ptr, false); // TODO: mutable
                 } else {
                     const alloc = try pushInner(b, base, false);
                     const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = false } } });
-                    break :ptr try b.addIndexRef(alloc, start, element_ptr);
+                    break :ptr try b.addIndexRef(alloc, start, element_ptr, false);
                 }
             };
             const len = len: {
@@ -1514,7 +1533,7 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
         },
         .slice => |slice| {
             const val = if (is_ref) try b.add(.{ .load = .{ .ptr = base } }) else base;
-            const ptr = try b.addIndexRef(val, start, slice.element);
+            const ptr = try b.addIndexRef(val, start, slice.element, false); // TODO: mutable
             const len = len: {
                 const sub = try b.add(.{ .sub = .{ .l = end, .r = start } });
                 const one = try b.add(.{ .constant = .u64_one });
@@ -1673,6 +1692,12 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
         .@"struct" => |st| {
             // TODO: check that the field exists
             _ = st;
+            // if (is_ref) {
+            //     const ref = try b.add(.{ .field_ref = .{
+            //         .base = base,
+            //         .name = data.field,
+            //     } })
+            // }
             const access = try b.add(.{ .field_val = .{
                 .base = base,
                 .name = data.field,

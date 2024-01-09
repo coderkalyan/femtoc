@@ -475,9 +475,10 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
         pub fn renderInst(self: *Self, air: *const Air, inst: Air.Index) !void {
             const writer = self.stream.writer();
 
-            try writer.print("%{} = ", .{@intFromEnum(inst)});
+            const x = @intFromEnum(inst);
+            try writer.print("%{} = ", .{x});
 
-            const air_inst = air.insts.get(@intFromEnum(inst));
+            const air_inst = air.insts.get(x);
             switch (air_inst) {
                 .block => |block| {
                     try writer.print("block {{", .{});
@@ -639,7 +640,6 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     .slice => |slice| std.fmt.allocPrint(self.arena, "{s}[]", .{try self.formatInterned(slice.element)}),
                     .array => |array| std.fmt.allocPrint(self.arena, "{s}[{}]", .{ try self.formatInterned(array.element), array.count }),
                     .@"struct" => "struct unimplemented",
-                    .comptime_array => std.fmt.allocPrint(self.arena, "comptime_array", .{}),
                     .function => |_| "function unimplemented",
                 },
                 .tv => |tv| {

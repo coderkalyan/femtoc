@@ -96,6 +96,7 @@ const builtin_types = std.ComptimeStringMap(void, .{
 
 const ResultInfo = struct {
     semantics: Semantics,
+    ctx: Context,
 
     const Semantics = enum {
         // the expression should generate an rvalue that can be used, loading from memory if necessary
@@ -105,7 +106,12 @@ const ResultInfo = struct {
         // similar to ref, but applies to non-lvalues. the reference (&) operator uses this
         ref,
         ty,
-        any,
+        none,
+    };
+
+    const Context = enum {
+        none,
+        elem,
     };
 };
 
@@ -311,7 +317,7 @@ fn identExpr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index
             const local_val = ident_scope.cast(Scope.LocalVal).?;
             switch (ri.semantics) {
                 // rvalue - return the instruction
-                .val, .any => return local_val.inst,
+                .val, .none => return local_val.inst,
                 // lvalue - emit an error
                 .ptr => {
                     try fg.errors.append(fg.gpa, .{
@@ -346,11 +352,17 @@ fn identExpr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index
                 // but for mutable variables, the ref points to the address
                 // in memory so we have to generate a load instruction to
                 // get the value at that address
-                .val => return b.add(.{
-                    .data = .{ .load = .{ .ptr = local_ptr.ptr } },
-                    .loc = .{ .node = node },
-                }),
-                .ptr, .ref, .any => return local_ptr.ptr,
+                .val => switch (ri.ctx) {
+                    .none => return b.add(.{
+                        .data = .{ .load = .{ .ptr = local_ptr.ptr } },
+                        .loc = .{ .node = node },
+                    }),
+                    .elem => return b.add(.{
+                        .data = .{ .load_lazy = .{ .ptr = local_ptr.ptr } },
+                        .loc = .{ .node = node },
+                    }),
+                },
+                .ptr, .ref, .none => return local_ptr.ptr,
                 .ty => {
                     try fg.errors.append(fg.gpa, .{
                         .tag = .named_var_type_context,
@@ -363,7 +375,7 @@ fn identExpr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index
         .local_type => {
             const local_type = ident_scope.cast(Scope.LocalType).?;
             switch (ri.semantics) {
-                .ty, .any => return local_type.inst,
+                .ty, .none => return local_type.inst,
                 .val, .ptr, .ref => {
                     try fg.errors.append(fg.gpa, .{
                         .tag = .named_type_var_context,
@@ -384,7 +396,7 @@ fn identExpr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index
                     .data = .{ .load = .{ .ptr = ptr } },
                     .loc = .{ .node = node },
                 }),
-                .ptr, .ref, .any => return ptr,
+                .ptr, .ref, .none => return ptr,
                 .ty => unreachable,
             }
         },
@@ -476,7 +488,7 @@ fn unary(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.
                     .data = .{ .load = .{ .ptr = ref } },
                     .loc = .{ .node = node },
                 }),
-                .ptr, .ref, .any => return ref,
+                .ptr, .ref, .none => return ref,
                 .ty => unreachable,
             }
         },
@@ -771,7 +783,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
                 return GenError.NotImplemented;
             },
         },
-        .any => switch (b.tree.data(node)) {
+        .none => switch (b.tree.data(node)) {
             .integer_literal => integerLiteral(b, node),
             .float_literal => floatLiteral(b, node),
             .bool_literal => boolLiteral(b, node),
@@ -782,7 +794,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             // .index => try opSubscript(b, scope, ri, node),
             // .member => try opMember(b, scope, ri, node),
             else => {
-                std.log.err("expr (any semantics): unexpected node: {}\n", .{b.tree.data(node)});
+                std.log.err("expr (none semantics): unexpected node: {}\n", .{b.tree.data(node)});
                 return GenError.NotImplemented;
             },
         },
@@ -790,27 +802,27 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
 }
 
 inline fn valExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
-    const ri: ResultInfo = .{ .semantics = .val };
+    const ri: ResultInfo = .{ .semantics = .val, .ctx = .none };
     return expr(b, s, ri, node);
 }
 
 inline fn ptrExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
-    const ri: ResultInfo = .{ .semantics = .ptr };
+    const ri: ResultInfo = .{ .semantics = .ptr, .ctx = .none };
     return expr(b, s, ri, node);
 }
 
 inline fn refExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
-    const ri: ResultInfo = .{ .semantics = .ref };
+    const ri: ResultInfo = .{ .semantics = .ref, .ctx = .none };
     return expr(b, s, ri, node);
 }
 
 inline fn typeExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
-    const ri: ResultInfo = .{ .semantics = .ty };
+    const ri: ResultInfo = .{ .semantics = .ty, .ctx = .none };
     return expr(b, s, ri, node);
 }
 
-inline fn anyExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
-    const ri: ResultInfo = .{ .semantics = .any };
+inline fn noneExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
+    const ri: ResultInfo = .{ .semantics = .none, .ctx = .none };
     return expr(b, s, ri, node);
 }
 
@@ -903,7 +915,6 @@ fn structType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
         const data = b.tree.data(field).field;
         const field_token = b.tree.mainToken(field);
         const field_name = b.tree.tokenString(field_token);
-        std.debug.print("type field: {s}\n", .{field_name});
         const id = try fg.pool.getOrPutString(field_name);
         const field_type = try typeExpr(b, scope, data);
         const struct_field = try fg.addExtra(Inst.StructField{
@@ -924,7 +935,7 @@ fn structType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
 fn opSubscript(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
     const subscript = b.tree.data(node).subscript;
 
-    const operand = try expr(b, scope, ri, subscript.operand);
+    const operand = try expr(b, scope, .{ .semantics = ri.semantics, .ctx = .elem }, subscript.operand);
     const index = try valExpr(b, scope, subscript.index);
     switch (ri.semantics) {
         .val => return b.add(.{
@@ -935,15 +946,30 @@ fn opSubscript(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Erro
             .data = .{ .index_ref = .{ .base = operand, .index = index } },
             .loc = .{ .node = node },
         }),
-        .any, .ty => unreachable,
+        .none, .ty => unreachable,
     }
+
+    // const operand = try noneExpr(b, scope, subscript.operand);
+    // const index = try valExpr(b, scope, subscript.index);
+    // std.debug.print("subscript: {}\n", .{ri});
+    // switch (ri.semantics) {
+    //     .val => return b.add(.{
+    //         .data = .{ .index_val = .{ .base = operand, .index = index } },
+    //         .loc = .{ .node = node },
+    //     }),
+    //     .ptr, .ref => return b.add(.{
+    //         .data = .{ .index_ref = .{ .base = operand, .index = index } },
+    //         .loc = .{ .node = node },
+    //     }),
+    //     .none, .ty => unreachable,
+    // }
 }
 
 fn opSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const slice = b.tree.data(node).slice;
     const payload = b.tree.extraData(slice.range, Node.GetSlice);
-    const base = try anyExpr(b, scope, slice.operand);
+    const base = try noneExpr(b, scope, slice.operand);
     const start = try valExpr(b, scope, payload.start);
     const end = try valExpr(b, scope, payload.end);
 
@@ -971,7 +997,7 @@ fn opMember(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!F
     const field_name = b.tree.tokenString(field_token);
     const id = try fg.pool.getOrPutString(field_name);
 
-    const operand = try anyExpr(b, scope, field_val);
+    const operand = try noneExpr(b, scope, field_val);
     switch (ri.semantics) {
         .val => return b.add(.{
             .data = .{ .field_val = .{ .base = operand, .field = id } },
@@ -981,7 +1007,7 @@ fn opMember(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!F
             .data = .{ .field_ref = .{ .base = operand, .field = id } },
             .loc = .{ .node = node },
         }),
-        .any, .ty => unreachable,
+        .none, .ty => unreachable,
     }
 }
 
@@ -1063,7 +1089,7 @@ fn call(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const call_expr = b.tree.data(node).call;
     // TODO: probably use ref semantics
-    const ri: ResultInfo = .{ .semantics = .ptr };
+    const ri: ResultInfo = .{ .semantics = .ptr, .ctx = .none };
     const ptr = try identExpr(b, scope, ri, call_expr.ptr);
 
     const scratch_top = fg.scratch.items.len;

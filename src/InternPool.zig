@@ -58,7 +58,6 @@ const Tag = enum(u8) {
     slice_type,
     array_type,
     struct_type,
-    comptime_array_type,
     function_type,
 
     // typed values
@@ -300,7 +299,6 @@ pub fn indexToKey(pool: *InternPool, index: Index) Key {
         .slice_type,
         .array_type,
         .struct_type,
-        .comptime_array_type,
         .function_type,
         => .{ .ty = Type.fromInterned(pool, index) },
         .none_tv,
@@ -419,7 +417,6 @@ fn putType(pool: *InternPool, key: Key) !void {
             });
             pool.items.appendAssumeCapacity(.{ .tag = .struct_type, .data = pl });
         },
-        .comptime_array => |array| pool.items.appendAssumeCapacity(.{ .tag = .comptime_array_type, .data = @intCast(array.count) }),
         .function => |function| {
             const pl = try pool.addExtra(FunctionType{
                 .params_start = function.params.start,

@@ -202,6 +202,11 @@ pub const Inst = struct {
         load: struct {
             ptr: Index,
         },
+        // same as above, but can be folded into a second instruction that
+        // consumes it in a specific way
+        load_lazy: struct {
+            ptr: Index,
+        },
         // stores data to a memory address
         store: struct {
             // where to store

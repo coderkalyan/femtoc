@@ -178,6 +178,9 @@ pub const Inst = union(enum) {
     load: struct {
         ptr: Index,
     },
+    load_lazy: struct {
+        ptr: Index,
+    },
     // stores data to a memory address
     store: struct {
         // where to store
@@ -391,7 +394,7 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             return @enumFromInt(field_types[slot_index]);
         },
         inline .alloc, .alloc_mut => |alloc| return alloc.pointer_type,
-        .load => |load| {
+        inline .load, .load_lazy => |load| {
             const ty = air.typeOf(load.ptr);
             const pointer_type = pool.indexToKey(ty).ty;
             switch (pointer_type) {

@@ -16,6 +16,8 @@ pool: *InternPool,
 air: *const Air,
 scratch: std.ArrayListUnmanaged(c.LLVMValueRef),
 map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
+// demoted_insts: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
+lazy: std.AutoHashMapUnmanaged(Air.Index, []c.LLVMValueRef),
 scope: *Scope,
 
 const Error = Allocator.Error || error{NotImplemented};
@@ -45,7 +47,6 @@ fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
         .load_decl => {
             const load_decl = air.insts.items(.data)[i].load_decl;
             const decl_index = self.pool.indexToKey(load_decl.ip_index).decl;
-            // const decl = self.pool.decls.at(@intFromEnum(decl_index));
             return self.builder.context.resolveDecl(decl_index);
         },
         else => {
@@ -128,6 +129,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
             .alloc, .alloc_mut => try self.alloc(inst),
             .load => try self.load(inst),
+            .load_lazy => try self.loadLazy(inst),
             .store => try self.store(inst),
 
             .branch_single => try self.branchSingle(inst),
@@ -171,7 +173,6 @@ fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     switch (self.pool.indexToKey(tv.ty).ty) {
         .comptime_int,
         .comptime_float,
-        .comptime_array,
         => return null,
         .void => {
             const ty = c.LLVMVoidTypeInContext(builder.context.context);
@@ -193,7 +194,6 @@ fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
             switch (self.pool.indexToType(array.element)) {
                 .comptime_int,
                 .comptime_float,
-                .comptime_array,
                 => return null,
                 else => {
                     const val = try builder.context.resolveTv(tv);
@@ -209,102 +209,6 @@ fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
         else => unreachable, // unimplemented
     }
 }
-
-// fn constantInner(self: *CodeGen, ty: Type, value: Value) !c.LLVMValueRef {
-//     const air = self.air;
-//     var builder = self.builder;
-//     switch (ty.kind()) {
-//         .comptime_uint,
-//         .comptime_sint,
-//         .comptime_float,
-//         .comptime_array,
-//         => return null,
-//         .uint => return builder.addUint(ty, value.integer),
-//         .sint => return builder.addSint(ty, value.integer),
-//         .float => return builder.addFloat(ty, @bitCast(value.float)),
-//         .array => {
-//             const element_type = ty.extended.cast(Type.Array).?.element;
-//             const src_elements = value.array.elements;
-//
-//             const scratch_top = self.scratch.items.len;
-//             defer self.scratch.shrinkRetainingCapacity(scratch_top);
-//             try self.scratch.ensureUnusedCapacity(self.arena, src_elements.len);
-//             for (src_elements) |element| {
-//                 const element_value = air.pool.getValue(element);
-//                 const dest_element = try self.constantInner(element_type, element_value);
-//                 self.scratch.appendAssumeCapacity(dest_element);
-//             }
-//
-//             const dest_elements = self.scratch.items[scratch_top..];
-//             const llvm_type = try builder.convertType(ty);
-//             const llvm_array = try builder.addConstArray(ty, dest_elements);
-//             const global = builder.context.addGlobal(".data", llvm_type);
-//             c.LLVMSetInitializer(global, llvm_array);
-//             c.LLVMSetGlobalConstant(global, 1);
-//             c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-//             c.LLVMSetUnnamedAddr(global, 1);
-//             return global;
-//         },
-//         .string => {
-//             const string = value.string;
-//             const literal = try air.interner.get(string);
-//             const llvm_string = try builder.context.addConstString(literal);
-//             const llvm_type = c.LLVMTypeOf(llvm_string);
-//             const global = builder.context.addGlobal(".data", llvm_type);
-//             c.LLVMSetInitializer(global, llvm_string);
-//             c.LLVMSetGlobalConstant(global, 1);
-//             c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-//             c.LLVMSetUnnamedAddr(global, 1);
-//             return global;
-//         },
-//         .slice => {
-//             // generate a slice value by starting with an undef
-//             // and inserting 2 values into it (ptr and len)
-//             const slice = value.slice;
-//             const llvm_type = try self.builder.convertType(ty);
-//             const undef = c.LLVMGetUndef(llvm_type);
-//             const ptr_value = self.value_map.get(slice.ptr).?;
-//             const len_type = Type.Common.u64_type;
-//             const len = air.pool.getValue(slice.len);
-//             const len_value = try self.constantInner(len_type, len);
-//             const ptr = try self.builder.addInsertValue(undef, ptr_value, 0);
-//             return self.builder.addInsertValue(ptr, len_value, 1);
-//         },
-//         // switch (value) {
-//         //     .string => {
-//         //         const string = value.string;
-//         //         const literal = try air.interner.get(string);
-//         //         const llvm_string = try builder.context.addConstString(literal);
-//         //         const llvm_type = c.LLVMTypeOf(llvm_string);
-//         //         const global = builder.context.addGlobal(".str", llvm_type);
-//         //         c.LLVMSetInitializer(global, llvm_string);
-//         //         c.LLVMSetGlobalConstant(global, 1);
-//         //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-//         //         c.LLVMSetUnnamedAddr(global, 1);
-//         //         return global;
-//         //     },
-//         //     .slice => {
-//         //         const slice = value.slice;
-//         //         var elements: [2]c.LLVMValueRef = [1]c.LLVMValueRef{undefined} ** 2;
-//         //         const len_type = Type.Common.u64_type;
-//         //         const len = air.pool.getValue(slice.len);
-//         //         elements[0] = self.value_map.get(slice.ptr).?;
-//         //         elements[1] = try self.constantInner(len_type, len);
-//         //         const llvm_slice = try builder.context.addConstStruct(&elements);
-//         //         const llvm_type = try builder.convertType(ty);
-//         //         const global = builder.context.addGlobal(".slice", llvm_type);
-//         //         c.LLVMSetInitializer(global, llvm_slice);
-//         //         c.LLVMSetGlobalConstant(global, 1);
-//         //         c.LLVMSetLinkage(global, c.LLVMPrivateLinkage);
-//         //         c.LLVMSetUnnamedAddr(global, 1);
-//         //         return global;
-//         //     },
-//         //     else => unreachable,
-//         // }
-//         // },
-//         else => unreachable,
-//     }
-// }
 
 fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c.LLVMValueRef {
     const air = self.air;
@@ -411,7 +315,47 @@ fn load(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const load_type = self.pool.indexToType(ptr_type.pointee);
     const ref = switch (load_type) {
         // shhh! these are aggregates, we only pretend to load them
-        .array, .slice => ptr,
+        // what we actually do is copy them into a new aggregate, since
+        // we're emulating loading their value into a temporary (but
+        // the temporary is actually an alloca)
+        // TODO: in the future, we should try to elide as many of these
+        // copies as we can
+        .array, .slice => ref: {
+            const alloca = try self.allocaInner(load_type);
+            _ = try self.builder.addMemcpy(load_type, alloca, ptr);
+            break :ref alloca;
+        },
+        else => try self.builder.addLoad(ptr, load_type),
+    };
+    // const ref = try self.builder.addLoad(ptr, load_type);
+    try self.map.put(self.arena, inst, ref);
+    return ref;
+}
+
+fn loadLazy(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const data = air.insts.items(.data)[@intFromEnum(inst)].load_lazy;
+    const ptr = self.resolveInst(data.ptr);
+    const ptr_type = self.pool.indexToType(air.typeOf(data.ptr)).ref;
+    const load_type = self.pool.indexToType(ptr_type.pointee);
+    const ref = switch (load_type) {
+        // shhh! these are aggregates, we only pretend to load them
+        // what we actually do is copy them into a new aggregate, since
+        // we're emulating loading their value into a temporary (but
+        // the temporary is actually an alloca)
+        // TODO: in the future, we should try to elide as many of these
+        // copies as we can
+        .array, .slice => ref: {
+            const alloca = try self.allocaInner(load_type);
+            const memcpy = try self.builder.addMemcpy(load_type, alloca, ptr);
+
+            const insts = try self.arena.alloc(c.LLVMValueRef, 2);
+            insts[0] = alloca;
+            insts[1] = memcpy;
+            try self.lazy.put(self.arena, inst, insts);
+
+            break :ref alloca;
+        },
         else => try self.builder.addLoad(ptr, load_type),
     };
     // const ref = try self.builder.addLoad(ptr, load_type);
@@ -737,7 +681,7 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const builder = self.builder;
     const data = air.insts.items(.data)[@intFromEnum(inst)].index_val;
 
-    const base = self.resolveInst(data.base);
+    var base = self.resolveInst(data.base);
     const index = self.resolveInst(data.index);
     const base_type = self.pool.indexToKey(air.typeOf(data.base)).ty;
     switch (base_type) {
@@ -745,6 +689,18 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
             // since arrays are actually stored in memory (even though this is value semantics)
             // we have an extra level of indirection
             // hence we emit a GEP + load
+            switch (air.insts.get(@intFromEnum(data.base))) {
+                .load_lazy => |lazy| {
+                    // encountered a load_lazy + index val, what we actually want to do is
+                    // fuse these into an gep + load on the original load operand
+                    // and elide the previously emitted load_lazy instruction
+                    base = self.resolveInst(lazy.ptr);
+                    for (self.lazy.get(data.base).?) |elide| {
+                        c.LLVMInstructionEraseFromParent(elide);
+                    }
+                },
+                else => {},
+            }
             const element_type = self.pool.indexToKey(array_type.element).ty;
             const deref = try builder.addUint(.{ .int = .{ .sign = .unsigned, .width = 32 } }, 0);
             var indices = .{ deref, index };

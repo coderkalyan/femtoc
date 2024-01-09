@@ -16,8 +16,6 @@ pub const Type = union(enum) {
     slice: struct { element: InternPool.Index },
     array: struct { element: InternPool.Index, count: u32 },
     @"struct": struct { fields: InternPool.ExtraSlice, names: InternPool.Index },
-    // TODO: maybe get rid of this type
-    comptime_array: struct { count: u32 },
     function: struct {
         params: InternPool.ExtraSlice,
         @"return": InternPool.Index,
@@ -57,7 +55,6 @@ pub const Type = union(enum) {
                 const fields = pool.extraData(InternPool.ExtraSlice, st.fields);
                 return .{ .@"struct" = .{ .fields = fields, .names = st.names } };
             },
-            .comptime_array_type => .{ .comptime_array = .{ .count = @intCast(data) } },
             .function_type => {
                 const function = pool.extraData(InternPool.FunctionType, data);
                 return .{ .function = .{
@@ -94,7 +91,6 @@ pub const Type = union(enum) {
                 hasher.update(asBytes(&data.element));
                 hasher.update(asBytes(&data.count));
             },
-            .comptime_array => |data| hasher.update(asBytes(&data.count)),
             .@"struct" => |data| {
                 hasher.update(asBytes(&data.fields.start));
                 hasher.update(asBytes(&data.fields.end));
@@ -135,7 +131,7 @@ pub const Type = union(enum) {
     pub fn size(ty: Type, pool: *InternPool) ?usize {
         return switch (ty) {
             .void => 0,
-            .comptime_int, .comptime_float, .comptime_array => null,
+            .comptime_int, .comptime_float => null,
             inline .int, .float => |num| switch (num.width) {
                 inline 1...127 => |width| comptime intSize(width),
                 else => unreachable,
@@ -148,8 +144,48 @@ pub const Type = union(enum) {
                 const element_size = element.size(pool) orelse return null;
                 return element_size * array.count;
             },
+            .@"struct" => |structure| {
+                const fields = pool.extra.items[structure.fields.start..structure.fields.end];
+                var total: usize = 0;
+                for (fields) |field| {
+                    const field_type = pool.indexToType(@enumFromInt(field));
+                    const aln = field_type.alignment(pool) orelse return null;
+                    total = ((total + aln - 1) / aln) * aln;
+                    total += field_type.size(pool) orelse return null;
+                }
+
+                const aln = ty.alignment(pool) orelse return null;
+                total = ((total + aln - 1) / aln) * aln;
+                return total;
+            },
             .function => unreachable, // TODO
-            .@"struct" => unreachable, // TODO
+            .ref => unreachable,
+        };
+    }
+
+    pub fn alignment(ty: Type, pool: *InternPool) ?usize {
+        return switch (ty) {
+            .void => 0,
+            .comptime_int, .comptime_float => null,
+            inline .int, .float => |num| switch (num.width) {
+                inline 1...127 => |width| comptime intSize(width),
+                else => unreachable,
+            },
+            .bool => 1,
+            .pointer, .many_pointer => 8, // TODO: architecture dependent
+            .slice => 8, // TODO: architecture dependent
+            .array => |array| {
+                const element = pool.indexToType(array.element);
+                const element_size = element.size(pool) orelse return null;
+                return element_size;
+            },
+            .@"struct" => |structure| {
+                var max: usize = 0;
+                const fields = pool.extra.items[structure.fields.start..structure.fields.end];
+                for (fields) |field| max = @max(max, pool.indexToType(@enumFromInt(field)).alignment(pool) orelse return null);
+                return max;
+            },
+            .function => unreachable, // TODO
             .ref => unreachable,
         };
     }

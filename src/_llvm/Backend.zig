@@ -70,6 +70,7 @@ pub fn generate(self: *Backend) !void {
                         .air = air,
                         .scratch = .{},
                         .map = .{},
+                        .lazy = .{},
                         // .control_flow = .{},
                         .scope = undefined,
                     };
