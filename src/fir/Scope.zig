@@ -149,6 +149,10 @@ pub const Block = struct {
             .loc = .{ .node = node },
         });
     }
+
+    pub fn addNodeLoc(b: *Block, data: Fir.Inst.Data, node: Node.Index) !Fir.Index {
+        return b.add(.{ .data = data, .loc = .{ .node = node } });
+    }
 };
 
 pub const LocalVal = struct {

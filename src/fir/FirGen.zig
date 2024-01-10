@@ -226,20 +226,14 @@ fn module(fg: *FirGen, node: Node.Index) !Fir.Index {
 
 fn integerLiteral(b: *Block, node: Node.Index) !Fir.Index {
     const int = b.tree.data(node).integer_literal;
-    return b.add(.{
-        .data = .{ .int = int },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .int = int }, node);
 }
 
 fn floatLiteral(b: *Block, node: Node.Index) !Fir.Index {
     const float_token = b.tree.mainToken(node);
     const float_str = b.tree.tokenString(float_token);
     const float = try parseFloat(float_str);
-    return b.add(.{
-        .data = .{ .float = float },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .float = float }, node);
 }
 
 fn boolLiteral(b: *Block, node: Node.Index) !Fir.Index {
@@ -249,19 +243,13 @@ fn boolLiteral(b: *Block, node: Node.Index) !Fir.Index {
         .k_false => false,
         else => unreachable,
     };
-    return b.add(.{
-        .data = .{ .bool = value },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .bool = value }, node);
 }
 
 fn charLiteral(b: *Block, node: Node.Index) !Fir.Index {
     const char_token = b.tree.mainToken(node);
     const char_str = b.tree.tokenString(char_token);
-    return b.add(.{
-        .data = .{ .int = char_str[1] },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .int = char_str[1] }, node);
 }
 
 fn stringLiteral(b: *Block, node: Node.Index) !Fir.Index {
@@ -271,10 +259,7 @@ fn stringLiteral(b: *Block, node: Node.Index) !Fir.Index {
     const string_literal = string_text[1 .. string_text.len - 1];
     const id = try fg.pool.getOrPutString(string_literal);
 
-    return b.add(.{
-        .data = .{ .string = id },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .string = id }, node);
 }
 
 fn identExpr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
@@ -423,6 +408,7 @@ fn binaryInner(b: *Block, node: Node.Index, op: Ast.TokenIndex, l: Fir.Index, r:
         .l_angle_equal => .cmp_le,
         .r_angle_r_angle, .r_angle_r_angle_equal => .sr,
         .l_angle_l_angle, .l_angle_l_angle_equal => .sl,
+        .k_xor => .bitwise_xor,
         else => return error.UnexpectedToken,
     };
 
@@ -443,12 +429,7 @@ fn binaryInner(b: *Block, node: Node.Index, op: Ast.TokenIndex, l: Fir.Index, r:
         .cmp_le,
         .sr,
         .sl,
-        => |t| {
-            return b.add(.{
-                .data = @unionInit(Inst.Data, @tagName(t), .{ .l = l, .r = r }),
-                .loc = .{ .node = node },
-            });
-        },
+        => |t| return b.addNodeLoc(@unionInit(Inst.Data, @tagName(t), .{ .l = l, .r = r }), node),
         else => unreachable,
     }
 }
@@ -456,12 +437,58 @@ fn binaryInner(b: *Block, node: Node.Index, op: Ast.TokenIndex, l: Fir.Index, r:
 fn binary(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const operator_token = b.tree.mainToken(node);
     const tag = b.tree.tokenTag(operator_token);
-    _ = tag;
-    // TODO: binary short circuiting
+    switch (tag) {
+        .k_or, .k_and, .k_xor, .k_implies => return binaryShort(b, scope, node),
+        else => {},
+    }
+
     const binary_expr = b.tree.data(node).binary;
     const left = try valExpr(b, scope, binary_expr.left);
     const right = try valExpr(b, scope, binary_expr.right);
     return binaryInner(b, node, operator_token, left, right);
+}
+
+fn binaryShort(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+    const binary_expr = b.tree.data(node).binary;
+    const operator_token = b.tree.mainToken(node);
+    const tag = b.tree.tokenTag(operator_token);
+
+    // emit a branch expression
+    switch (tag) {
+        // if a { yield true } else { yield b }
+        .k_or => {
+            const a = try valExpr(b, scope, binary_expr.left);
+            const short = try b.addNodeLoc(.{ .bool = true }, node);
+            const exec_true = try wrapInst(b, scope, short, node);
+            const exec_false = try wrapExpression(b, scope, binary_expr.right);
+            return b.addBranchDouble(a, exec_true, exec_false, node);
+        },
+        // if !a { yield false } else { yield b }
+        .k_and => {
+            const a = try valExpr(b, scope, binary_expr.left);
+            const not = try b.addNodeLoc(.{ .logical_not = a }, node);
+            const short = try b.addNodeLoc(.{ .bool = false }, node);
+            const exec_true = try wrapInst(b, scope, short, node);
+            const exec_false = try wrapExpression(b, scope, binary_expr.right);
+            return b.addBranchDouble(not, exec_true, exec_false, node);
+        },
+        // not lossy, cannot short circuit
+        .k_xor => {
+            const left = try valExpr(b, scope, binary_expr.left);
+            const right = try valExpr(b, scope, binary_expr.right);
+            return binaryInner(b, node, operator_token, left, right);
+        },
+        // if !a { yield true } else { yield b }
+        .k_implies => {
+            const a = try valExpr(b, scope, binary_expr.left);
+            const not = try b.addNodeLoc(.{ .logical_not = a }, node);
+            const short = try b.addNodeLoc(.{ .bool = true }, node);
+            const exec_true = try wrapInst(b, scope, short, node);
+            const exec_false = try wrapExpression(b, scope, binary_expr.right);
+            return b.addBranchDouble(not, exec_true, exec_false, node);
+        },
+        else => unreachable,
+    }
 }
 
 fn unary(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
@@ -470,63 +497,18 @@ fn unary(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.
 
     switch (b.tree.tokenTag(operator_token)) {
         // calculate a reference to the pointer and return it
-        // TODO: switch this to ref semantics
-        .ampersand => {
-            const ref = try refExpr(b, scope, unary_expr);
-            return b.add(.{
-                .data = .{ .reftoptr = ref },
-                .loc = .{ .node = node },
-            });
-        },
+        .ampersand => return b.addNodeLoc(.{ .reftoptr = try refExpr(b, scope, unary_expr) }, node),
         .asterisk => {
-            const ptr = try valExpr(b, scope, unary_expr);
-            const ref = try b.add(.{
-                .data = .{ .ptrtoref = ptr },
-                .loc = .{ .node = node },
-            });
+            const ref = try b.addNodeLoc(.{ .ptrtoref = try valExpr(b, scope, unary_expr) }, node);
             switch (ri.semantics) {
-                .val => return b.add(.{
-                    .data = .{ .load = .{ .ptr = ref } },
-                    .loc = .{ .node = node },
-                }),
+                .val => return b.addNodeLoc(.{ .load = .{ .ptr = ref } }, node),
                 .ptr, .ref, .none => return ref,
                 .ty => unreachable,
             }
         },
-        .minus => {
-            const operand = try valExpr(b, scope, unary_expr);
-            return b.add(.{
-                .data = .{ .neg = operand },
-                .loc = .{ .node = node },
-            });
-        },
-        .bang => {
-            unreachable; // TODO
-            // lowers to a bool comparison to 0
-            // just coerce this to a u1 so we know we're operating on a bool
-            // TODO: move this to Air
-            // const inner = try valExpr(b, scope, unary_expr);
-            // const bool_type = try b.add(.{
-            //     .data = .{ .bool_type = {} },
-            //     .loc = .{ .node = node },
-            // });
-            // const operand = try coerce(b, scope, inner, bool_type, node);
-            // const other = try b.add(.{
-            //     .data = .{ .int = 0 },
-            //     .loc = .{ .node = node },
-            // });
-            // return b.add(.{
-            //     .data = .{ .cmp_eq = .{ .l = operand, .r = other } },
-            //     .loc = .{ .node = node },
-            // });
-        },
-        .tilde => {
-            const operand = try valExpr(b, scope, unary_expr);
-            return b.add(.{
-                .data = .{ .bitwise_not = operand },
-                .loc = .{ .node = node },
-            });
-        },
+        .minus => return b.addNodeLoc(.{ .neg = try valExpr(b, scope, unary_expr) }, node),
+        .bang => return b.addNodeLoc(.{ .logical_not = try valExpr(b, scope, unary_expr) }, node),
+        .tilde => return b.addNodeLoc(.{ .bitwise_not = try valExpr(b, scope, unary_expr) }, node),
         else => {
             std.log.err("unary: unexpected token: {}\n", .{b.tree.tokenTag(operator_token)});
             return error.UnexpectedToken;
@@ -703,7 +685,7 @@ fn expr(b: *Block, s: **Scope, ri: ResultInfo, node: Node.Index) !Fir.Index {
             // some types of unaries (like pointer assignment *apple = banana)
             .unary => try unary(b, s, ri, node),
             .subscript => try opSubscript(b, s, ri, node),
-            // .member => try opMember(b, s, ri, node),
+            .member => try opMember(b, s, ri, node),
             .paren => try expr(b, s, ri, b.tree.data(node).paren),
             else => {
                 std.log.err("expr (ptr semantics): unexpected node: {}\n", .{b.tree.data(node)});
@@ -949,21 +931,6 @@ fn opSubscript(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Erro
         }),
         .none, .ty => unreachable,
     }
-
-    // const operand = try noneExpr(b, scope, subscript.operand);
-    // const index = try valExpr(b, scope, subscript.index);
-    // std.debug.print("subscript: {}\n", .{ri});
-    // switch (ri.semantics) {
-    //     .val => return b.add(.{
-    //         .data = .{ .index_val = .{ .base = operand, .index = index } },
-    //         .loc = .{ .node = node },
-    //     }),
-    //     .ptr, .ref => return b.add(.{
-    //         .data = .{ .index_ref = .{ .base = operand, .index = index } },
-    //         .loc = .{ .node = node },
-    //     }),
-    //     .none, .ty => unreachable,
-    // }
 }
 
 fn opSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
@@ -1500,7 +1467,7 @@ fn yield(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     });
 }
 
-fn loopConditionInner(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
+fn wrapExpression(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     var inner = Block.init(b.fg, scope.*);
     defer inner.deinit();
     var s = &inner.base;
@@ -1508,6 +1475,18 @@ fn loopConditionInner(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const condition = try valExpr(&inner, &s, node);
     _ = try inner.add(.{
         .data = .{ .yield_implicit = condition },
+        .loc = .{ .token = undefined },
+    });
+    return b.addBlockUnlinked(&inner, node);
+}
+
+fn wrapInst(b: *Block, scope: **Scope, inst: Fir.Index, node: Node.Index) !Fir.Index {
+    var inner = Block.init(b.fg, scope.*);
+    defer inner.deinit();
+
+    try inner.linkInst(inst);
+    _ = try inner.add(.{
+        .data = .{ .yield_implicit = inst },
         .loc = .{ .token = undefined },
     });
     return b.addBlockUnlinked(&inner, node);
@@ -1526,7 +1505,7 @@ fn loopForever(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
 fn loopConditional(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
     const loop_conditional = b.tree.data(node).loop_conditional;
 
-    const condition = try loopConditionInner(b, scope, loop_conditional.condition);
+    const condition = try wrapExpression(b, scope, loop_conditional.condition);
     const body = try blockUnlinked(b, scope, loop_conditional.body);
     return b.addLoopWhile(condition, body, node);
 }
@@ -1537,7 +1516,7 @@ fn loopRange(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
 
     var s = scope.*;
     _ = try statement(b, &s, signature.binding);
-    const condition = try loopConditionInner(b, &s, signature.condition);
+    const condition = try wrapExpression(b, &s, signature.condition);
 
     var inner = Block.init(b.fg, s);
     defer inner.deinit();

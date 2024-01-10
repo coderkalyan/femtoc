@@ -131,6 +131,7 @@ pub const Token = struct {
         .{ "break", .k_break },
         .{ "or", .k_or },
         .{ "and", .k_and },
+        .{ "xor", .k_xor },
         .{ "implies", .k_implies },
         .{ "true", .k_true },
         .{ "false", .k_false },
@@ -992,6 +993,12 @@ test "keywords" {
     try testLex("defer", &.{.k_defer});
     try testLex("for", &.{.k_for});
     try testLex("break", &.{.k_break});
+    try testLex("or", &.{.k_or});
+    try testLex("and", &.{.k_and});
+    try testLex("xor", &.{.k_xor});
+    try testLex("implies", &.{.k_implies});
+    try testLex("true", &.{.k_true});
+    try testLex("false", &.{.k_false});
 }
 
 test "annotations" {

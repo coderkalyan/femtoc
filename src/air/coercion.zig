@@ -44,6 +44,11 @@ fn peerType(pool: *InternPool, src: Type, dest: Type) ?Type {
         return dest;
     }
 
+    // both booleans
+    if (src_tag == .bool and dest_tag == .bool) {
+        return dest;
+    }
+
     // pointers to the same type, same mutability or dropping mutability
     if (src_tag == .pointer and dest_tag == .float) {
         if (src.pointer.pointee != dest.pointer.pointee) return null;

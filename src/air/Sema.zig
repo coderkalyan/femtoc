@@ -250,6 +250,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .bitwise_or,
             .bitwise_and,
             .bitwise_xor,
+            .logical_xor,
             => |tag| try binaryArithOp(&b, inst, tag),
             .sl,
             .sr,
@@ -262,6 +263,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .cmp_le,
             => |tag| try binaryCmp(&b, inst, tag),
             .neg => try unaryNeg(&b, inst),
+            .logical_not => try logicalNot(&b, inst),
             .bitwise_not => try bitwiseNot(&b, inst),
 
             .coerce => try firCoerce(&b, inst),
@@ -272,7 +274,7 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .index_ref => try indexRef(&b, inst),
             .slice => try firSlice(&b, inst),
             .field_val => try fieldVal(&b, inst),
-            .field_ref => unreachable,
+            .field_ref => unreachable, // TODO
             // .field_ref => try fieldRef(&b, inst),
 
             .load_global => try loadGlobal(&b, inst),
@@ -1105,13 +1107,14 @@ fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst
         .bitwise_or => .bitwise_or,
         .bitwise_and => .bitwise_and,
         .bitwise_xor => .bitwise_xor,
+        .logical_xor => .bitwise_xor, // TODO: do we want to split this into a separate air instruction?
         .sl, .sr => unreachable,
         else => undefined,
     };
 
     const dest_type = coercion.resolvePeerTypes(b.pool, &.{ lty, rty }).?;
     switch (dest_type) {
-        .comptime_int, .int, .comptime_float, .float => {},
+        .comptime_int, .int, .comptime_float, .float, .bool => {}, // TODO: actually, we shouldn't allow these to mix
         else => {
             try sema.errors.append(sema.gpa, .{
                 .tag = .operator_invalid,
@@ -1229,6 +1232,16 @@ pub fn unaryNeg(b: *Block, inst: Fir.Index) !void {
     }
 }
 
+pub fn logicalNot(b: *Block, inst: Fir.Index) !void {
+    const not = b.fir.get(inst);
+    const data = not.data.logical_not;
+
+    const inner = b.resolveInst(data);
+    const operand = try coerceInnerImplicit(b, inner, Type.bool_type);
+    const air_inst = try b.add(.{ .logical_not = operand });
+    try b.mapInst(inst, air_inst);
+}
+
 pub fn bitwiseNot(b: *Block, inst: Fir.Index) !void {
     const neg = b.fir.get(inst);
     const data = neg.data.neg;
@@ -1259,17 +1272,22 @@ pub fn branchDouble(b: *Block, inst: Fir.Index) !void {
 
     const cond = b.resolveInst(data.cond);
     const exec_true = try b.sema.analyzeBodyBlock(branch.exec_true);
-    const exec_false = try b.sema.analyzeBodyBlock(branch.exec_true);
+    const exec_false = try b.sema.analyzeBodyBlock(branch.exec_false);
 
     const pl = try b.sema.addExtra(Air.Inst.BranchDouble{
         .exec_true = exec_true,
         .exec_false = exec_false,
     });
-    const air_inst = try b.add(.{ .branch_double = .{
+    const air_branch = try b.add(.{ .branch_double = .{
         .cond = cond,
         .pl = pl,
     } });
-    try b.mapInst(inst, air_inst);
+
+    const true_type = b.pool.indexToType(b.typeOf(exec_true));
+    const false_type = b.pool.indexToType(b.typeOf(exec_false));
+    const dest_type = coercion.resolvePeerTypes(b.pool, &.{ true_type, false_type }).?;
+    const air_coerce = try coerceInnerImplicit(b, air_branch, dest_type);
+    try b.mapInst(inst, air_coerce);
 }
 
 pub fn loopForever(b: *Block, inst: Fir.Index) !void {

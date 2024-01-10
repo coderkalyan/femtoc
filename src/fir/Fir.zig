@@ -127,11 +127,15 @@ pub const Inst = struct {
         sl: BinaryOp,
         // shift right >>
         sr: BinaryOp,
+        // logical xor `xor`
+        logical_xor: BinaryOp,
 
         // unary expressions
         // negate -
         neg: Index,
-        // bitwise not ~
+        // logical negation !
+        logical_not: Index,
+        // bitwise negation ~
         bitwise_not: Index,
 
         // coerce operand to destination type

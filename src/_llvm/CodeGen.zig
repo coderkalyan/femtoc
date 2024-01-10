@@ -120,6 +120,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
             .fcmp_le,
             => |tag| try self.cmp(inst, tag),
             .neg => try self.neg(inst),
+            .logical_not => try self.logicalNot(inst),
             .bitwise_inv => unreachable, // TODO
 
             .call => try self.call(inst),
@@ -272,6 +273,12 @@ fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst
             .mod => c.LLVMBuildFRem(builder.builder, l, r, ""),
             else => unreachable,
         },
+        .bool => switch (tag) {
+            .bitwise_or => c.LLVMBuildOr(builder.builder, l, r, ""),
+            .bitwise_and => c.LLVMBuildAnd(builder.builder, l, r, ""),
+            .bitwise_xor => c.LLVMBuildXor(builder.builder, l, r, ""),
+            else => unreachable,
+        },
         else => unreachable,
     };
 
@@ -421,6 +428,7 @@ fn cmp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c
     return ref;
 }
 
+// lowers to a (0 - op)
 fn neg(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const data = self.air.insts.items(.data)[@intFromEnum(inst)].neg;
     const operand = self.resolveInst(data);
@@ -429,6 +437,16 @@ fn neg(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const sub = c.LLVMBuildSub(self.builder.builder, zero, operand, "");
     try self.map.put(self.arena, inst, sub);
     return sub;
+}
+
+// lowers to a u1 (op xor 1)
+fn logicalNot(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const data = self.air.insts.items(.data)[@intFromEnum(inst)].logical_not;
+    const operand = self.resolveInst(data);
+    const one = try self.builder.addUint(Type.bool_type, 1);
+    const not = c.LLVMBuildXor(self.builder.builder, operand, one, "");
+    try self.map.put(self.arena, inst, not);
+    return not;
 }
 
 fn branchSingle(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
@@ -488,6 +506,7 @@ fn branchDouble(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
     var values = .{ yield_true, yield_false };
     var blocks = .{ exec_true, exec_false };
     c.LLVMAddIncoming(phi, @ptrCast(&values), @ptrCast(&blocks), 2);
+    try self.map.put(self.arena, inst, phi);
     return phi;
 }
 

@@ -275,6 +275,7 @@ const Parser = struct {
 
     inline fn precedence(tag: Token.Tag) i32 {
         return switch (tag) {
+            .k_implies => 9,
             .k_or => 10,
             .k_and => 11,
             .k_xor => 12,
@@ -434,6 +435,7 @@ const Parser = struct {
         // in one or more binary expressions - operator precedence parsing
         var l_node = l;
         while (true) {
+            std.debug.print("cur: {}\n", .{p.current()});
             const prec = precedence(p.current());
             if (prec < expr_precedence) {
                 return l_node;

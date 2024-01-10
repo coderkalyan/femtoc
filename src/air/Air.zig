@@ -74,6 +74,8 @@ pub const Inst = union(enum) {
     // unary expressions
     // negate -
     neg: Index,
+    // logical not !
+    logical_not: Index,
     // bitwise invert ~
     bitwise_inv: Index,
     // performs a function call
@@ -348,7 +350,8 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         .fcmp_ge,
         .fcmp_lt,
         .fcmp_le,
-        => return InternPool.Index.u1_type,
+        .logical_not,
+        => return InternPool.Index.bool_type,
         .neg,
         .bitwise_inv,
         => |un| return air.typeOf(un),
@@ -406,15 +409,25 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         },
         .store => unreachable, // should not be referenced
         .branch_single => unreachable, // should not be referenced
-        .branch_double => unreachable, // TODO
+        // TODO: this assumes both branches are the same type,
+        // which is not generally true (peer type resolution isn't figured out)
+        .branch_double => |branch_double| {
+            const data = air.extraData(Inst.BranchDouble, branch_double.pl);
+            return air.typeOf(data.exec_true);
+        },
         .loop_forever,
         .loop_while,
         .@"return",
-        .yield,
         .@"break",
         .@"continue",
         => unreachable, // should not be referenced
-        .block => unreachable, // TODO
+        .yield => |yield| return air.typeOf(yield),
+        .block => |block| {
+            const slice = air.extraData(Air.Inst.ExtraSlice, block.insts);
+            const insts = air.extraSlice(slice);
+            if (insts.len == 0) return .void_type;
+            return air.typeOf(@enumFromInt(insts[insts.len - 1]));
+        },
         .param => |param| return param.ty,
         .load_decl => |load_decl| return load_decl.ty,
     }
