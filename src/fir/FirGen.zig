@@ -998,7 +998,7 @@ fn opMember(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!F
     const field_name = b.tree.tokenString(field_token);
     const id = try fg.pool.getOrPutString(field_name);
 
-    const operand = try noneExpr(b, scope, field_val);
+    const operand = try expr(b, scope, .{ .semantics = ri.semantics, .ctx = .elem }, field_val);
     switch (ri.semantics) {
         .val => return b.add(.{
             .data = .{ .field_val = .{ .base = operand, .field = id } },

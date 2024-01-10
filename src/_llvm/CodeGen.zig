@@ -64,9 +64,6 @@ fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
 fn elideLazy(self: *CodeGen, inst: Air.Index) Air.Index {
     switch (self.air.insts.get(@intFromEnum(inst))) {
         .load_lazy => |lazy| {
-            // encountered a load_lazy + index val, what we actually want to do is
-            // fuse these into an gep + load on the original load operand
-            // and elide the previously emitted load_lazy instruction
             for (self.lazy.get(inst).?) |elide| {
                 c.LLVMInstructionEraseFromParent(elide);
             }
@@ -335,7 +332,7 @@ fn load(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
         // the temporary is actually an alloca)
         // TODO: in the future, we should try to elide as many of these
         // copies as we can
-        .array, .slice => ref: {
+        .array, .slice, .@"struct" => ref: {
             const alloca = try self.allocaInner(load_type);
             _ = try self.builder.addMemcpy(load_type, alloca, ptr);
             break :ref alloca;
@@ -360,7 +357,7 @@ fn loadLazy(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
         // the temporary is actually an alloca)
         // TODO: in the future, we should try to elide as many of these
         // copies as we can
-        .array, .slice => ref: {
+        .array, .slice, .@"struct" => ref: {
             const alloca = try self.allocaInner(load_type);
             const memcpy = try self.builder.addMemcpy(load_type, alloca, ptr);
 
@@ -389,7 +386,7 @@ fn store(self: *CodeGen, inst: Air.Index) !void {
     // perform other optimizations
     const val_type = self.pool.indexToType(air.typeOf(data.val));
     switch (val_type) {
-        .array => _ = try builder.addMemcpy(val_type, addr, self.resolveInst(self.elideLazy(data.val))),
+        .array, .@"struct" => _ = try builder.addMemcpy(val_type, addr, self.resolveInst(self.elideLazy(data.val))),
         .slice => |slice| {
             // unroll a memcpy
             var indices = .{
@@ -778,7 +775,7 @@ fn fieldVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const builder = self.builder;
     const data = air.insts.items(.data)[@intFromEnum(inst)].field_val;
 
-    const base = self.resolveInst(data.base);
+    const base = self.resolveInst(self.elideLazy(data.base));
     const base_type = self.pool.indexToType(air.typeOf(data.base));
     const field_type = self.pool.indexToType(air.typeOf(inst));
 
