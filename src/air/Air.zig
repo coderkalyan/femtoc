@@ -426,7 +426,11 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             const slice = air.extraData(Air.Inst.ExtraSlice, block.insts);
             const insts = air.extraSlice(slice);
             if (insts.len == 0) return .void_type;
-            return air.typeOf(@enumFromInt(insts[insts.len - 1]));
+            const last = insts[insts.len - 1];
+            return switch (air.insts.items(.tags)[last]) {
+                .yield, .branch_double => air.typeOf(@enumFromInt(last)),
+                else => .void_type,
+            };
         },
         .param => |param| return param.ty,
         .load_decl => |load_decl| return load_decl.ty,

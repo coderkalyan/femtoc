@@ -525,4 +525,15 @@ pub const Builder = struct {
     pub inline fn resolveType(builder: *Builder, ty: Type) !c.LLVMTypeRef {
         return builder.context.resolveType(ty);
     }
+
+    pub fn getBasicBlockTerminator(builder: *Builder, bb: c.LLVMBasicBlockRef) c.LLVMValueRef {
+        _ = builder;
+        return c.LLVMGetBasicBlockTerminator(bb);
+    }
+
+    pub fn basicBlockReturns(builder: *Builder, bb: c.LLVMBasicBlockRef) bool {
+        const terminator = builder.getBasicBlockTerminator(bb);
+        const opcode = c.LLVMGetInstructionOpcode(terminator);
+        return opcode == c.LLVMRet;
+    }
 };

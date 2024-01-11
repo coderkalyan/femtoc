@@ -482,6 +482,7 @@ fn branchDouble(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
     const exec_true = builder.appendBlock("ifelse.true");
     builder.positionAtEnd(exec_true);
     const yield_true = try self.block(data.exec_true);
+    const true_returns = builder.basicBlockReturns(builder.getInsertBlock());
 
     const false_prev = builder.getInsertBlock();
     const exec_false = builder.appendBlock("ifelse.false");
@@ -489,17 +490,23 @@ fn branchDouble(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
     builder.addCondBranch(condition, exec_true, exec_false);
     builder.positionAtEnd(exec_false);
     const yield_false = try self.block(data.exec_false);
+    const false_returns = builder.basicBlockReturns(builder.getInsertBlock());
 
     const exit = builder.appendBlock("ifelse.exit");
-    if (c.LLVMGetBasicBlockTerminator(builder.getInsertBlock()) == null)
+    if (builder.getBasicBlockTerminator(builder.getInsertBlock()) == null) {
         builder.addBranch(exit);
-    if (c.LLVMGetBasicBlockTerminator(false_prev) == null) {
+    }
+    if (builder.getBasicBlockTerminator(false_prev) == null) {
         builder.positionAtEnd(false_prev);
         builder.addBranch(exit);
     }
 
-    builder.positionAtEnd(exit);
+    if (true_returns and false_returns) {
+        c.LLVMDeleteBasicBlock(exit);
+        return null;
+    }
     if ((yield_true == null) or (yield_false == null)) return null;
+    builder.positionAtEnd(exit);
 
     const yield_type = self.pool.indexToKey(air.typeOf(data.exec_true)).ty;
     const phi = try builder.addPhi(yield_type);

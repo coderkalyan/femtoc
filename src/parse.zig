@@ -356,6 +356,11 @@ const Parser = struct {
         return p.associateBinary(expr, min_precedence);
     }
 
+    fn expressionNoBrace(p: *Parser) Error!Node.Index {
+        const expr = try p.unary(false);
+        return p.associateBinary(expr, min_precedence);
+    }
+
     fn primary(p: *Parser, accept_l_brace: bool) Error!Node.Index {
         return switch (p.current()) {
             // even though parentheses aren't necessary due to the ast
@@ -1140,7 +1145,7 @@ const Parser = struct {
 
         // we have three kinds of if statements: simple, else, and chain
         // which we progressively try to match against
-        const condition = try p.expression();
+        const condition = try p.expressionNoBrace();
         const exec_true = try p.block();
 
         if (p.current() != .k_else) {

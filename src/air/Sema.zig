@@ -1276,16 +1276,23 @@ pub fn branchDouble(b: *Block, inst: Fir.Index) !void {
         .exec_true = exec_true,
         .exec_false = exec_false,
     });
-    const air_branch = try b.add(.{ .branch_double = .{
+    var air_inst = try b.add(.{ .branch_double = .{
         .cond = cond,
         .pl = pl,
     } });
 
-    const true_type = b.pool.indexToType(b.typeOf(exec_true));
-    const false_type = b.pool.indexToType(b.typeOf(exec_false));
+    const true_type_inner = b.typeOf(exec_true);
+    const false_type_inner = b.typeOf(exec_false);
+    if (true_type_inner == .void_type and false_type_inner == .void_type) {
+        try b.mapInst(inst, air_inst);
+        return;
+    }
+
+    const true_type = b.pool.indexToType(true_type_inner);
+    const false_type = b.pool.indexToType(false_type_inner);
     const dest_type = coercion.resolvePeerTypes(b.pool, &.{ true_type, false_type }).?;
-    const air_coerce = try coerceInnerImplicit(b, air_branch, dest_type);
-    try b.mapInst(inst, air_coerce);
+    air_inst = try coerceInnerImplicit(b, air_inst, dest_type);
+    try b.mapInst(inst, air_inst);
 }
 
 pub fn loopForever(b: *Block, inst: Fir.Index) !void {
