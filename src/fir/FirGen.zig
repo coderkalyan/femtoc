@@ -1485,6 +1485,7 @@ fn instructionReturns(fg: *FirGen, inst: Fir.Index) bool {
 }
 
 fn blockReturns(b: *Block) bool {
+    if (b.insts.items.len == 0) return false;
     const inst = b.insts.items[b.insts.items.len - 1];
     return instructionReturns(b.fg, inst);
 }
