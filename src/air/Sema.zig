@@ -759,9 +759,7 @@ fn firFunction(b: *Block, inst: Fir.Index) !void {
     const function = fir.get(inst);
     const data = function.data.function;
     const signature = b.resolveInterned(data.signature);
-    // const function_type = b.pool.indexToKey(signature).ty.function;
 
-    // const ip_index = try b.pool.putBody(signature, air);
     const air_index = try b.pool.addOneBody(signature);
     const ip_index = try b.pool.getOrPut(.{ .tv = .{
         .ty = signature,

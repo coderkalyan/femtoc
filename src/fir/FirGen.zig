@@ -517,77 +517,29 @@ fn unary(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.
 }
 
 fn functionLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
-    const fg = b.fg;
     const function_literal = b.tree.data(node).function_literal;
-    const function_type = b.tree.data(function_literal.ty).function_type;
 
-    // used to store parameters temporarily
-    const scratch_top = fg.scratch.items.len;
-    defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-    const sl = b.tree.extraData(function_type.params, Node.ExtraSlice);
-    const params = b.tree.extraSlice(sl);
-    try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
+    var body_block = Block.init(b.fg, scope.*);
+    defer body_block.deinit();
+    const inner = try functionTypeInner(b, scope.*, function_literal.ty, &body_block);
 
-    var s: **Scope = scope;
-    for (params) |param| {
-        const data = b.tree.data(param).param;
-        const param_token = b.tree.mainToken(param);
-        const param_str = b.tree.tokenString(param_token);
-        const param_id = try fg.pool.getOrPutString(param_str);
-
-        const ty_ref = try typeExpr(b, scope, data);
-        const param_index = try b.addUnlinked(.{
-            .data = .{ .param = .{ .name = param_id, .ty = ty_ref } },
-            .loc = .{ .node = param },
-        });
-        fg.scratch.appendAssumeCapacity(@intFromEnum(param_index));
-
-        const ref = param_index;
-        var param_scope = try fg.arena.create(Scope.LocalVal);
-        param_scope.* = Scope.LocalVal.init(s.*, param_id, ref);
-        s.* = &param_scope.base;
-    }
-
-    var body_scope = Block.init(b.fg, s.*);
-    defer body_scope.deinit();
-    s.* = &body_scope.base;
-
-    const fir_params = fg.scratch.items[scratch_top..];
-    const scratch_top_new = fg.scratch.items.len;
-    try fg.scratch.ensureUnusedCapacity(fg.arena, fir_params.len);
-    for (fir_params) |param| {
-        try body_scope.linkInst(@enumFromInt(param));
-        const param_inst = fg.get(@enumFromInt(param));
-        fg.scratch.appendAssumeCapacity(@intFromEnum(param_inst.data.param.ty));
-    }
-
-    const return_type = try typeExpr(b, scope, function_type.@"return");
-    const pl = try fg.addSlice(fg.scratch.items[scratch_top_new..]);
-    const sig = try b.add(.{
-        .data = .{ .function_type = .{ .params = pl, .@"return" = return_type } },
-        .loc = .{ .node = node },
-    });
-
-    // const body = try block(&body_scope, &body_scope.base, function_literal.body, true);
-    try blockInner(&body_scope, s, function_literal.body);
-    if (!blockReturns(&body_scope)) {
-        // insert implicit return
+    var s = inner.s;
+    try blockInner(&body_block, &s, function_literal.body);
+    // insert implicit return
+    if (!blockReturns(&body_block)) {
         // TODO: find the closing brace as token
-        const none = try body_scope.add(.{
+        const none = try body_block.add(.{
             .data = .{ .none = {} },
             .loc = .{ .token = undefined },
         });
-        _ = try body_scope.add(.{
+        _ = try body_block.add(.{
             .data = .{ .return_implicit = none },
             .loc = .{ .token = undefined },
         });
     }
 
-    const body = try b.addBlockUnlinked(&body_scope, function_literal.body);
-    return b.add(.{
-        .data = .{ .function = .{ .signature = sig, .body = body } },
-        .loc = .{ .node = node },
-    });
+    const body = try b.addBlockUnlinked(&body_block, function_literal.body);
+    return b.addNodeLoc(.{ .function = .{ .signature = inner.ty, .body = body } }, node);
 }
 
 fn arrayLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
@@ -605,10 +557,7 @@ fn arrayLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     }
 
     const pl = try fg.addSlice(fg.scratch.items[scratch_top..]);
-    return b.add(.{
-        .data = .{ .array = pl },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .array = pl }, node);
 }
 
 fn structLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
@@ -624,7 +573,6 @@ fn structLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
         const field_data = b.tree.data(field).field_initializer;
         const field_token = b.tree.mainToken(field) + 1;
         const field_str = b.tree.tokenString(field_token);
-        std.debug.print("literal field: {s}\n", .{field_str});
         const field_id = try fg.pool.getOrPutString(field_str);
         const val = try valExpr(b, scope, field_data);
         const pl = try fg.addExtra(Inst.StructFieldInitializer{
@@ -810,78 +758,76 @@ inline fn noneExpr(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
 }
 
 fn pointerType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
-    switch (b.tree.data(node)) {
-        .pointer_type => |pointee| {
-            const inner = try typeExpr(b, scope, pointee);
-            return b.add(.{
-                .data = .{ .pointer_type = .{ .pointee = inner, .mutable = false } },
-                .loc = .{ .node = node },
-            });
-        },
-        .mut_pointer_type => |pointee| {
-            const inner = try typeExpr(b, scope, pointee);
-            return b.add(.{
-                .data = .{ .pointer_type = .{ .pointee = inner, .mutable = true } },
-                .loc = .{ .node = node },
-            });
-        },
+    const mutable = @as(Node.Tag, b.tree.data(node)) == .mut_pointer_type;
+    const pointee = switch (b.tree.data(node)) {
+        inline .pointer_type, .mut_pointer_type => |pointee| pointee,
         else => unreachable,
-    }
+    };
+    const inner = try typeExpr(b, scope, pointee);
+    return b.addNodeLoc(.{ .pointer_type = .{ .pointee = inner, .mutable = mutable } }, node);
 }
 
 fn manyPointerType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const pointee = b.tree.data(node).many_pointer_type;
     const inner = try typeExpr(b, scope, pointee);
-    return b.add(.{
-        .data = .{ .many_pointer_type = .{ .pointee = inner } },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .many_pointer_type = .{ .pointee = inner } }, node);
 }
 
 fn arrayType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const array_type = b.tree.data(node).array_type;
     const element_type = try typeExpr(b, scope, array_type.element_type);
     const count = try valExpr(b, scope, array_type.count_expr);
-    // TODO: make sure count is actually a comptime_int
-    return b.add(.{
-        .data = .{ .array_type = .{ .element = element_type, .count = count } },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .array_type = .{ .element = element_type, .count = count } }, node);
 }
 
 fn sliceType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const element_type = b.tree.data(node).slice_type;
     const inner = try typeExpr(b, scope, element_type);
-    return b.add(.{
-        .data = .{ .slice_type = .{ .element = inner } },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .slice_type = .{ .element = inner } }, node);
 }
 
-// TODO: try to merge with functionLiteral
-fn functionType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+fn functionTypeInner(b: *Block, scope: *Scope, node: Node.Index, body: ?*Block) !struct { ty: Fir.Index, s: *Scope } {
     const fg = b.fg;
     const function_type = b.tree.data(node).function_type;
 
-    const sl = b.tree.extraData(function_type.params, Node.ExtraSlice);
-    const params = b.tree.extraSlice(sl);
+    const slice = b.tree.extraData(function_type.params, Node.ExtraSlice);
+    const params = b.tree.extraSlice(slice);
+
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
-    try fg.scratch.ensureUnusedCapacity(fg.arena, params.len);
+    const fir_types = try fg.scratch.addManyAsSlice(fg.arena, params.len);
+    const fir_params = try fg.scratch.addManyAsSlice(fg.arena, params.len);
 
-    for (params) |param| {
+    var s = scope;
+    if (body) |body_block| s = &body_block.base;
+
+    for (params, 0..) |param, i| {
         const data = b.tree.data(param).param;
-        const param_type = try typeExpr(b, scope, data);
-        fg.scratch.appendAssumeCapacity(@intFromEnum(param_type));
+        const param_type = try typeExpr(b, &s, data);
+        fir_types[i] = @intFromEnum(param_type);
+
+        if (body) |body_block| {
+            const param_token = b.tree.mainToken(param);
+            const param_str = b.tree.tokenString(param_token);
+            const param_id = try fg.pool.getOrPutString(param_str);
+            const fir_param = try body_block.addNodeLoc(.{ .param = .{ .name = param_id, .ty = param_type } }, param);
+            fir_params[i] = @intFromEnum(fir_param);
+
+            var param_scope = try fg.arena.create(Scope.LocalVal);
+            param_scope.* = Scope.LocalVal.init(s, param_id, fir_param);
+            s = &param_scope.base;
+        }
     }
 
-    const param_types = fg.scratch.items[scratch_top..];
-    const return_type = try typeExpr(b, scope, function_type.@"return");
-    const pl = try fg.addSlice(param_types);
-    return b.add(.{
-        .data = .{ .function_type = .{ .params = pl, .@"return" = return_type } },
-        .loc = .{ .node = node },
-    });
+    const return_type = try typeExpr(b, &s, function_type.@"return");
+    const pl = try fg.addSlice(fir_types);
+    const fir_type = try b.addNodeLoc(.{ .function_type = .{ .params = pl, .@"return" = return_type } }, node);
+    return .{ .ty = fir_type, .s = s };
+}
+
+fn functionType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
+    const inner = try functionTypeInner(b, scope.*, node, null);
+    return inner.ty;
 }
 
 fn structType(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
@@ -921,14 +867,8 @@ fn opSubscript(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Erro
     const operand = try expr(b, scope, .{ .semantics = ri.semantics, .ctx = .elem }, subscript.operand);
     const index = try valExpr(b, scope, subscript.index);
     switch (ri.semantics) {
-        .val => return b.add(.{
-            .data = .{ .index_val = .{ .base = operand, .index = index } },
-            .loc = .{ .node = node },
-        }),
-        .ptr, .ref => return b.add(.{
-            .data = .{ .index_ref = .{ .base = operand, .index = index } },
-            .loc = .{ .node = node },
-        }),
+        .val => return b.addNodeLoc(.{ .index_val = .{ .base = operand, .index = index } }, node),
+        .ptr, .ref => return b.addNodeLoc(.{ .index_ref = .{ .base = operand, .index = index } }, node),
         .none, .ty => unreachable,
     }
 }
@@ -946,16 +886,7 @@ fn opSlice(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
         .start = start,
         .end = end,
     });
-    return b.add(.{
-        .data = .{ .slice = .{ .pl = pl } },
-        .loc = .{ .node = node },
-    });
-
-    // switch (ri.semantics) {
-    //     .val => return b.add(.load, .{ .operand = ptr, .node = node }),
-    //     .ref => return ptr,
-    //     .ty, .any => unreachable,
-    // }
+    return b.addNodeLoc(.{ .slice = .{ .pl = pl } }, node);
 }
 
 fn opMember(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!Fir.Index {
@@ -967,14 +898,8 @@ fn opMember(b: *Block, scope: **Scope, ri: ResultInfo, node: Node.Index) Error!F
 
     const operand = try expr(b, scope, .{ .semantics = ri.semantics, .ctx = .elem }, field_val);
     switch (ri.semantics) {
-        .val => return b.add(.{
-            .data = .{ .field_val = .{ .base = operand, .field = id } },
-            .loc = .{ .node = node },
-        }),
-        .ptr, .ref => return b.add(.{
-            .data = .{ .field_ref = .{ .base = operand, .field = id } },
-            .loc = .{ .node = node },
-        }),
+        .val => return b.addNodeLoc(.{ .field_val = .{ .base = operand, .field = id } }, node),
+        .ptr, .ref => return b.addNodeLoc(.{ .field_ref = .{ .base = operand, .field = id } }, node),
         .none, .ty => unreachable,
     }
 }
@@ -1056,8 +981,7 @@ fn globalStatement(fg: *FirGen, scope: **Scope, node: Node.Index) Error!Fir.Inde
 fn call(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     const fg = b.fg;
     const call_expr = b.tree.data(node).call;
-    // TODO: probably use ref semantics
-    const ri: ResultInfo = .{ .semantics = .ptr, .ctx = .none };
+    const ri: ResultInfo = .{ .semantics = .ref, .ctx = .none };
     const ptr = try identExpr(b, scope, ri, call_expr.ptr);
 
     const scratch_top = fg.scratch.items.len;
@@ -1069,20 +993,14 @@ fn call(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
     for (arg_nodes, 0..) |arg_node, i| {
         const arg_inner = try valExpr(b, scope, arg_node);
         const param_index: u32 = @intCast(i);
-        const param_type = try b.add(.{
-            .data = .{ .param_type = .{ .function = ptr, .index = param_index } },
-            .loc = .{ .node = arg_node },
-        });
+        const param_type = try b.addNodeLoc(.{ .param_type = .{ .function = ptr, .index = param_index } }, arg_node);
         const arg = try coerce(b, scope, arg_inner, param_type, arg_node);
         fg.scratch.appendAssumeCapacity(@intFromEnum(arg));
     }
 
     const args = fg.scratch.items[scratch_top..];
     const pl = try b.fg.addSlice(args);
-    return b.add(.{
-        .data = .{ .call = .{ .function = ptr, .args = pl } },
-        .loc = .{ .node = node },
-    });
+    return b.addNodeLoc(.{ .call = .{ .function = ptr, .args = pl } }, node);
 }
 
 fn blockInner(b: *Block, scope: **Scope, node: Node.Index) Error!void {

@@ -15,6 +15,9 @@ const null_node: Node.Index = 0;
 // parses a string of source characters into an abstract syntax tree
 // gpa: allocator for tree data that outlives this function call
 pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
     var tokens: Ast.TokenList = .{};
     var integers: std.ArrayListUnmanaged(u64) = .{};
     defer tokens.deinit(gpa);
@@ -36,7 +39,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Error!Ast {
     }
 
     // initialize parser
-    var parser = Parser.init(gpa, source, &tokens, integers.items);
+    var parser = Parser.init(gpa, arena.allocator(), source, &tokens, integers.items);
     defer parser.deinit();
 
     _ = try parser.addNode(.{
@@ -72,7 +75,7 @@ const Parser = struct {
     attributes: std.ArrayListUnmanaged(Node.Index),
     errors: std.ArrayList(error_handler.SourceError),
 
-    pub fn init(gpa: Allocator, source: []const u8, tokens: *Ast.TokenList, integers: []const u64) Parser {
+    pub fn init(gpa: Allocator, arena: Allocator, source: []const u8, tokens: *Ast.TokenList, integers: []const u64) Parser {
         return .{
             .source = source,
             .gpa = gpa,
@@ -83,7 +86,7 @@ const Parser = struct {
             .int_index = 0,
             .nodes = .{},
             .extra = .{},
-            .scratch = std.ArrayList(Node.Index).init(gpa),
+            .scratch = std.ArrayList(Node.Index).init(arena),
             .attributes = .{},
             .errors = std.ArrayList(error_handler.SourceError).init(gpa),
         };
@@ -435,7 +438,6 @@ const Parser = struct {
         // in one or more binary expressions - operator precedence parsing
         var l_node = l;
         while (true) {
-            std.debug.print("cur: {}\n", .{p.current()});
             const prec = precedence(p.current());
             if (prec < expr_precedence) {
                 return l_node;
