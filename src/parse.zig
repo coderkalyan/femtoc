@@ -1280,7 +1280,7 @@ const Parser = struct {
 // }
 test "arith.fm" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var allocator = gpa.allocator();
+    const allocator = gpa.allocator();
 
     const ast = try parse(allocator, @embedFile("tests/arith.fm"));
     _ = ast;

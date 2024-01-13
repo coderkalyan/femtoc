@@ -533,6 +533,7 @@ pub const Builder = struct {
 
     pub fn basicBlockReturns(builder: *Builder, bb: c.LLVMBasicBlockRef) bool {
         const terminator = builder.getBasicBlockTerminator(bb);
+        if (terminator == null) return false;
         const opcode = c.LLVMGetInstructionOpcode(terminator);
         return opcode == c.LLVMRet;
     }

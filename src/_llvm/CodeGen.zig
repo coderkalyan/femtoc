@@ -82,7 +82,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
     // TODO: move this to block scope struct
     const after_block = self.builder.appendBlock("yield.exit");
     var yield_val: c.LLVMValueRef = null;
-    var yield_jump: bool = false;
+    const yield_jump: bool = false;
     var block_scope = Scope.Block.init(self.scope, self.arena);
     defer block_scope.deinit();
 
@@ -174,6 +174,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
         self.builder.deleteBlock(after_block);
     }
 
+    try self.map.put(self.arena, block_inst, yield_val);
     return yield_val;
 }
 
@@ -228,7 +229,7 @@ fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst
     const data = @field(air.insts.items(.data)[@intFromEnum(inst)], @tagName(tag));
     const l = self.resolveInst(data.l);
     const r = self.resolveInst(data.r);
-    var builder = self.builder;
+    const builder = self.builder;
 
     // C (clang 17) emits urem for all integer modulo
     // in the long term, we need to decide what behavior we want for
@@ -387,7 +388,7 @@ fn store(self: *CodeGen, inst: Air.Index) !void {
     const builder = self.builder;
     const data = air.insts.items(.data)[@intFromEnum(inst)].store;
     const addr = self.resolveInst(data.ptr);
-    var val = self.resolveInst(data.val);
+    const val = self.resolveInst(data.val);
     // special behavior for aggregates to avoid storing the entire value at once
     // LLVM prefers initializing each element/field separately, and we can also
     // perform other optimizations
@@ -719,7 +720,7 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const builder = self.builder;
     const data = air.insts.items(.data)[@intFromEnum(inst)].index_val;
 
-    var base = self.resolveInst(self.elideLazy(data.base));
+    const base = self.resolveInst(self.elideLazy(data.base));
     const index = self.resolveInst(data.index);
     const base_type = self.pool.indexToKey(air.typeOf(data.base)).ty;
     switch (base_type) {

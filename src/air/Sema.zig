@@ -89,6 +89,17 @@ pub const Block = struct {
             .index = index,
         } });
     }
+
+    pub fn addBranchDouble(b: *Block, cond: Air.Index, exec_true: Air.Index, exec_false: Air.Index) !Air.Index {
+        const pl = try b.sema.addExtra(Air.Inst.BranchDouble{
+            .exec_true = exec_true,
+            .exec_false = exec_false,
+        });
+        return b.add(.{ .branch_double = .{
+            .cond = cond,
+            .pl = pl,
+        } });
+    }
 };
 
 pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) ![]error_handler.SourceError {
@@ -1263,6 +1274,23 @@ pub fn branchSingle(b: *Block, inst: Fir.Index) !void {
     try b.mapInst(inst, air_inst);
 }
 
+fn wrapCoerceTo(b: *Block, inst: Air.Index, ty: Type) !Air.Index {
+    const sema = b.sema;
+    var inner: Block = .{
+        .sema = sema,
+        .arena = sema.arena,
+        .fir = sema.fir,
+        .pool = sema.pool,
+        .insts = .{},
+        .return_type = sema.return_type,
+    };
+
+    try inner.insts.append(b.arena, inst);
+    const coerce = try coerceInnerImplicit(&inner, inst, ty);
+    _ = try inner.add(.{ .yield = coerce });
+    return sema.addBlockUnlinked(&inner);
+}
+
 pub fn branchDouble(b: *Block, inst: Fir.Index) !void {
     const branch_double = b.fir.get(inst);
     const data = branch_double.data.branch_double;
@@ -1272,26 +1300,20 @@ pub fn branchDouble(b: *Block, inst: Fir.Index) !void {
     const exec_true = try b.sema.analyzeBodyBlock(branch.exec_true);
     const exec_false = try b.sema.analyzeBodyBlock(branch.exec_false);
 
-    const pl = try b.sema.addExtra(Air.Inst.BranchDouble{
-        .exec_true = exec_true,
-        .exec_false = exec_false,
-    });
-    var air_inst = try b.add(.{ .branch_double = .{
-        .cond = cond,
-        .pl = pl,
-    } });
+    const true_type = b.pool.indexToType(b.typeOf(exec_true));
+    const false_type = b.pool.indexToType(b.typeOf(exec_false));
 
-    const true_type_inner = b.typeOf(exec_true);
-    const false_type_inner = b.typeOf(exec_false);
-    if (true_type_inner == .void_type and false_type_inner == .void_type) {
+    const dest_type = coercion.resolvePeerTypes(b.pool, &.{ true_type, false_type }).?;
+    if (@as(Type.Tag, dest_type) == .void or (b.typeOf(exec_true) == b.typeOf(exec_false))) {
+        // no need to do anything else, doesn't emit any (non-void) value
+        const air_inst = try b.addBranchDouble(cond, exec_true, exec_false);
         try b.mapInst(inst, air_inst);
-        return;
     }
 
-    const true_type = b.pool.indexToType(true_type_inner);
-    const false_type = b.pool.indexToType(false_type_inner);
-    const dest_type = coercion.resolvePeerTypes(b.pool, &.{ true_type, false_type }).?;
-    air_inst = try coerceInnerImplicit(b, air_inst, dest_type);
+    // wrap both blocks in outer blocks that coerce to the peer type and yield
+    const exec_true_outer = try wrapCoerceTo(b, exec_true, dest_type);
+    const exec_false_outer = try wrapCoerceTo(b, exec_false, dest_type);
+    const air_inst = try b.addBranchDouble(cond, exec_true_outer, exec_false_outer);
     try b.mapInst(inst, air_inst);
 }
 

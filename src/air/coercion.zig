@@ -9,6 +9,11 @@ fn peerType(pool: *InternPool, src: Type, dest: Type) ?Type {
     const src_tag: Type.Tag = src;
     const dest_tag: Type.Tag = dest;
 
+    // both voids
+    if (src_tag == .void and dest_tag == .void) {
+        return dest;
+    }
+
     // both comptime ints (make sure sign matches)
     if (src_tag == .comptime_int and dest_tag == .comptime_int) {
         if (src.comptime_int.sign != dest.comptime_int.sign) return null;

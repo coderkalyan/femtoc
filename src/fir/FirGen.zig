@@ -196,7 +196,7 @@ fn module(fg: *FirGen, node: Node.Index) !Fir.Index {
     const scratch_top = fg.scratch.items.len;
     defer fg.scratch.shrinkRetainingCapacity(scratch_top);
     const sl = fg.tree.extraData(data.stmts, Node.ExtraSlice);
-    var stmts = fg.tree.extraSlice(sl);
+    const stmts = fg.tree.extraSlice(sl);
     try fg.scratch.ensureUnusedCapacity(fg.arena, stmts.len);
 
     for (stmts) |stmt| {
@@ -1006,7 +1006,7 @@ fn call(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
 fn blockInner(b: *Block, scope: **Scope, node: Node.Index) Error!void {
     const data = b.tree.data(node).block;
 
-    var s: **Scope = scope;
+    const s: **Scope = scope;
     const sl = b.tree.extraData(data.stmts, Node.ExtraSlice);
     const stmts = b.tree.extraSlice(sl);
     for (stmts) |stmt| {

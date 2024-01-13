@@ -63,6 +63,10 @@ fn guessOutputFilename(allocator: Allocator, input_filename: []const u8, stage: 
     return std.fmt.allocPrint(allocator, "{s}.{s}", .{ input_stem, extension });
 }
 
+const libfemto = @cImport({
+    @cInclude("femto_llvm.h");
+});
+
 pub fn readSource(gpa: Allocator, input_filename: []const u8) ![:0]u8 {
     var file = try std.fs.cwd().openFile(input_filename, .{});
     defer file.close();
@@ -83,6 +87,10 @@ pub fn readSource(gpa: Allocator, input_filename: []const u8) ![:0]u8 {
 }
 
 pub fn main() !void {
+    const context = libfemto.fm_context_init();
+    libfemto.fm_context_deinit(context);
+    if (true) return;
+
     var allocator: std.heap.GeneralPurposeAllocator(.{}) = .{};
     const gpa = allocator.allocator();
     var arena = std.heap.ArenaAllocator.init(gpa);

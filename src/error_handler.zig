@@ -144,7 +144,7 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
         fn formatError(r: *Self, err: LocatedSourceError) !void {
             const preview_message = "";
 
-            var error_message = switch (err.src_error.tag) {
+            const error_message = switch (err.src_error.tag) {
                 .missing_colon => "missing colon",
                 .missing_equals => "missing an '='",
                 .missing_expression => "missing an expression",
@@ -185,8 +185,8 @@ pub fn CompileErrorRenderer(comptime width: u32, comptime WriterType: anytype) t
             try writer.print("\x1b[3;36m{s}\x1b[39m:{}:{} \x1b[0;31merror: {s}", .{ r.filename, err.line_number, err.column_number, error_message });
             try r.stream.newline();
 
-            var line_pos_nw = try r.skipWhitespace(err.line_start);
-            var skipped_ws = line_pos_nw - err.line_start;
+            const line_pos_nw = try r.skipWhitespace(err.line_start);
+            const skipped_ws = line_pos_nw - err.line_start;
 
             var next_line_start: Ast.ByteOffset = err.line_start;
             while (r.source[next_line_start] != '\n') : (next_line_start += 1) {}

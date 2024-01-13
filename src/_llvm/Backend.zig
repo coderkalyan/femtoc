@@ -56,7 +56,6 @@ pub fn generate(self: *Backend) !void {
         const decl = self.pool.decls.at(decl_index);
         // search for function bodies
         if (decl.initializer) |initializer| {
-            std.debug.print("{}\n", .{initializer});
             const tv = self.pool.indexToKey(initializer).tv;
             switch (tv.val) {
                 .body => |body| {
