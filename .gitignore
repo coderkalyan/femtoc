@@ -5,4 +5,4 @@ main
 *.s
 *.ll
 *.bc
-~/.cache/
+src/~
