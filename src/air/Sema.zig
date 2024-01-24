@@ -1,4 +1,5 @@
 const std = @import("std");
+const Ast = @import("../Ast.zig");
 const Fir = @import("../fir/Fir.zig");
 const Air = @import("Air.zig");
 const InternPool = @import("../InternPool.zig");
@@ -8,6 +9,7 @@ const alu = @import("alu.zig");
 const Type = @import("type.zig").Type;
 const TypedValue = @import("TypedValue.zig");
 const error_handler = @import("../error_handler.zig");
+const src_loc = @import("src_loc.zig");
 const Decl = Air.Decl;
 const Allocator = std.mem.Allocator;
 
@@ -20,7 +22,6 @@ fir: *const Fir,
 pool: *InternPool,
 insts: std.MultiArrayList(Air.Inst),
 extra: std.ArrayListUnmanaged(u32),
-// map: std.AutoHashMapUnmanaged(Fir.Index, Air.Ref),
 inst_map: std.AutoHashMapUnmanaged(Fir.Index, Air.Index),
 ip_map: std.AutoHashMapUnmanaged(Fir.Index, InternPool.Index),
 return_type: ?InternPool.Index,
@@ -41,8 +42,20 @@ pub const Block = struct {
     is_comptime: bool = false,
     return_type: ?InternPool.Index,
 
-    pub fn add(b: *Block, inst: Air.Inst) !Air.Index {
-        const index = try b.sema.add(inst);
+    pub fn add(b: *Block, inst: Air.Inst.Data) !Air.Index {
+        const index = try b.sema.add(.{ .data = inst, .loc = .{ .none = {} } });
+        try b.insts.append(b.arena, index);
+        return index;
+    }
+
+    pub fn addNode(b: *Block, inst: Air.Inst.Data, node: Ast.Node.Index) !Air.Index {
+        const index = try b.sema.add(.{ .data = inst, .loc = .{ .node = node } });
+        try b.insts.append(b.arena, index);
+        return index;
+    }
+
+    pub fn addToken(b: *Block, inst: Air.Inst.Data, token: Ast.TokenIndex) !Air.Index {
+        const index = try b.sema.add(.{ .data = inst, .loc = .{ .token = token } });
         try b.insts.append(b.arena, index);
         return index;
     }
@@ -90,6 +103,16 @@ pub const Block = struct {
         } });
     }
 };
+
+const TodoItem = struct {
+    index: Fir.Index,
+    token: u32,
+};
+
+fn debugComparator(context: void, l: TodoItem, r: TodoItem) bool {
+    _ = context;
+    return l.token < r.token;
+}
 
 pub fn analyzeModule(gpa: Allocator, pool: *InternPool, fir: *const Fir) ![]error_handler.SourceError {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -305,8 +328,14 @@ fn analyzeBodyBlock(sema: *Sema, block: Fir.Index) error{ NotImplemented, Trunca
             .global_set_init,
             .global_set_linkage_external,
             .global,
-            .module,
             => unreachable,
+
+            .dbg_block_begin => try firDbgBlockBegin(&b, inst),
+            .dbg_block_end => try firDbgBlockEnd(&b, inst),
+            .dbg_var_val => try firDbgVarVal(&b, inst),
+            .dbg_var_ptr => try firDbgVarPtr(&b, inst),
+
+            .module => unreachable,
         }
     }
 
@@ -360,7 +389,8 @@ pub fn addBlockUnlinked(sema: *Sema, inner: *Block) !Air.Index {
     }
     const insts = sema.scratch.items[scratch_top..];
     const pl = try sema.addSlice(insts);
-    return sema.add(.{ .block = .{ .insts = pl } });
+    // TODO: location
+    return sema.add(.{ .data = .{ .block = .{ .insts = pl } }, .loc = .{ .none = {} } });
 }
 
 fn resolveInst(sema: *Sema, fir_inst: Fir.Index) Air.Index {
@@ -375,8 +405,8 @@ fn resolveInterned(sema: *Sema, fir_inst: Fir.Index) InternPool.Index {
 }
 
 fn resolveDecl(sema: *Sema, inst: Air.Index) *Decl {
-    std.debug.assert(sema.insts.items(.tags)[@intFromEnum(inst)] == .load_decl);
-    const load_decl = sema.insts.items(.data)[@intFromEnum(inst)].load_decl;
+    std.debug.assert(sema.instTag(inst) == .load_decl);
+    const load_decl = sema.instData(inst).load_decl;
     const decl_index = sema.pool.items.items(.data)[@intFromEnum(load_decl.ip_index)];
     return sema.pool.decls.at(decl_index);
 }
@@ -384,13 +414,13 @@ fn resolveDecl(sema: *Sema, inst: Air.Index) *Decl {
 pub fn add(sema: *Sema, inst: Air.Inst) !Air.Index {
     const index: u32 = @intCast(sema.insts.len);
     try sema.insts.append(sema.gpa, inst);
-
     return @enumFromInt(index);
 }
 
 pub fn addConstant(sema: *Sema, key: InternPool.Key) !Air.Index {
     const ip_index = try sema.pool.getOrPut(key);
-    return sema.add(.{ .constant = ip_index });
+    // TODO: src location
+    return sema.add(.{ .data = .{ .constant = ip_index }, .loc = .{ .none = {} } });
     // const raw: u32 = @intFromEnum(ip_index);
     // return @enumFromInt(raw & (1 << 31));
 }
@@ -530,7 +560,7 @@ fn array(b: *Block, inst: Fir.Index) !void {
         // TODO: do this without emitting anything if possible
         const dest = try coerceInnerImplicit(b, @enumFromInt(inner), dest_type);
         elements[i] = @intFromEnum(dest);
-        if (b.sema.insts.items(.tags)[@intFromEnum(dest)] != .constant) is_constant = false;
+        is_constant = is_constant and (b.sema.instTag(dest) == .constant);
     }
 
     const dest_ip_index = try b.pool.getOrPut(.{ .ty = dest_type });
@@ -541,7 +571,7 @@ fn array(b: *Block, inst: Fir.Index) !void {
     if (is_constant) {
         // upgrade the elements from constants to typed values, and emit an array tv
         for (elements, 0..) |constant, i| {
-            const tv = b.sema.insts.get(constant).constant;
+            const tv = b.sema.instData(@enumFromInt(constant)).constant;
             elements[i] = @intFromEnum(tv);
         }
 
@@ -651,7 +681,7 @@ fn arrayType(b: *Block, inst: Fir.Index) !void {
     const count = count: {
         const constant = b.resolveInst(data.count);
         // const ip_index = b.resolveInterned(data.count);
-        const ip_index = b.sema.insts.items(.data)[@intFromEnum(constant)].constant;
+        const ip_index = b.sema.instData(constant).constant;
         const tv = b.pool.indexToKey(ip_index).tv;
         const ty = b.pool.indexToKey(tv.ty).ty;
         // TODO: emit error
@@ -800,8 +830,17 @@ fn analyzeFunctionBody(sema: *Sema) !void {
     };
     const toplevel = try body_sema.analyzeBodyBlock(data.body);
 
+    // const insts = body_sema.insts.toOwnedSlice();
+    // var datas: std.MultiArrayList(Air.Inst.Data) = .{};
+    // for (insts.items(.data)) |dat| try datas.append(sema.gpa, dat);
+    const insts = body_sema.insts.toOwnedSlice();
+    const locs = try src_loc.locateSources(sema.gpa, insts.items(.loc), fir.tree);
+
     const air: Air = .{
-        .insts = body_sema.insts.toOwnedSlice(),
+        // .insts = datas.toOwnedSlice(),
+        .insts = insts.items(.data),
+        .locs = locs,
+        // .insts = body_sema.insts.toOwnedSlice(),
         .extra = try body_sema.extra.toOwnedSlice(sema.gpa),
         .pool = body_sema.pool,
         .toplevel = toplevel,
@@ -899,27 +938,27 @@ fn push(b: *Block, inst: Fir.Index) !void {
         return error.HandledUserError;
     }
 
-    const alloc = try pushInner(b, operand, mutable);
+    const alloc = try pushInner(b, operand, push_inst.loc.node, mutable);
     try b.mapInst(inst, alloc);
 }
 
-fn pushInner(b: *Block, operand: Air.Index, mutable: bool) !Air.Index {
+fn pushInner(b: *Block, operand: Air.Index, node: Ast.Node.Index, mutable: bool) !Air.Index {
     const ty = b.typeOf(operand);
     const ref_type = try b.pool.getOrPut(.{ .ty = .{ .ref = .{ .pointee = ty, .mutable = mutable } } });
     const alloc = switch (mutable) {
-        false => try b.add(.{ .alloc = .{
+        false => try b.addNode(.{ .alloc = .{
             .slot_type = ty,
             .pointer_type = ref_type,
-        } }),
-        true => try b.add(.{ .alloc_mut = .{
+        } }, node),
+        true => try b.addNode(.{ .alloc_mut = .{
             .slot_type = ty,
             .pointer_type = ref_type,
-        } }),
+        } }, node),
     };
-    _ = try b.add(.{ .store = .{
+    _ = try b.addNode(.{ .store = .{
         .ptr = alloc,
         .val = operand,
-    } });
+    } }, node);
     return alloc;
 }
 
@@ -928,9 +967,9 @@ fn load(b: *Block, inst: Fir.Index) !void {
     const data = load_inst.data.load;
 
     const ptr = b.resolveInst(data.ptr);
-    const air_inst = try b.add(.{ .load = .{
+    const air_inst = try b.addNode(.{ .load = .{
         .ptr = ptr,
-    } });
+    } }, load_inst.loc.node);
     try b.mapInst(inst, air_inst);
 }
 
@@ -963,10 +1002,10 @@ fn store(b: *Block, inst: Fir.Index) !void {
     const pointee_type = b.pool.indexToType(ref_type.pointee);
     const val = try coerceInnerImplicit(b, val_inner, pointee_type);
 
-    const air_inst = try b.add(.{ .store = .{
+    const air_inst = try b.addNode(.{ .store = .{
         .ptr = ptr,
         .val = val,
-    } });
+    } }, store_inst.loc.node);
     try b.mapInst(inst, air_inst);
 }
 
@@ -988,10 +1027,10 @@ fn call(b: *Block, inst: Fir.Index) !void {
 
     const args = b.sema.scratch.items[scratch_top..];
     const pl = try b.sema.addSlice(args);
-    const air_inst = try b.add(.{ .call = .{
+    const air_inst = try b.addNode(.{ .call = .{
         .function = function,
         .args = pl,
-    } });
+    } }, call_inst.loc.node);
     try b.mapInst(inst, air_inst);
 }
 
@@ -1020,18 +1059,18 @@ pub fn coerceInnerImplicit(b: *Block, src: Air.Index, dest_type: Type) !Air.Inde
     return info.coerce();
 }
 
-fn binaryInner(b: *Block, l: Air.Index, r: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !Air.Index {
+fn binaryInner(b: *Block, l: Air.Index, r: Air.Index, comptime tag: Air.Inst.Tag, node: Ast.Node.Index) !Air.Index {
     // tries to comptime an operation, and if not possible, emits an instruction
-    const ltag = b.sema.insts.items(.tags)[@intFromEnum(l)];
-    const rtag = b.sema.insts.items(.tags)[@intFromEnum(r)];
+    const ltag = b.sema.instTag(l);
+    const rtag = b.sema.instTag(r);
     if (ltag != .constant or rtag != .constant) {
         // can't comptime, emit the instruction
-        return b.add(@unionInit(Air.Inst, @tagName(tag), .{ .l = l, .r = r }));
+        return b.addNode(@unionInit(Air.Inst.Data, @tagName(tag), .{ .l = l, .r = r }), node);
     }
 
     // we *can* comptime, so dispatch the correct instruction to the generic alu
-    const lconst = b.sema.insts.items(.data)[@intFromEnum(l)].constant;
-    const rconst = b.sema.insts.items(.data)[@intFromEnum(r)].constant;
+    const lconst = b.sema.instData(l).constant;
+    const rconst = b.sema.instData(l).constant;
     const ltv = b.pool.indexToKey(lconst).tv;
     const rtv = b.pool.indexToKey(rconst).tv;
     // const lty = b.pool.indexToKey(ltv.ty).ty;
@@ -1098,7 +1137,7 @@ fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst
     const lty = b.pool.indexToKey(temp_air.typeOf(l)).ty;
     const rty = b.pool.indexToKey(temp_air.typeOf(r)).ty;
 
-    const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+    const air_tag: Air.Inst.Tag = switch (tag) {
         .add => .add,
         .sub => .sub,
         .mul => .mul,
@@ -1125,7 +1164,7 @@ fn binaryArithOp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst
     }
     l = try coerceInnerImplicit(b, l, dest_type);
     r = try coerceInnerImplicit(b, r, dest_type);
-    const new_arith = try binaryInner(b, l, r, air_tag);
+    const new_arith = try binaryInner(b, l, r, air_tag, binary.loc.node);
     try b.mapInst(inst, new_arith);
 }
 
@@ -1149,7 +1188,7 @@ fn binaryCmp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Dat
     switch (dest_type) {
         inline .comptime_int, .int => |int| switch (int.sign) {
             .unsigned => {
-                const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+                const air_tag: Air.Inst.Tag = switch (tag) {
                     .cmp_eq => .icmp_eq,
                     .cmp_ne => .icmp_ne,
                     .cmp_gt => .icmp_ugt,
@@ -1158,11 +1197,11 @@ fn binaryCmp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Dat
                     .cmp_le => .icmp_ule,
                     else => unreachable,
                 };
-                const air_inst = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = l, .r = r }));
+                const air_inst = try b.add(@unionInit(Air.Inst.Data, @tagName(air_tag), .{ .l = l, .r = r }));
                 try b.mapInst(inst, air_inst);
             },
             .signed => {
-                const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+                const air_tag: Air.Inst.Tag = switch (tag) {
                     .cmp_eq => .icmp_eq,
                     .cmp_ne => .icmp_ne,
                     .cmp_gt => .icmp_sgt,
@@ -1171,19 +1210,19 @@ fn binaryCmp(b: *Block, inst: Fir.Index, comptime tag: std.meta.Tag(Fir.Inst.Dat
                     .cmp_le => .icmp_sle,
                     else => unreachable,
                 };
-                const air_inst = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = l, .r = r }));
+                const air_inst = try b.add(@unionInit(Air.Inst.Data, @tagName(air_tag), .{ .l = l, .r = r }));
                 try b.mapInst(inst, air_inst);
             },
         },
         .comptime_float, .float => {
-            const air_tag: std.meta.Tag(Air.Inst) = switch (tag) {
+            const air_tag: Air.Inst.Tag = switch (tag) {
                 .cmp_gt => .fcmp_gt,
                 .cmp_ge => .fcmp_ge,
                 .cmp_lt => .fcmp_lt,
                 .cmp_le => .fcmp_le,
                 else => unreachable,
             };
-            const air_inst = try b.add(@unionInit(Air.Inst, @tagName(air_tag), .{ .l = l, .r = r }));
+            const air_inst = try b.add(@unionInit(Air.Inst.Data, @tagName(air_tag), .{ .l = l, .r = r }));
             try b.mapInst(inst, air_inst);
         },
         else => unreachable,
@@ -1295,9 +1334,9 @@ pub fn loopForever(b: *Block, inst: Fir.Index) !void {
     const data = loop_inst.data.loop_forever;
 
     const body = try b.sema.analyzeBodyBlock(data.body);
-    const air_inst = try b.add(.{ .loop_forever = .{
+    const air_inst = try b.addNode(.{ .loop_forever = .{
         .body = body,
-    } });
+    } }, loop_inst.loc.node);
     try b.mapInst(inst, air_inst);
 }
 
@@ -1307,10 +1346,10 @@ pub fn loopWhile(b: *Block, inst: Fir.Index) !void {
 
     const cond = try b.sema.analyzeBodyBlock(data.cond);
     const body = try b.sema.analyzeBodyBlock(data.body);
-    const air_inst = try b.add(.{ .loop_while = .{
+    const air_inst = try b.addNode(.{ .loop_while = .{
         .cond = cond,
         .body = body,
-    } });
+    } }, loop_inst.loc.node);
     try b.mapInst(inst, air_inst);
 }
 
@@ -1324,7 +1363,7 @@ pub fn returnNode(b: *Block, inst: Fir.Index) !void {
     const data = return_node.data.return_node;
 
     const operand = b.resolveInst(data);
-    const air_inst = try b.add(.{ .@"return" = operand });
+    const air_inst = try b.addNode(.{ .@"return" = operand }, return_node.loc.node);
     try b.mapInst(inst, air_inst);
 }
 
@@ -1333,7 +1372,7 @@ pub fn returnImplicit(b: *Block, inst: Fir.Index) !void {
     const data = return_implicit.data.return_implicit;
 
     const operand = b.resolveInst(data);
-    const air_inst = try b.add(.{ .@"return" = operand });
+    const air_inst = try b.addToken(.{ .@"return" = operand }, return_implicit.loc.token);
     try b.mapInst(inst, air_inst);
 }
 
@@ -1463,10 +1502,8 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
                 break :ref try b.addIndexRef(base, index, arr.element, ref_mutable);
             } else ref: {
                 // TODO: should this case actually be used?
-                const ptr = try pushInner(b, base, false);
+                const ptr = try pushInner(b, base, index_val.loc.node, false);
                 break :ref try b.addIndexRef(ptr, index, arr.element, true); // TODO: array mutable
-                // const val = try b.addIndexVal(base, index);
-                // break :ref try pushInner(b, val, false);
             };
             try b.mapInst(inst, ref);
         },
@@ -1482,7 +1519,7 @@ fn indexRef(b: *Block, inst: Fir.Index) !void {
                 break :ref try b.addIndexRef(base, index, ptr.pointee, ref_mutable);
             } else ref: {
                 const val = try b.addIndexVal(base, index);
-                break :ref try pushInner(b, val, false);
+                break :ref try pushInner(b, val, index_val.loc.node, false);
             };
             try b.mapInst(inst, ref);
         },
@@ -1525,7 +1562,7 @@ fn firSlice(b: *Block, inst: Fir.Index) !void {
                     const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = true } } });
                     break :ptr try b.addIndexRef(base, start, element_ptr, false); // TODO: mutable
                 } else {
-                    const alloc = try pushInner(b, base, false);
+                    const alloc = try pushInner(b, base, slice_inst.loc.node, false);
                     const element_ptr = try b.pool.getOrPut(.{ .ty = .{ .pointer = .{ .pointee = arr.element, .mutable = false } } });
                     break :ptr try b.addIndexRef(alloc, start, element_ptr, false);
                 }
@@ -1726,11 +1763,55 @@ fn fieldVal(b: *Block, inst: Fir.Index) !void {
     }
 }
 
+fn firDbgBlockBegin(b: *Block, inst: Fir.Index) !void {
+    const dbg = b.fir.get(inst);
+    const air_inst = try b.addToken(.{ .dbg_block_begin = {} }, dbg.loc.token);
+    try b.mapInst(inst, air_inst);
+}
+
+fn firDbgBlockEnd(b: *Block, inst: Fir.Index) !void {
+    const dbg = b.fir.get(inst);
+    const air_inst = try b.addToken(.{ .dbg_block_end = {} }, dbg.loc.token);
+    try b.mapInst(inst, air_inst);
+}
+
+fn firDbgVarVal(b: *Block, inst: Fir.Index) !void {
+    const dbg = b.fir.get(inst);
+    const data = dbg.data.dbg_var_val;
+    const val = b.resolveInst(data.val);
+    const air_inst = try b.addNode(.{ .dbg_var_val = .{
+        .name = data.name,
+        .val = val,
+    } }, dbg.loc.node);
+    try b.mapInst(inst, air_inst);
+}
+
+fn firDbgVarPtr(b: *Block, inst: Fir.Index) !void {
+    const dbg = b.fir.get(inst);
+    const data = dbg.data.dbg_var_ptr;
+    const ptr = b.resolveInst(data.ptr);
+    const air_inst = try b.addNode(.{ .dbg_var_ptr = .{
+        .name = data.name,
+        .ptr = ptr,
+    } }, dbg.loc.node);
+    try b.mapInst(inst, air_inst);
+}
+
 pub fn tempAir(sema: *Sema) Air {
+    const insts = sema.insts.slice();
     return .{
-        .insts = sema.insts.slice(),
+        .insts = insts.items(.data),
+        .locs = undefined,
         .extra = sema.extra.items,
         .pool = sema.pool,
         .toplevel = undefined,
     };
+}
+
+pub fn instData(sema: *Sema, inst: Air.Index) Air.Inst.Data {
+    return sema.insts.items(.data)[@intFromEnum(inst)];
+}
+
+pub fn instTag(sema: *Sema, inst: Air.Index) Air.Inst.Tag {
+    return sema.insts.items(.data)[@intFromEnum(inst)];
 }

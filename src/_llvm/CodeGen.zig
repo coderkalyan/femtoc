@@ -19,8 +19,9 @@ map: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
 // demoted_insts: std.AutoHashMapUnmanaged(Air.Index, c.LLVMValueRef),
 lazy: std.AutoHashMapUnmanaged(Air.Index, []c.LLVMValueRef),
 scope: *Scope,
+discopes: std.ArrayListUnmanaged(c.LLVMMetadataRef),
 
-const Error = Allocator.Error || error{NotImplemented};
+const Error = Allocator.Error || error{ NotImplemented, NoSpaceLeft };
 
 pub fn generate(self: *CodeGen) !void {
     var builder = self.builder;
@@ -40,12 +41,11 @@ pub fn deinit(self: *CodeGen) void {
 }
 
 fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
-    const i = @intFromEnum(inst);
     const air = self.air;
-    switch (air.insts.items(.tags)[i]) {
+    switch (air.instTag(inst)) {
         // dereference through the load decl and return the decl itself
         .load_decl => {
-            const load_decl = air.insts.items(.data)[i].load_decl;
+            const load_decl = air.instData(inst).load_decl;
             const decl_index = self.pool.indexToKey(load_decl.ip_index).decl;
             return self.builder.context.resolveDecl(decl_index);
         },
@@ -62,7 +62,7 @@ fn resolveInst(self: *CodeGen, inst: Air.Index) c.LLVMValueRef {
 }
 
 fn elideLazy(self: *CodeGen, inst: Air.Index) Air.Index {
-    switch (self.air.insts.get(@intFromEnum(inst))) {
+    switch (self.air.instData(inst)) {
         .load_lazy => |lazy| {
             for (self.lazy.get(inst).?) |elide| {
                 c.LLVMInstructionEraseFromParent(elide);
@@ -75,7 +75,7 @@ fn elideLazy(self: *CodeGen, inst: Air.Index) Air.Index {
 
 fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(block_inst)].block;
+    const data = air.instData(block_inst).block;
     const slice = air.extraData(Air.Inst.ExtraSlice, data.insts);
     const insts = air.extraSlice(slice);
 
@@ -88,7 +88,19 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
     for (insts) |i| {
         const inst: Air.Index = @enumFromInt(i);
-        _ = switch (air.insts.items(.tags)[i]) {
+        const loc = self.air.instLoc(inst);
+        // std.debug.print("{}: [{}:{}]\n", .{ air.instTag(inst), loc.line, loc.col });
+        const discope = self.discopes.items[self.discopes.items.len - 1];
+        const diloc = c.LLVMDIBuilderCreateDebugLocation(
+            self.builder.context.context,
+            loc.line,
+            loc.col,
+            discope,
+            null,
+        );
+
+        c.LLVMSetCurrentDebugLocation2(self.builder.builder, diloc);
+        _ = switch (air.instTag(inst)) {
             .constant => try self.constant(inst),
 
             inline .add,
@@ -160,6 +172,11 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
             .param => try self.param(inst, @intCast(i)),
             .load_decl => {},
+
+            .dbg_block_begin => try self.dbgBlockBegin(inst),
+            .dbg_block_end => try self.dbgBlockEnd(inst),
+            .dbg_var_val => try self.dbgVarVal(inst),
+            .dbg_var_ptr => try self.dbgVarPtr(inst),
             // .slice_ptr_ref => try self.slicePtrRef(inst),
             // .slice_len_ref => try self.sliceLenRef(inst),
             // .slice_ptr_val => try self.slicePtrVal(inst),
@@ -179,7 +196,7 @@ fn block(self: *CodeGen, block_inst: Air.Index) Error!c.LLVMValueRef {
 
 fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const builder = self.builder;
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].constant;
+    const data = self.air.instData(inst).constant;
     const tv = self.pool.indexToKey(data).tv;
     // TODO: we should have a better way to either mark as unused or complete discard
     // these intermediate instructions, but for now we just skip them
@@ -223,9 +240,9 @@ fn constant(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     }
 }
 
-fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c.LLVMValueRef {
+fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: Air.Inst.Tag) !c.LLVMValueRef {
     const air = self.air;
-    const data = @field(air.insts.items(.data)[@intFromEnum(inst)], @tagName(tag));
+    const data = @field(air.instData(inst), @tagName(tag));
     const l = self.resolveInst(data.l);
     const r = self.resolveInst(data.r);
     var builder = self.builder;
@@ -287,7 +304,7 @@ fn binaryOp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst
 }
 
 fn alloc(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-    const slot_type = switch (self.air.insts.get(@intFromEnum(inst))) {
+    const slot_type = switch (self.air.instData(inst)) {
         inline .alloc, .alloc_mut => |data| data.slot_type,
         else => unreachable,
     };
@@ -328,7 +345,7 @@ fn allocaInner(self: *CodeGen, ty: Type) !c.LLVMValueRef {
 
 fn load(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].load;
+    const data = air.instData(inst).load;
     const ptr = self.resolveInst(data.ptr);
     const ptr_type = self.pool.indexToType(air.typeOf(data.ptr)).ref;
     const load_type = self.pool.indexToType(ptr_type.pointee);
@@ -353,7 +370,7 @@ fn load(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn loadLazy(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].load_lazy;
+    const data = air.instData(inst).load_lazy;
     const ptr = self.resolveInst(data.ptr);
     const ptr_type = self.pool.indexToType(air.typeOf(data.ptr)).ref;
     const load_type = self.pool.indexToType(ptr_type.pointee);
@@ -385,7 +402,7 @@ fn loadLazy(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn store(self: *CodeGen, inst: Air.Index) !void {
     const air = self.air;
     const builder = self.builder;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].store;
+    const data = air.instData(inst).store;
     const addr = self.resolveInst(data.ptr);
     var val = self.resolveInst(data.val);
     // special behavior for aggregates to avoid storing the entire value at once
@@ -419,8 +436,8 @@ fn store(self: *CodeGen, inst: Air.Index) !void {
     }
 }
 
-fn cmp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c.LLVMValueRef {
-    const data = @field(self.air.insts.items(.data)[@intFromEnum(inst)], @tagName(tag));
+fn cmp(self: *CodeGen, inst: Air.Index, comptime tag: Air.Inst.Tag) !c.LLVMValueRef {
+    const data = @field(self.air.instData(inst), @tagName(tag));
     const l = self.resolveInst(data.l);
     const r = self.resolveInst(data.r);
     const ref = self.builder.addCmp(tag, l, r);
@@ -430,7 +447,7 @@ fn cmp(self: *CodeGen, inst: Air.Index, comptime tag: std.meta.Tag(Air.Inst)) !c
 
 // lowers to a (0 - op)
 fn neg(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].neg;
+    const data = self.air.instData(inst).neg;
     const operand = self.resolveInst(data);
     const ty = self.pool.indexToType(self.air.typeOf(data));
     const zero = try self.builder.addUint(ty, 0);
@@ -441,7 +458,7 @@ fn neg(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 // lowers to a u1 (op xor 1)
 fn logicalNot(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].logical_not;
+    const data = self.air.instData(inst).logical_not;
     const operand = self.resolveInst(data);
     const one = try self.builder.addUint(Type.bool_type, 1);
     const not = c.LLVMBuildXor(self.builder.builder, operand, one, "");
@@ -451,7 +468,7 @@ fn logicalNot(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn branchSingle(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
     var builder = self.builder;
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].branch_single;
+    const data = self.air.instData(inst).branch_single;
 
     const condition = self.resolveInst(data.cond);
     const exec_true = builder.appendBlock("if.true");
@@ -473,7 +490,7 @@ fn branchSingle(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
 fn branchDouble(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
     const air = self.air;
     var builder = self.builder;
-    const branch_double = air.insts.items(.data)[@intFromEnum(inst)].branch_double;
+    const branch_double = air.instData(inst).branch_double;
     const data = air.extraData(Air.Inst.BranchDouble, branch_double.pl);
 
     const condition = self.resolveInst(branch_double.cond);
@@ -511,7 +528,7 @@ fn branchDouble(self: *CodeGen, inst: Air.Index) Error!c.LLVMValueRef {
 }
 
 fn param(self: *CodeGen, inst: Air.Index, index: u32) !c.LLVMValueRef {
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].param;
+    const data = self.air.instData(inst).param;
     const param_str = self.pool.getString(data.name).?;
     const ref = c.LLVMGetParam(self.builder.function, index);
     c.LLVMSetValueName2(ref, param_str.ptr, param_str.len);
@@ -521,7 +538,7 @@ fn param(self: *CodeGen, inst: Air.Index, index: u32) !c.LLVMValueRef {
 
 fn zext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].zext;
+    const data = air.instData(inst).zext;
     const ty = self.pool.indexToKey(data.ty).ty;
     const operand = self.resolveInst(data.operand);
     const ref = try self.builder.addZext(ty, operand);
@@ -531,7 +548,7 @@ fn zext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn sext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].sext;
+    const data = air.instData(inst).sext;
     const ty = self.pool.indexToKey(data.ty).ty;
     const operand = self.resolveInst(data.operand);
     const ref = try self.builder.addSext(ty, operand);
@@ -541,7 +558,7 @@ fn sext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn fpext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].fpext;
+    const data = air.instData(inst).fpext;
     const ty = self.pool.indexToKey(data.ty).ty;
     const operand = self.resolveInst(data.operand);
     const ref = try self.builder.addFpext(ty, operand);
@@ -551,7 +568,7 @@ fn fpext(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn reftoptr(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].reftoptr;
+    const data = air.instData(inst).reftoptr;
     const operand = self.resolveInst(data.operand);
     try self.map.put(self.arena, inst, operand);
     return operand;
@@ -559,7 +576,7 @@ fn reftoptr(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn ptrtoref(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].ptrtoref;
+    const data = air.instData(inst).ptrtoref;
     const operand = self.resolveInst(data.operand);
     try self.map.put(self.arena, inst, operand);
     return operand;
@@ -567,7 +584,7 @@ fn ptrtoref(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn yield(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     // TODO: this doesn't actually work with yields in the middle
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].yield;
+    const data = self.air.instData(inst).yield;
     return self.resolveInst(data);
 }
 
@@ -578,7 +595,7 @@ fn loopWhile(self: *CodeGen, inst: Air.Index) !void {
     // finally, a jump is placed at the top (entry) that jumps unconditionally
     // to the branch to create "while" behavior rather than "do" while
     var builder = self.builder;
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].loop_while;
+    const data = self.air.instData(inst).loop_while;
 
     const prev_block = builder.getInsertBlock();
     const entry_block = builder.appendBlock("loop.entry");
@@ -611,7 +628,7 @@ fn loopForever(self: *CodeGen, inst: Air.Index) !void {
     // condition to check. we can therefore ignore the structure above in loopWhile
     // and simply emit a single basic block that unconditionally branches back to itself
     var builder = self.builder;
-    const data = self.air.insts.items(.data)[@intFromEnum(inst)].loop_forever;
+    const data = self.air.instData(inst).loop_forever;
 
     const prev_block = builder.getInsertBlock();
     const entry_block = builder.appendBlock("loop.entry");
@@ -646,7 +663,7 @@ fn controlContinue(self: *CodeGen, inst: Air.Index) !void {
 
 fn call(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const call_inst = air.insts.items(.data)[@intFromEnum(inst)].call;
+    const call_inst = air.instData(inst).call;
     const slice = air.extraData(Air.Inst.ExtraSlice, call_inst.args);
     const air_args = air.extraSlice(slice);
     const function = self.resolveInst(call_inst.function);
@@ -670,7 +687,7 @@ fn call(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 
 fn ret(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].@"return";
+    const data = air.instData(inst).@"return";
     const ty = self.pool.indexToKey(air.typeOf(data)).ty;
     const val = switch (ty) {
         .void => null,
@@ -684,7 +701,7 @@ fn ret(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn indexRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const index_ref = air.insts.items(.data)[@intFromEnum(inst)].index_ref;
+    const index_ref = air.instData(inst).index_ref;
     const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
 
     const base = self.resolveInst(data.base);
@@ -710,7 +727,7 @@ fn indexRef(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].index_val;
+    const data = air.instData(inst).index_val;
 
     var base = self.resolveInst(self.elideLazy(data.base));
     const index = self.resolveInst(data.index);
@@ -756,7 +773,7 @@ fn indexVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn slicePtrVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].slice_ptr_val;
+    const data = air.instData(inst).slice_ptr_val;
 
     const base = self.resolveInst(data.base);
     const base_type = self.pool.indexToType(air.typeOf(data.base));
@@ -774,7 +791,7 @@ fn slicePtrVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn sliceLenVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].slice_len_val;
+    const data = air.instData(inst).slice_len_val;
 
     const base = self.resolveInst(data.base);
     const base_type = self.pool.indexToType(air.typeOf(data.base));
@@ -792,7 +809,7 @@ fn sliceLenVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn fieldVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const data = air.insts.items(.data)[@intFromEnum(inst)].field_val;
+    const data = air.instData(inst).field_val;
 
     const base = self.resolveInst(self.elideLazy(data.base));
     const base_type = self.pool.indexToType(air.typeOf(data.base));
@@ -814,7 +831,7 @@ fn fieldVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const slice_init = air.insts.items(.data)[@intFromEnum(inst)].slice_init;
+    const slice_init = air.instData(inst).slice_init;
     const data = air.extraData(Air.Inst.SliceInit, slice_init.pl);
 
     const ptr = self.resolveInst(data.ptr);
@@ -845,7 +862,7 @@ fn sliceInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn arrayInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const array_init = air.insts.items(.data)[@intFromEnum(inst)].array_init;
+    const array_init = air.instData(inst).array_init;
     const slice = air.extraData(Air.Inst.ExtraSlice, array_init.elements);
     const elements = air.extraSlice(slice);
 
@@ -872,7 +889,7 @@ fn arrayInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 fn structInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     const air = self.air;
     const builder = self.builder;
-    const struct_init = air.insts.items(.data)[@intFromEnum(inst)].struct_init;
+    const struct_init = air.instData(inst).struct_init;
     const slice = air.extraData(Air.Inst.ExtraSlice, struct_init.fields);
     const fields = air.extraSlice(slice);
 
@@ -934,3 +951,110 @@ fn structInit(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
 //     return gep;
 // }
 //
+
+fn dbgBlockBegin(self: *CodeGen, inst: Air.Index) !void {
+    const air = self.air;
+    const di = self.builder.context.di;
+    const loc = air.instLoc(inst);
+
+    const parent = self.discopes.items[self.discopes.items.len - 1];
+    const discope = c.LLVMDIBuilderCreateLexicalBlock(
+        di.builder,
+        parent,
+        di.file,
+        loc.line,
+        loc.col,
+    );
+    try self.discopes.append(self.arena, discope);
+}
+
+fn dbgBlockEnd(self: *CodeGen, inst: Air.Index) !void {
+    _ = inst;
+    _ = self.discopes.pop();
+}
+
+fn dbgVarVal(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const di = self.builder.context.di;
+    const dbg = air.instData(inst).dbg_var_val;
+    const loc = air.instLoc(inst);
+
+    const name = self.pool.getString(dbg.name).?;
+    const val_type = self.pool.indexToType(air.typeOf(dbg.val));
+    const val = self.resolveInst(dbg.val);
+    const discope = self.discopes.items[self.discopes.items.len - 1];
+    const variable = c.LLVMDIBuilderCreateAutoVariable(
+        di.builder,
+        discope,
+        name.ptr,
+        name.len,
+        di.file,
+        loc.line,
+        try di.resolveType(val_type),
+        @intFromBool(false),
+        c.LLVMDIFlagZero,
+        @intCast(val_type.alignment(self.pool).?), // TODO: no clue if this is correct
+    );
+    const diloc = c.LLVMDIBuilderCreateDebugLocation(
+        self.builder.context.context,
+        loc.line,
+        loc.col,
+        discope,
+        null,
+    );
+    const dival = c.LLVMDIBuilderInsertDbgValueAtEnd(
+        di.builder,
+        val,
+        variable,
+        c.LLVMDIBuilderCreateExpression(di.builder, null, 0),
+        diloc,
+        self.builder.getInsertBlock(),
+    );
+
+    try self.map.put(self.arena, inst, dival);
+    return dival;
+}
+
+fn dbgVarPtr(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
+    const air = self.air;
+    const di = self.builder.context.di;
+    const dbg = air.instData(inst).dbg_var_ptr;
+    const loc = air.instLoc(inst);
+
+    const name = self.pool.getString(dbg.name).?;
+    const alloc_type = self.pool.indexToType(air.typeOf(dbg.ptr)).ref;
+    const slot_type = self.pool.indexToType(alloc_type.pointee);
+    const alloca = self.resolveInst(dbg.ptr);
+    const alignment = c.LLVMGetAlignment(alloca);
+    const discope = self.discopes.items[self.discopes.items.len - 1];
+    const variable = c.LLVMDIBuilderCreateAutoVariable(
+        di.builder,
+        discope,
+        name.ptr,
+        name.len,
+        di.file,
+        loc.line,
+        try di.resolveType(slot_type),
+        @intFromBool(false),
+        c.LLVMDIFlagZero,
+        alignment,
+    );
+    const diloc = c.LLVMDIBuilderCreateDebugLocation(
+        self.builder.context.context,
+        loc.line,
+        loc.col,
+        discope,
+        null,
+    );
+    const declare = c.LLVMDIBuilderInsertDeclareAtEnd(
+        di.builder,
+        alloca,
+        variable,
+        c.LLVMDIBuilderCreateExpression(di.builder, null, 0),
+        diloc,
+        self.builder.getInsertBlock(),
+    );
+
+    try self.map.put(self.arena, inst, declare);
+    return declare;
+}

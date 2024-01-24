@@ -225,7 +225,7 @@ pub fn main() !void {
     }
 
     if (stage_bits & CODEGEN == 0) std.os.exit(0);
-    var backend = LlvmBackend.init(gpa, arena.allocator(), &pool);
+    var backend = LlvmBackend.init(gpa, arena.allocator(), &pool, input_filename.?);
     defer backend.deinit();
     try backend.generate();
 

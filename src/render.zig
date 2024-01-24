@@ -476,10 +476,10 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
             const writer = self.stream.writer();
 
             const x = @intFromEnum(inst);
+            const loc = air.instLoc(inst);
             try writer.print("%{} = ", .{x});
 
-            const air_inst = air.insts.get(x);
-            switch (air_inst) {
+            switch (air.instData(inst)) {
                 .block => |block| {
                     try writer.print("block {{", .{});
                     self.stream.indent();
@@ -589,7 +589,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                     try self.stream.newline();
                 },
                 inline else => |data| {
-                    try writer.print("{s}(", .{@tagName(@as(std.meta.Tag(Air.Inst), air_inst))});
+                    try writer.print("{s}(", .{@tagName(air.instTag(inst))});
                     switch (@TypeOf(data)) {
                         void => {},
                         inline u32, u64, f64 => try writer.print("{}", .{data}),
@@ -610,7 +610,7 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                             }
                         },
                     }
-                    try writer.print(")", .{});
+                    try writer.print(") [{}:{}]", .{ loc.line, loc.col });
                     try self.stream.newline();
                 },
             }

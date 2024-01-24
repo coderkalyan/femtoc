@@ -312,6 +312,18 @@ pub const Inst = struct {
             block: Index,
         },
 
+        // debug information
+        dbg_block_begin,
+        dbg_block_end,
+        dbg_var_val: struct {
+            name: InternPool.StringIndex,
+            val: Index,
+        },
+        dbg_var_ptr: struct {
+            name: InternPool.StringIndex,
+            ptr: Index,
+        },
+
         // toplevel instruction
         module: struct {
             insts: ExtraIndex,
@@ -323,10 +335,17 @@ pub const Inst = struct {
         };
     };
 
+    pub const Tag = std.meta.Tag(Data);
+
     pub const Loc = union {
         node: NodeIndex,
         token: TokenIndex,
     };
+
+    // pub const SrcLoc = struct {
+    //     line: u32,
+    //     col: u32,
+    // };
 
     // represents a "slice" to an "array" stored as a span of elements in extra data
     pub const ExtraSlice = struct {

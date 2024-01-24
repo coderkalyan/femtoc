@@ -8,6 +8,8 @@ const Decl = Air.Decl;
 
 pub const c = @cImport({
     @cInclude("llvm-c/Core.h");
+    @cInclude("llvm-c/DebugInfo.h");
+    @cInclude("dwarf.h");
 });
 
 const Context = @This();
@@ -17,14 +19,192 @@ context: c.LLVMContextRef,
 module: c.LLVMModuleRef,
 pool: *InternPool,
 decl_map: std.AutoHashMapUnmanaged(InternPool.DeclIndex, c.LLVMValueRef),
+di: DebugInfo,
+
+const DebugInfo = struct {
+    builder: c.LLVMDIBuilderRef,
+    file: c.LLVMMetadataRef,
+    cu: c.LLVMMetadataRef,
+
+    pub fn finalize(di: *const DebugInfo) void {
+        c.LLVMDIBuilderFinalize(di.builder);
+    }
+
+    // converts an internal Air type to a LLVM DI (DWARF) type reference
+    pub fn resolveType(di: *const DebugInfo, ty: Type) !c.LLVMMetadataRef {
+        const context = @fieldParentPtr(Context, "di", di);
+        return switch (ty) {
+            .void => c.LLVMDIBuilderCreateBasicType(
+                di.builder,
+                "void".ptr,
+                "void".len,
+                0,
+                c.DW_ATE_void,
+                0,
+            ),
+            .comptime_int => unreachable,
+            .comptime_float => unreachable,
+            .ref => unreachable,
+            .int => |int| {
+                switch (int.sign) {
+                    .unsigned => {
+                        std.debug.print("{}\n", .{int.width});
+                        var buf = [_]u8{0} ** 8;
+                        const name = try std.fmt.bufPrint(&buf, "u{}", .{int.width});
+                        return c.LLVMDIBuilderCreateBasicType(
+                            di.builder,
+                            name.ptr,
+                            name.len,
+                            int.width,
+                            c.DW_ATE_signed,
+                            0,
+                        );
+                    },
+                    .signed => {
+                        var buf = [_]u8{0} ** 8;
+                        const name = try std.fmt.bufPrint(&buf, "i{}", .{int.width});
+                        return c.LLVMDIBuilderCreateBasicType(
+                            di.builder,
+                            name.ptr,
+                            name.len,
+                            int.width,
+                            c.DW_ATE_unsigned,
+                            0,
+                        );
+                    },
+                }
+            },
+            .float => |float| {
+                const name = try std.fmt.allocPrint(context.arena, "f{}", .{float.width});
+                return c.LLVMDIBuilderCreateBasicType(
+                    di.builder,
+                    name.ptr,
+                    name.len,
+                    0,
+                    c.DW_ATE_float,
+                    0,
+                );
+            },
+            // .bool => c.LLVMIntTypeInContext(context.context, 1),
+            .bool => c.LLVMDIBuilderCreateBasicType(
+                di.builder,
+                "bool".ptr,
+                "bool".len,
+                8,
+                c.DW_ATE_boolean,
+                0,
+            ),
+            .function => |function| {
+                const src_params = context.pool.extra.items[function.params.start..function.params.end];
+                const params = try context.arena.alloc(c.LLVMMetadataRef, src_params.len + 1);
+                defer context.arena.free(params);
+
+                const return_type = ty: {
+                    const src = context.pool.indexToKey(function.@"return").ty;
+                    break :ty try di.resolveType(src);
+                };
+                params[0] = return_type;
+
+                for (src_params, 0..) |param, i| {
+                    const param_ty = context.pool.indexToType(@enumFromInt(param));
+                    params[i + 1] = try di.resolveType(param_ty);
+                }
+
+                return c.LLVMDIBuilderCreateSubroutineType(
+                    di.builder,
+                    di.file,
+                    params.ptr,
+                    @intCast(params.len),
+                    0,
+                );
+            },
+            // .pointer, .many_pointer => return c.LLVMPointerTypeInContext(context.context, 0),
+            // .array => |array| {
+            //     const element_type = try context.resolveType(context.pool.indexToKey(array.element).ty);
+            //     return c.LLVMArrayType(element_type, array.count);
+            // },
+            // .@"struct" => |st| {
+            //     const src_fields = context.pool.extra.items[st.fields.start..st.fields.end];
+            //     const fields = try context.arena.alloc(c.LLVMTypeRef, src_fields.len);
+            //     defer context.arena.free(fields);
+            //
+            //     for (src_fields, 0..) |field, i| {
+            //         const field_type = context.pool.indexToType(@enumFromInt(field));
+            //         fields[i] = try context.resolveType(field_type);
+            //     }
+            //
+            //     return c.LLVMStructTypeInContext(context.context, fields.ptr, @intCast(fields.len), @intFromBool(false));
+            // },
+            // .slice => {
+            //     // wide pointer consisting of pointer and usize len
+            //     const ptr = c.LLVMPointerTypeInContext(context.context, 0);
+            //     const len = c.LLVMInt64TypeInContext(context.context);
+            //     var fields = .{ ptr, len };
+            //     return c.LLVMStructTypeInContext(context.context, @ptrCast(&fields), 2, @intFromBool(false));
+            // },
+            else => unreachable,
+        };
+    }
+};
 
 pub const Error = error{
     VerificationError,
 };
 
-pub fn init(arena: Allocator, name: [:0]const u8, pool: *InternPool) Context {
+pub fn init(arena: Allocator, name: [:0]const u8, pool: *InternPool, path: []const u8) Context {
     const context = c.LLVMContextCreate();
     const module = c.LLVMModuleCreateWithNameInContext(name.ptr, context);
+
+    // TODO: 3 is a magic number, no clue where it came from
+    const di_version = c.LLVMValueAsMetadata(c.LLVMConstInt(c.LLVMInt32Type(), 3, @intFromBool(false)));
+    const di_version_name = "Debug Info Version";
+    c.LLVMAddModuleFlag(
+        module,
+        c.LLVMModuleFlagBehaviorWarning,
+        di_version_name.ptr,
+        di_version_name.len,
+        di_version,
+    );
+    const dw_version = c.LLVMValueAsMetadata(c.LLVMConstInt(c.LLVMInt32Type(), 5, @intFromBool(false)));
+    const dw_version_name = "Dwarf Version";
+    c.LLVMAddModuleFlag(
+        module,
+        c.LLVMModuleFlagBehaviorWarning,
+        dw_version_name.ptr,
+        dw_version_name.len,
+        dw_version,
+    );
+    const dibuilder = c.LLVMCreateDIBuilder(module);
+    const filename = std.fs.path.basename(path);
+    const dir = std.fs.path.dirname(path) orelse ".";
+    const file = c.LLVMDIBuilderCreateFile(dibuilder, filename.ptr, filename.len, dir.ptr, dir.len);
+    const producer = "Femto Language Compiler";
+    // TODO: flags, split name, sysroot, sdk
+    const flags = "";
+    const splitname = "";
+    const sysroot = "";
+    const sdk = "";
+    const cu = c.LLVMDIBuilderCreateCompileUnit(
+        dibuilder,
+        c.LLVMDWARFSourceLanguageC,
+        file,
+        producer.ptr,
+        producer.len,
+        @intFromBool(false),
+        flags.ptr,
+        flags.len,
+        0,
+        splitname.ptr,
+        splitname.len,
+        c.LLVMDWARFEmissionFull,
+        0,
+        @intFromBool(false),
+        @intFromBool(false),
+        sysroot.ptr,
+        sysroot.len,
+        sdk.ptr,
+        sdk.len,
+    );
 
     return .{
         .arena = arena,
@@ -32,10 +212,16 @@ pub fn init(arena: Allocator, name: [:0]const u8, pool: *InternPool) Context {
         .module = module,
         .pool = pool,
         .decl_map = .{},
+        .di = .{
+            .builder = dibuilder,
+            .file = file,
+            .cu = cu,
+        },
     };
 }
 
 pub fn deinit(context: *Context) void {
+    c.LLVMDisposeDIBuilder(context.di.builder);
     c.LLVMDisposeModule(context.module);
     c.LLVMContextDispose(context.context);
     context.decl_map.deinit(context.arena);
@@ -434,7 +620,7 @@ pub const Builder = struct {
         };
     }
 
-    pub fn addCmp(builder: *Builder, comptime tag: std.meta.Tag(Air.Inst), lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
+    pub fn addCmp(builder: *Builder, comptime tag: Air.Inst.Tag, lref: c.LLVMValueRef, rref: c.LLVMValueRef) c.LLVMValueRef {
         return switch (tag) {
             .icmp_eq => c.LLVMBuildICmp(builder.builder, c.LLVMIntEQ, lref, rref, ""),
             .icmp_ne => c.LLVMBuildICmp(builder.builder, c.LLVMIntNE, lref, rref, ""),

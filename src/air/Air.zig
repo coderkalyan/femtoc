@@ -1,9 +1,14 @@
 const std = @import("std");
 const InternPool = @import("../InternPool.zig");
+const src_loc = @import("src_loc.zig");
+const LazySrcLoc = src_loc.LazySrcLoc;
+const SrcLoc = src_loc.SrcLoc;
 
 const Air = @This();
 
-insts: std.MultiArrayList(Inst).Slice,
+// insts: std.MultiArrayList(Inst).Slice,
+insts: std.ArrayList(Inst.Data).Slice,
+locs: []const SrcLoc,
 extra: []const u32,
 pool: *InternPool,
 toplevel: Index,
@@ -13,234 +18,250 @@ pub const Index = enum(u32) { _ };
 // index into the extra data array (pointer to the start of an extra data segment)
 pub const ExtraIndex = enum(u32) { _ };
 
-pub const Inst = union(enum) {
-    // typed value with comptime-known value
-    constant: InternPool.Index,
-    // value expressions
-    // binary expressions take in two operands, all of these behave the same
-    // they work on any type, type checking is done during semantic analysis
-    // addition +
-    add: BinaryOp,
-    // subtraction -
-    sub: BinaryOp,
-    // multiplication *
-    mul: BinaryOp,
-    // division /
-    div: BinaryOp,
-    // modulo %
-    mod: BinaryOp,
-    // bitwise or |
-    bitwise_or: BinaryOp,
-    // bitwise and &
-    bitwise_and: BinaryOp,
-    // bitwise xor ^
-    bitwise_xor: BinaryOp,
-    // integer compare equal ==
-    icmp_eq: BinaryOp,
-    // integer compare not equal !=
-    icmp_ne: BinaryOp,
-    // integer compare unsigned greater than >
-    icmp_ugt: BinaryOp,
-    // integer compare greater unsigned than equal >=
-    icmp_uge: BinaryOp,
-    // integer compare unsigned less than <
-    icmp_ult: BinaryOp,
-    // integer compare unsigned less than equal <=
-    icmp_ule: BinaryOp,
-    // integer compare signed greater than >
-    icmp_sgt: BinaryOp,
-    // integer compare signed greater than equal >=
-    icmp_sge: BinaryOp,
-    // integer compare signed less than <
-    icmp_slt: BinaryOp,
-    // integer compare signed less than equal <=
-    icmp_sle: BinaryOp,
-    // float compare greater than >
-    fcmp_gt: BinaryOp,
-    // float compare greater than equal >=
-    fcmp_ge: BinaryOp,
-    // float compare less than <
-    fcmp_lt: BinaryOp,
-    // float compare less than equal <=
-    fcmp_le: BinaryOp,
-    // logical shift left <<
-    lsl: BinaryOp,
-    // logical shift right >>
-    lsr: BinaryOp,
-    // arithmetic shift left <<
-    asl: BinaryOp,
-    // arithmetic shift right >>
-    asr: BinaryOp,
-    // unary expressions
-    // negate -
-    neg: Index,
-    // logical not !
-    logical_not: Index,
-    // bitwise invert ~
-    bitwise_inv: Index,
-    // performs a function call
-    call: struct {
-        // function to call
-        function: Index,
-        // list of arguments
-        args: ExtraIndex,
-    },
-    // zero extends an operand to a destination type
-    zext: struct {
-        operand: Index,
-        ty: InternPool.Index,
-    },
-    // sign extends an operand to a destination type
-    sext: struct {
-        operand: Index,
-        ty: InternPool.Index,
-    },
-    // floating point extends an operand to a destination type
-    fpext: struct {
-        operand: Index,
-        ty: InternPool.Index,
-    },
-    // promotes a "ref" (internal stack reference type) to a pointer
-    reftoptr: struct {
-        operand: Index,
-        ty: InternPool.Index,
-    },
-    // demotes a pointer to a ref
-    ptrtoref: struct {
-        operand: Index,
-        ty: InternPool.Index,
-    },
-    // initializes a slice with a ptr and len
-    slice_init: struct {
-        pl: ExtraIndex,
-    },
-    // initializes an array with a list of elements
-    array_init: struct {
-        ty: InternPool.Index,
-        elements: ExtraIndex,
-    },
-    // initializes an array with a list of fields (in order)
-    struct_init: struct {
-        ty: InternPool.Index,
-        fields: ExtraIndex,
-    },
+pub const Inst = struct {
+    data: Data,
+    loc: LazySrcLoc,
 
-    // indexes into an array, slice, or many pointer (passed by
-    // reference) and returns a reference to the element
-    // to get the reference to a value-semantics aggregate, first
-    // emit an index_val to extract an element, and then promote
-    // the element to an (immutable) stack object
-    index_ref: struct {
-        pl: ExtraIndex,
-    },
-    // indexes into an array, slice, or many pointer (passed by
-    // value) and returns the value of the element
-    // to get the value through a reference to the aggregate, it is
-    // better to use index_ref followed by a load
-    index_val: struct {
-        base: Index,
-        index: Index,
-    },
-    // extracts the ptr field from a slice (passed by value)
-    // and returns it
-    slice_ptr_val: struct {
-        base: Index,
-        ty: InternPool.Index,
-    },
-    // extracts the len field from a slice (passed by value)
-    // and returns it
-    slice_len_val: struct {
-        base: Index,
-        ty: InternPool.Index,
-    },
-    // extracts a field by name from a struct (passed by value)
-    // and returns it
-    field_val: struct {
-        base: Index,
-        name: InternPool.StringIndex,
-    },
+    pub const Data = union(enum) {
+        // typed value with comptime-known value
+        constant: InternPool.Index,
+        // value expressions
+        // binary expressions take in two operands, all of these behave the same
+        // they work on any type, type checking is done during semantic analysis
+        // addition +
+        add: BinaryOp,
+        // subtraction -
+        sub: BinaryOp,
+        // multiplication *
+        mul: BinaryOp,
+        // division /
+        div: BinaryOp,
+        // modulo %
+        mod: BinaryOp,
+        // bitwise or |
+        bitwise_or: BinaryOp,
+        // bitwise and &
+        bitwise_and: BinaryOp,
+        // bitwise xor ^
+        bitwise_xor: BinaryOp,
+        // integer compare equal ==
+        icmp_eq: BinaryOp,
+        // integer compare not equal !=
+        icmp_ne: BinaryOp,
+        // integer compare unsigned greater than >
+        icmp_ugt: BinaryOp,
+        // integer compare greater unsigned than equal >=
+        icmp_uge: BinaryOp,
+        // integer compare unsigned less than <
+        icmp_ult: BinaryOp,
+        // integer compare unsigned less than equal <=
+        icmp_ule: BinaryOp,
+        // integer compare signed greater than >
+        icmp_sgt: BinaryOp,
+        // integer compare signed greater than equal >=
+        icmp_sge: BinaryOp,
+        // integer compare signed less than <
+        icmp_slt: BinaryOp,
+        // integer compare signed less than equal <=
+        icmp_sle: BinaryOp,
+        // float compare greater than >
+        fcmp_gt: BinaryOp,
+        // float compare greater than equal >=
+        fcmp_ge: BinaryOp,
+        // float compare less than <
+        fcmp_lt: BinaryOp,
+        // float compare less than equal <=
+        fcmp_le: BinaryOp,
+        // logical shift left <<
+        lsl: BinaryOp,
+        // logical shift right >>
+        lsr: BinaryOp,
+        // arithmetic shift left <<
+        asl: BinaryOp,
+        // arithmetic shift right >>
+        asr: BinaryOp,
+        // unary expressions
+        // negate -
+        neg: Index,
+        // logical not !
+        logical_not: Index,
+        // bitwise invert ~
+        bitwise_inv: Index,
+        // performs a function call
+        call: struct {
+            // function to call
+            function: Index,
+            // list of arguments
+            args: ExtraIndex,
+        },
+        // zero extends an operand to a destination type
+        zext: struct {
+            operand: Index,
+            ty: InternPool.Index,
+        },
+        // sign extends an operand to a destination type
+        sext: struct {
+            operand: Index,
+            ty: InternPool.Index,
+        },
+        // floating point extends an operand to a destination type
+        fpext: struct {
+            operand: Index,
+            ty: InternPool.Index,
+        },
+        // promotes a "ref" (internal stack reference type) to a pointer
+        reftoptr: struct {
+            operand: Index,
+            ty: InternPool.Index,
+        },
+        // demotes a pointer to a ref
+        ptrtoref: struct {
+            operand: Index,
+            ty: InternPool.Index,
+        },
+        // initializes a slice with a ptr and len
+        slice_init: struct {
+            pl: ExtraIndex,
+        },
+        // initializes an array with a list of elements
+        array_init: struct {
+            ty: InternPool.Index,
+            elements: ExtraIndex,
+        },
+        // initializes an array with a list of fields (in order)
+        struct_init: struct {
+            ty: InternPool.Index,
+            fields: ExtraIndex,
+        },
 
-    // allocates a stack slot and returns a const pointer to it
-    alloc: struct {
-        // type of the object being stored in the stack slot
-        slot_type: InternPool.Index,
-        // type of the pointer yielded by the alloc
-        // which is always slot_type *
-        pointer_type: InternPool.Index,
-    },
-    // allocates a stack slot and returns a mut pointer to it
-    alloc_mut: struct {
-        // type of the object being stored in the stack slot
-        slot_type: InternPool.Index,
-        // type of the pointer yielded by the alloc
-        // which is always slot_type *mut
-        pointer_type: InternPool.Index,
-    },
-    // loads data from a memory address and returns a ref to the value
-    load: struct {
-        ptr: Index,
-    },
-    load_lazy: struct {
-        ptr: Index,
-    },
-    // stores data to a memory address
-    store: struct {
-        // where to store
-        ptr: Index,
-        // what to store
-        val: Index,
-    },
+        // indexes into an array, slice, or many pointer (passed by
+        // reference) and returns a reference to the element
+        // to get the reference to a value-semantics aggregate, first
+        // emit an index_val to extract an element, and then promote
+        // the element to an (immutable) stack object
+        index_ref: struct {
+            pl: ExtraIndex,
+        },
+        // indexes into an array, slice, or many pointer (passed by
+        // value) and returns the value of the element
+        // to get the value through a reference to the aggregate, it is
+        // better to use index_ref followed by a load
+        index_val: struct {
+            base: Index,
+            index: Index,
+        },
+        // extracts the ptr field from a slice (passed by value)
+        // and returns it
+        slice_ptr_val: struct {
+            base: Index,
+            ty: InternPool.Index,
+        },
+        // extracts the len field from a slice (passed by value)
+        // and returns it
+        slice_len_val: struct {
+            base: Index,
+            ty: InternPool.Index,
+        },
+        // extracts a field by name from a struct (passed by value)
+        // and returns it
+        field_val: struct {
+            base: Index,
+            name: InternPool.StringIndex,
+        },
 
-    // conditional execution that jumps below if false (if statement)
-    branch_single: struct {
-        // condition to branch on
-        cond: Index,
-        // block to execute if true
-        exec_true: Index,
-    },
-    // conditional execution that branches both ways (if/else)
-    branch_double: struct {
-        // condition to branch on
-        cond: Index,
-        // extra payload that stores the blocks to branch to
-        pl: ExtraIndex,
-    },
-    // loops an execution block as long as a condition is true
-    loop_while: struct {
-        // condition block to evaluate before each loop iteration
-        cond: Index,
-        // body to execute on each loop iteration
-        body: Index,
-    },
-    // loops an execution block forever (until broken out of)
-    loop_forever: struct {
-        // body to execute on each loop iteration
-        body: Index,
-    },
-    // returns control flow to the caller, possibly with a return value
-    @"return": Index,
-    // exits a block, emitting a value as the "result" of the block
-    yield: Index,
-    // breaks out of a loop
-    @"break",
-    // continues to the next iteration of a loop
-    @"continue",
+        // allocates a stack slot and returns a const pointer to it
+        alloc: struct {
+            // type of the object being stored in the stack slot
+            slot_type: InternPool.Index,
+            // type of the pointer yielded by the alloc
+            // which is always slot_type *
+            pointer_type: InternPool.Index,
+        },
+        // allocates a stack slot and returns a mut pointer to it
+        alloc_mut: struct {
+            // type of the object being stored in the stack slot
+            slot_type: InternPool.Index,
+            // type of the pointer yielded by the alloc
+            // which is always slot_type *mut
+            pointer_type: InternPool.Index,
+        },
+        // loads data from a memory address and returns a ref to the value
+        load: struct {
+            ptr: Index,
+        },
+        load_lazy: struct {
+            ptr: Index,
+        },
+        // stores data to a memory address
+        store: struct {
+            // where to store
+            ptr: Index,
+            // what to store
+            val: Index,
+        },
 
-    // block of instructions
-    block: struct {
-        insts: ExtraIndex,
-    },
-    // marks a parameter in a function body, which is referred to
-    param: struct {
-        name: InternPool.StringIndex,
-        ty: InternPool.Index,
-    },
+        // conditional execution that jumps below if false (if statement)
+        branch_single: struct {
+            // condition to branch on
+            cond: Index,
+            // block to execute if true
+            exec_true: Index,
+        },
+        // conditional execution that branches both ways (if/else)
+        branch_double: struct {
+            // condition to branch on
+            cond: Index,
+            // extra payload that stores the blocks to branch to
+            pl: ExtraIndex,
+        },
+        // loops an execution block as long as a condition is true
+        loop_while: struct {
+            // condition block to evaluate before each loop iteration
+            cond: Index,
+            // body to execute on each loop iteration
+            body: Index,
+        },
+        // loops an execution block forever (until broken out of)
+        loop_forever: struct {
+            // body to execute on each loop iteration
+            body: Index,
+        },
+        // returns control flow to the caller, possibly with a return value
+        @"return": Index,
+        // exits a block, emitting a value as the "result" of the block
+        yield: Index,
+        // breaks out of a loop
+        @"break",
+        // continues to the next iteration of a loop
+        @"continue",
 
-    // TODO: it would be better to store a decl index
-    load_decl: struct {
-        ip_index: InternPool.Index,
-        ty: InternPool.Index,
-    },
+        // block of instructions
+        block: struct {
+            insts: ExtraIndex,
+        },
+        // marks a parameter in a function body, which is referred to
+        param: struct {
+            name: InternPool.StringIndex,
+            ty: InternPool.Index,
+        },
+
+        // TODO: it would be better to store a decl index
+        load_decl: struct {
+            ip_index: InternPool.Index,
+            ty: InternPool.Index,
+        },
+
+        dbg_block_begin,
+        dbg_block_end,
+        dbg_var_val: struct {
+            name: InternPool.StringIndex,
+            val: Index,
+        },
+        dbg_var_ptr: struct {
+            name: InternPool.StringIndex,
+            ptr: Index,
+        },
+    };
 
     // represents a "slice" to an "array" stored as a span of elements in extra data
     pub const ExtraSlice = struct {
@@ -271,7 +292,7 @@ pub const Inst = union(enum) {
         ty: InternPool.Index,
     };
 
-    pub const Tag = std.meta.Tag(Inst);
+    pub const Tag = std.meta.Tag(Data);
 };
 
 pub const Decl = struct {
@@ -317,8 +338,7 @@ pub fn extraSlice(air: *const Air, slice: Inst.ExtraSlice) []const u32 {
 
 pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
     const pool = air.pool;
-    const i = @intFromEnum(index);
-    switch (air.insts.get(i)) {
+    switch (air.instData(index)) {
         .constant => |constant| {
             const tv = pool.indexToKey(constant).tv;
             return tv.ty;
@@ -363,14 +383,14 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         },
         inline .zext, .sext, .fpext, .reftoptr, .ptrtoref => |cast| return cast.ty,
         .slice_init => |slice_init| {
-            const data = air.extraData(Air.Inst.SliceInit, slice_init.pl);
-            return data.ty;
+            const extra = air.extraData(Air.Inst.SliceInit, slice_init.pl);
+            return extra.ty;
         },
         .array_init => |array_init| return array_init.ty,
         .struct_init => |struct_init| return struct_init.ty,
         .index_ref => |index_ref| {
-            const data = air.extraData(Air.Inst.IndexRef, index_ref.pl);
-            return data.ty;
+            const extra = air.extraData(Air.Inst.IndexRef, index_ref.pl);
+            return extra.ty;
         },
         .index_val => |index_val| {
             const ty = air.typeOf(index_val.base);
@@ -412,8 +432,8 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         // TODO: this assumes both branches are the same type,
         // which is not generally true (peer type resolution isn't figured out)
         .branch_double => |branch_double| {
-            const data = air.extraData(Inst.BranchDouble, branch_double.pl);
-            return air.typeOf(data.exec_true);
+            const extra = air.extraData(Inst.BranchDouble, branch_double.pl);
+            return air.typeOf(extra.exec_true);
         },
         .loop_forever,
         .loop_while,
@@ -430,5 +450,23 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
         },
         .param => |param| return param.ty,
         .load_decl => |load_decl| return load_decl.ty,
+
+        .dbg_block_begin,
+        .dbg_block_end,
+        .dbg_var_val,
+        .dbg_var_ptr,
+        => unreachable, // should not be referenced
     }
+}
+
+pub fn instData(air: *const Air, inst: Air.Index) Air.Inst.Data {
+    return air.insts[@intFromEnum(inst)];
+}
+
+pub fn instTag(air: *const Air, inst: Air.Index) Air.Inst.Tag {
+    return air.insts[@intFromEnum(inst)];
+}
+
+pub fn instLoc(air: *const Air, inst: Air.Index) SrcLoc {
+    return air.locs[@intFromEnum(inst)];
 }

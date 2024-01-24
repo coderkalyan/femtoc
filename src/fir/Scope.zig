@@ -84,9 +84,31 @@ pub const Block = struct {
         return b.fg.add(inst);
     }
 
+    pub fn reserveUnlinked(b: *Block, comptime tag: Inst.Tag) !Fir.Index {
+        return b.fg.reserve(tag);
+    }
+
+    pub fn reserveLocUnlinked(b: *Block, comptime tag: Inst.Tag, loc: Inst.Loc) !Fir.Index {
+        return b.fg.reserveLoc(tag, loc);
+    }
+
     pub fn add(b: *Block, inst: Inst) !Fir.Index {
         try b.insts.ensureUnusedCapacity(b.fg.arena, 1);
         const index = try b.addUnlinked(inst);
+        b.insts.appendAssumeCapacity(index);
+        return index;
+    }
+
+    pub fn reserve(b: *Block, comptime tag: Inst.Tag) !Fir.Index {
+        try b.insts.ensureUnusedCapacity(b.fg.arena, 1);
+        const index = try b.reserveUnlinked(tag);
+        b.insts.appendAssumeCapacity(index);
+        return index;
+    }
+
+    pub fn reserveLoc(b: *Block, comptime tag: Inst.Tag, loc: Inst.Loc) !Fir.Index {
+        try b.insts.ensureUnusedCapacity(b.fg.arena, 1);
+        const index = try b.reserveLocUnlinked(tag, loc);
         b.insts.appendAssumeCapacity(index);
         return index;
     }

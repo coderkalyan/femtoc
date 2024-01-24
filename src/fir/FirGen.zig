@@ -39,6 +39,7 @@ extra: std.ArrayListUnmanaged(u32),
 scratch: std.ArrayListUnmanaged(u32),
 pool: *InternPool,
 errors: std.ArrayListUnmanaged(error_handler.SourceError),
+lazy_src_insts: std.ArrayListUnmanaged(Fir.Index),
 
 pub fn lowerAst(gpa: Allocator, pool: *InternPool, tree: *const Ast) !Fir {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -54,6 +55,7 @@ pub fn lowerAst(gpa: Allocator, pool: *InternPool, tree: *const Ast) !Fir {
         .scratch = .{},
         .pool = pool,
         .errors = .{},
+        .lazy_src_insts = .{},
     };
 
     // post order format guarantees that the module node will be the last
@@ -179,6 +181,35 @@ pub fn add(fg: *FirGen, inst: Fir.Inst) !Fir.Index {
     fg.locs.appendAssumeCapacity(inst.loc);
     std.debug.assert(fg.insts.len == fg.locs.items.len);
     return @enumFromInt(len);
+}
+
+pub fn reserve(fg: *FirGen, comptime tag: Fir.Inst.Tag) !Fir.Index {
+    const len: u32 = @intCast(fg.insts.len);
+    // make sure both arrays can reserve before we append to either
+    // so we can append atomically and not go out of sync
+    try fg.insts.ensureUnusedCapacity(fg.gpa, 1);
+    try fg.locs.ensureUnusedCapacity(fg.gpa, 1);
+    fg.insts.appendAssumeCapacity(@unionInit(Fir.Inst.Data, @tagName(tag), undefined));
+    fg.locs.addOneAssumeCapacity();
+    std.debug.assert(fg.insts.len == fg.locs.items.len);
+    return @enumFromInt(len);
+}
+
+pub fn reserveLoc(fg: *FirGen, comptime tag: Fir.Inst.Tag, loc: Fir.Inst.Loc) !Fir.Index {
+    const len: u32 = @intCast(fg.insts.len);
+    // make sure both arrays can reserve before we append to either
+    // so we can append atomically and not go out of sync
+    try fg.insts.ensureUnusedCapacity(fg.gpa, 1);
+    try fg.locs.ensureUnusedCapacity(fg.gpa, 1);
+    fg.insts.appendAssumeCapacity(@unionInit(Fir.Inst.Data, @tagName(tag), undefined));
+    fg.locs.appendAssumeCapacity(loc);
+    std.debug.assert(fg.insts.len == fg.locs.items.len);
+    return @enumFromInt(len);
+}
+
+pub fn update(fg: *FirGen, index: Fir.Index, inst: Fir.Inst) void {
+    fg.insts[@intFromEnum(index)] = inst.data;
+    fg.locs[@intFromEnum(index)] = inst.loc;
 }
 
 fn module(fg: *FirGen, node: Node.Index) !Fir.Index {
@@ -991,6 +1022,14 @@ fn statement(b: *Block, s: **Scope, node: Node.Index) Error!Fir.Index {
             const val_scope = try fg.arena.create(Scope.LocalVal);
             val_scope.* = Scope.LocalVal.init(s.*, id, ret);
             s.* = &val_scope.base;
+
+            _ = try b.add(.{
+                .data = .{ .dbg_var_val = .{
+                    .name = id,
+                    .val = ret,
+                } },
+                .loc = .{ .node = node },
+            });
             return ret;
         },
         .const_decl_attr => {
@@ -1000,6 +1039,14 @@ fn statement(b: *Block, s: **Scope, node: Node.Index) Error!Fir.Index {
             const val_scope = try fg.arena.create(Scope.LocalVal);
             val_scope.* = Scope.LocalVal.init(s.*, id, ret);
             s.* = &val_scope.base;
+
+            _ = try b.add(.{
+                .data = .{ .dbg_var_val = .{
+                    .name = id,
+                    .val = ret,
+                } },
+                .loc = .{ .node = node },
+            });
             return ret;
         },
         .var_decl => {
@@ -1009,6 +1056,14 @@ fn statement(b: *Block, s: **Scope, node: Node.Index) Error!Fir.Index {
             const ptr_scope = try fg.arena.create(Scope.LocalPtr);
             ptr_scope.* = Scope.LocalPtr.init(s.*, id, ret);
             s.* = &ptr_scope.base;
+
+            _ = try b.add(.{
+                .data = .{ .dbg_var_ptr = .{
+                    .name = id,
+                    .ptr = ret,
+                } },
+                .loc = .{ .node = node },
+            });
             return ret;
         },
         .type_decl => |ty| {
@@ -1086,14 +1141,24 @@ fn call(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
 }
 
 fn blockInner(b: *Block, scope: **Scope, node: Node.Index) Error!void {
+    const fg = b.fg;
     const data = b.tree.data(node).block;
 
     var s: **Scope = scope;
     const sl = b.tree.extraData(data.stmts, Node.ExtraSlice);
     const stmts = b.tree.extraSlice(sl);
+
+    const open = b.tree.mainToken(node);
+    const dbg_block_begin = try b.reserveLoc(.dbg_block_begin, .{ .token = open });
+    try fg.lazy_src_insts.append(fg.arena, dbg_block_begin);
+
     for (stmts) |stmt| {
         _ = try statement(b, s, stmt);
     }
+
+    const close = b.tree.locateClosingBrace(open);
+    const dbg_block_end = try b.reserveLoc(.dbg_block_end, .{ .token = close });
+    try fg.lazy_src_insts.append(fg.arena, dbg_block_end);
 }
 
 fn blockUnlinked(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
@@ -1172,22 +1237,18 @@ fn varDecl(b: *Block, s: **Scope, node: Node.Index) !Fir.Index {
     // so we have to create alloc instructions in addition to computing the value
     // otherwise, this function operates like constDecl
     const var_decl = b.tree.data(node).var_decl;
-    const val = try expr(b, s, .{ .semantics = .val, .ctx = .store }, var_decl.val);
-    if (var_decl.ty == 0) {
-        // untyped (inferred) declaration
-        return b.add(.{
-            .data = .{ .push_mut = val },
-            .loc = .{ .node = node },
-        });
-    } else {
+    var val = try expr(b, s, .{ .semantics = .val, .ctx = .store }, var_decl.val);
+    if (var_decl.ty != 0) {
         // type annotated declaration
         const dest_ty = try typeExpr(b, s, var_decl.ty);
-        const coerced = try coerce(b, s, val, dest_ty, node);
-        return b.add(.{
-            .data = .{ .push_mut = coerced },
-            .loc = .{ .node = node },
-        });
+        val = try coerce(b, s, val, dest_ty, node);
     }
+
+    const push = try b.add(.{
+        .data = .{ .push_mut = val },
+        .loc = .{ .node = node },
+    });
+    return push;
 }
 
 fn globalConst(fg: *FirGen, s: **Scope, node: Node.Index) !Fir.Index {
@@ -1547,7 +1608,16 @@ fn globalIdentId(fg: *FirGen, stmt: u32) !InternPool.StringIndex {
 }
 
 fn instructionReturns(fg: *FirGen, inst: Fir.Index) bool {
-    switch (fg.insts.get(@intFromEnum(inst))) {
+    var i = @intFromEnum(inst);
+    // skip epilogue
+    while (i > 0) : (i -= 1) {
+        switch (fg.insts.get(i)) {
+            .dbg_block_end => {},
+            else => break,
+        }
+    }
+
+    switch (fg.insts.get(i)) {
         .block => |block| {
             const slice = fg.extraData(Fir.Inst.ExtraSlice, block.insts);
             const insts = fg.extraSlice(slice);

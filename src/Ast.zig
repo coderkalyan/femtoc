@@ -384,3 +384,20 @@ pub fn mainToken(tree: *const Ast, node: Node.Index) TokenIndex {
 pub fn data(tree: *const Ast, node: Node.Index) Node.Data {
     return tree.nodes.items(.data)[node];
 }
+
+pub fn locateClosingBrace(tree: *const Ast, open: TokenIndex) TokenIndex {
+    var depth: u32 = 1;
+    var cur: TokenIndex = open + 1;
+    while (true) : (cur += 1) {
+        const tag = tree.tokens.items(.tag)[cur];
+        switch (tag) {
+            .l_brace => depth += 1,
+            .r_brace => {
+                depth -= 1;
+                if (depth == 0) return cur;
+            },
+            .eof => unreachable,
+            else => {},
+        }
+    }
+}

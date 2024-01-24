@@ -435,7 +435,6 @@ const Parser = struct {
         // in one or more binary expressions - operator precedence parsing
         var l_node = l;
         while (true) {
-            std.debug.print("cur: {}\n", .{p.current()});
             const prec = precedence(p.current());
             if (prec < expr_precedence) {
                 return l_node;
@@ -895,10 +894,11 @@ const Parser = struct {
     }
 
     fn call(p: *Parser, ptr: Node.Index) !Node.Index {
+        const l_paren_token = p.index;
         const args = try p.parseList(expression, .{ .open = .l_paren, .close = .r_paren });
 
         return p.addNode(.{
-            .main_token = undefined,
+            .main_token = l_paren_token,
             .data = .{ .call = .{
                 .ptr = ptr,
                 .args = args,

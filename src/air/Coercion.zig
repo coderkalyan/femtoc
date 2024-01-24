@@ -51,7 +51,7 @@ fn uint(self: *Coercion) !Air.Index {
             // comptime sints are always < 0, so can never fit in a uint
             if (ty.sign == .signed) return error.Truncated;
 
-            const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+            const src = b.sema.instData(self.src).constant;
             const tv = b.pool.indexToKey(src).tv;
             const val = tv.val.integer;
             if (val > dest_type.maxInt()) {
@@ -92,7 +92,7 @@ fn sint(self: *Coercion) !Air.Index {
         .comptime_int => |ty| switch (ty.sign) {
             // can coerce to a fixed uint if the comptime value fits in bounds
             .unsigned => {
-                const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+                const src = b.sema.instData(self.src).constant;
                 const tv = b.pool.indexToKey(src).tv;
                 const val = tv.val.integer;
                 if (val > dest_type.maxInt()) {
@@ -105,7 +105,7 @@ fn sint(self: *Coercion) !Air.Index {
             },
             // can coerce to a fixed sint if the comptime value fits in bounds
             .signed => {
-                const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+                const src = b.sema.instData(self.src).constant;
                 const tv = b.pool.indexToKey(src).tv;
                 const val: i64 = @bitCast(tv.val.integer);
                 if (val < dest_type.minInt() or val > dest_type.maxInt()) {
@@ -144,7 +144,7 @@ fn float(self: *Coercion) !Air.Index {
         // can coerce to a fixed float if the comptime value fits in bounds
         // TODO: we don't check that right now
         .comptime_float => {
-            const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+            const src = b.sema.instData(self.src).constant;
             const tv = b.pool.indexToKey(src).tv;
             const val = tv.val.float;
             return b.addConstant(.{ .tv = .{
@@ -182,7 +182,7 @@ fn array(self: *Coercion) Error!Air.Index {
             }
 
             // now coerce every source element to the destination type
-            const src = b.sema.insts.get(@intFromEnum(self.src)).constant;
+            const src = b.sema.instData(self.src).constant;
             const tv = b.pool.indexToKey(src).tv;
             const comptime_array = tv.val.array;
             const src_elements = b.pool.extra.items[comptime_array.start..comptime_array.end];
@@ -202,7 +202,7 @@ fn array(self: *Coercion) Error!Air.Index {
                 };
                 const constant = try coercion.coerce();
                 // const constant: Air.Index = @enumFromInt(element);
-                const element_tv = b.sema.insts.get(@intFromEnum(constant)).constant;
+                const element_tv = b.sema.instData(constant).constant;
                 b.sema.scratch.appendAssumeCapacity(@intFromEnum(element_tv));
             }
 

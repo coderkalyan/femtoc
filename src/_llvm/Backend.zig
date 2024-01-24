@@ -21,11 +21,11 @@ context: Context,
 // context: *c.Context,
 pool: *InternPool,
 
-pub fn init(gpa: Allocator, arena: Allocator, pool: *InternPool) Backend {
+pub fn init(gpa: Allocator, arena: Allocator, pool: *InternPool, filename: []const u8) Backend {
     return .{
         .gpa = gpa,
         .arena = arena,
-        .context = Context.init(arena, "femto_main", pool),
+        .context = Context.init(arena, "femto_main", pool, filename),
         // .context = c.fm_context_init().?,
         .pool = pool,
     };
@@ -56,13 +56,35 @@ pub fn generate(self: *Backend) !void {
         const decl = self.pool.decls.at(decl_index);
         // search for function bodies
         if (decl.initializer) |initializer| {
-            std.debug.print("{}\n", .{initializer});
             const tv = self.pool.indexToKey(initializer).tv;
             switch (tv.val) {
                 .body => |body| {
                     const function = self.context.resolveDecl(@enumFromInt(decl_index));
                     const air = self.pool.bodies.at(@intFromEnum(body));
                     var builder = Context.Builder.init(&self.context, function);
+                    const di = &self.context.di;
+                    const name = switch (decl.name) {
+                        .named => |name| self.pool.getString(name).?,
+                        .unnamed => "unnamed",
+                    };
+                    const ty = try di.resolveType(self.pool.indexToType(decl.ty));
+                    const difunc = c.LLVMDIBuilderCreateFunction(
+                        di.builder,
+                        di.file,
+                        name.ptr,
+                        name.len,
+                        name.ptr,
+                        name.len,
+                        di.file,
+                        0,
+                        ty,
+                        @intFromBool(false),
+                        @intFromBool(true),
+                        0,
+                        c.LLVMDIFlagPrototyped,
+                        @intFromBool(false),
+                    );
+
                     var codegen: CodeGen = .{
                         .arena = self.arena,
                         .builder = &builder,
@@ -73,14 +95,19 @@ pub fn generate(self: *Backend) !void {
                         .lazy = .{},
                         // .control_flow = .{},
                         .scope = undefined,
+                        .discopes = .{},
                     };
+                    try codegen.discopes.append(self.arena, difunc);
                     defer codegen.deinit();
+
                     try codegen.generate();
                 },
                 else => {},
             }
         }
     }
+
+    self.context.di.finalize();
 }
 
 pub fn dumpToStdout(self: *Backend) !void {
