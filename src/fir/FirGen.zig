@@ -655,7 +655,6 @@ fn structLiteral(b: *Block, scope: **Scope, node: Node.Index) Error!Fir.Index {
         const field_data = b.tree.data(field).field_initializer;
         const field_token = b.tree.mainToken(field) + 1;
         const field_str = b.tree.tokenString(field_token);
-        std.debug.print("literal field: {s}\n", .{field_str});
         const field_id = try fg.pool.getOrPutString(field_str);
         const val = try valExpr(b, scope, field_data);
         const pl = try fg.addExtra(Inst.StructFieldInitializer{
@@ -1051,7 +1050,7 @@ fn statement(b: *Block, s: **Scope, node: Node.Index) Error!Fir.Index {
         },
         .var_decl => {
             const ret = try varDecl(b, s, node);
-            const ident = b.tree.tokenString(b.tree.mainToken(node) + 2);
+            const ident = b.tree.tokenString(b.tree.mainToken(node) + 1);
             const id = try fg.pool.getOrPutString(ident);
             const ptr_scope = try fg.arena.create(Scope.LocalPtr);
             ptr_scope.* = Scope.LocalPtr.init(s.*, id, ret);
@@ -1600,7 +1599,7 @@ fn loopBreak(b: *Block, scope: **Scope, node: Node.Index) !Fir.Index {
 fn globalIdentId(fg: *FirGen, stmt: u32) !InternPool.StringIndex {
     const ident = switch (fg.tree.data(stmt)) {
         .const_decl, .const_decl_attr, .type_decl => fg.tree.tokenString(fg.tree.mainToken(stmt) + 1),
-        .var_decl => fg.tree.tokenString(fg.tree.mainToken(stmt) + 2),
+        .var_decl => fg.tree.tokenString(fg.tree.mainToken(stmt) + 1),
         else => unreachable,
     };
 

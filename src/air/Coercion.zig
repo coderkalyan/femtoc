@@ -31,6 +31,7 @@ pub fn coerce(self: *Coercion) !Air.Index {
         .float => self.float(),
         .array => self.array(),
         .slice => self.slice(),
+        .pointer => self.pointer(),
         else => {
             const src_key = self.b.pool.indexToKey(src_type).ty;
             std.log.err("coercion from {} to {} unimplemented or not allowed", .{ src_key, dest_type });
@@ -293,8 +294,8 @@ fn slice(self: *Coercion) Error!Air.Index {
     const dest_type = b.pool.indexToKey(self.dest_type).ty;
 
     switch (b.pool.indexToKey(src_type).ty) {
-        .pointer => |pointer| {
-            const pointee = b.pool.indexToKey(pointer.pointee).ty;
+        .pointer => |data| {
+            const pointee = b.pool.indexToKey(data.pointee).ty;
             switch (pointee) {
                 .array => |arr| {
                     if (dest_type.slice.element != arr.element) return error.InvalidCoercion;
@@ -321,6 +322,24 @@ fn slice(self: *Coercion) Error!Air.Index {
             std.debug.print("{} {}\n", .{ dest_type.slice.element, b.pool.indexToKey(src_type).ty.slice.element });
             std.debug.print("{} {}\n", .{ tag, self.dest_type });
             std.debug.print("{} {}\n", .{ src_type, self.dest_type });
+            return error.InvalidCoercion;
+        },
+    }
+}
+
+fn pointer(self: *Coercion) Error!Air.Index {
+    const b = self.b;
+    const src_type = b.sema.tempAir().typeOf(self.src);
+    const dest_type = b.pool.indexToType(self.dest_type).pointer;
+
+    switch (b.pool.indexToType(src_type)) {
+        .pointer => |src_pointer| {
+            if (src_pointer.pointee != dest_type.pointee) return error.InvalidCoercion;
+            // cannot erase const
+            if (!src_pointer.mutable and dest_type.mutable) return error.InvalidCoercion;
+            return self.src;
+        },
+        else => {
             return error.InvalidCoercion;
         },
     }

@@ -318,7 +318,10 @@ fn alloc(self: *CodeGen, inst: Air.Index) !c.LLVMValueRef {
     // const id = c.LLVMLookupIntrinsicID(name.ptr, name.len);
     // const context = self.builder.context;
     // const params: []const c.LLVMTypeRef = &.{ c.LLVMIntTypeInContext(context.context, 64), c.LLVMPointerTypeInContext(context.context, 0) };
-    // const decl = c.LLVMGetIntrinsicDeclaration(context.module, id, @constCast(params.ptr), params.len);
+    // // const decl = c.LLVMGetIntrinsicDeclaration(context.module, id, @constCast(params.ptr), params.len);
+    // // _ = params;
+    // const decl = c.LLVMGetIntrinsicDeclaration(context.module, id, @constCast(params.ptr), 0);
+    // // _ = decl;
     // const decl_type = c.LLVMIntrinsicGetType(context.context, id, @constCast(params.ptr), params.len);
     // const args: []const c.LLVMValueRef = &.{ try self.builder.addUint(Type.u64_type, ty.size(self.pool).?), ref };
     // _ = c.LLVMBuildCall2(self.builder.builder, decl_type, decl, @constCast(args.ptr), @intCast(args.len), "");

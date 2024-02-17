@@ -80,8 +80,10 @@ pub const Node = struct {
         mut_pointer_type: Index,
         // pointer type [*] to an underlying type
         many_pointer_type: Index,
+        mut_many_pointer_type: Index,
         // slice type [] to an underlying type
         slice_type: Index,
+        mut_slice_type: Index,
         // array type [n] to an underlying type
         array_type: struct {
             element_type: Index,
@@ -108,6 +110,8 @@ pub const Node = struct {
         // 'argc: u32'
         // main_token = name
         param: Index,
+        // same as above, but mutable
+        param_mut: Index,
         // struct field
         field: Index,
 

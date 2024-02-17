@@ -406,7 +406,12 @@ pub fn FirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                                 switch (field.type) {
                                     u32 => try writer.print("{}", .{arg}),
                                     Fir.Index => try writer.print("%{}", .{@intFromEnum(arg)}),
-                                    else => try writer.print("format error", .{}),
+                                    // else => try writer.print("format error", .{}),
+                                    InternPool.StringIndex => {
+                                        const str = fir.pool.getString(arg).?;
+                                        try writer.print("{s}", .{str});
+                                    },
+                                    else => unreachable,
                                 }
 
                                 if (i < fields.len - 1) try writer.print(", ", .{});
@@ -603,7 +608,11 @@ pub fn AirRenderer(comptime width: u32, comptime WriterType: anytype) type {
                                     u32 => try writer.print("{}", .{arg}),
                                     Air.Index => try writer.print("%{}", .{@intFromEnum(arg)}),
                                     InternPool.Index => try writer.print("{s}", .{try self.formatInterned(arg)}),
-                                    else => try writer.print("format error", .{}),
+                                    InternPool.StringIndex => {
+                                        const str = self.pool.getString(arg).?;
+                                        try writer.print("{s}", .{str});
+                                    },
+                                    else => unreachable,
                                 }
 
                                 if (i < fields.len - 1) try writer.print(", ", .{});

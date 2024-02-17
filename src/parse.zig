@@ -309,6 +309,7 @@ const Parser = struct {
                 .a_export,
                 .a_import,
                 .k_let,
+                .k_mut,
                 => p.declaration() catch |err| {
                     if (err == Error.HandledUserError) {
                         while (true) {
@@ -623,6 +624,16 @@ const Parser = struct {
                     .eof => return expr,
                     else => try p.arrayType(expr),
                 },
+                .k_mut => switch (p.next(1)) {
+                    .asterisk => try p.pointerType(expr),
+                    .l_bracket => switch (p.next(2)) {
+                        .r_bracket => try p.sliceType(expr),
+                        .asterisk => try p.manyPointerType(expr),
+                        .eof => return expr,
+                        else => try p.arrayType(expr),
+                    },
+                    else => return error.UnexpectedToken,
+                },
                 else => return expr,
             };
         }
@@ -660,10 +671,11 @@ const Parser = struct {
     }
 
     fn pointerType(p: *Parser, ty: Node.Index) !Node.Index {
+        const mut_token = p.eat(.k_mut);
         const asterisk_token = try p.expect(.asterisk);
-        if (p.eat(.k_mut) != null) {
+        if (mut_token) |mut| {
             return p.addNode(.{
-                .main_token = asterisk_token,
+                .main_token = mut,
                 .data = .{ .mut_pointer_type = ty },
             });
         } else {
@@ -675,22 +687,38 @@ const Parser = struct {
     }
 
     fn sliceType(p: *Parser, ty: Node.Index) !Node.Index {
+        const mut_token = p.eat(.k_mut);
         const l_bracket_token = try p.expect(.l_bracket);
         _ = try p.expect(.r_bracket);
-        return p.addNode(.{
-            .main_token = l_bracket_token,
-            .data = .{ .slice_type = ty },
-        });
+        if (mut_token) |mut| {
+            return p.addNode(.{
+                .main_token = mut,
+                .data = .{ .mut_slice_type = ty },
+            });
+        } else {
+            return p.addNode(.{
+                .main_token = l_bracket_token,
+                .data = .{ .slice_type = ty },
+            });
+        }
     }
 
     fn manyPointerType(p: *Parser, ty: Node.Index) !Node.Index {
+        const mut_token = p.eat(.k_mut);
         const l_bracket_token = try p.expect(.l_bracket);
         _ = try p.expect(.asterisk);
         _ = try p.expect(.r_bracket);
-        return p.addNode(.{
-            .main_token = l_bracket_token,
-            .data = .{ .many_pointer_type = ty },
-        });
+        if (mut_token) |mut| {
+            return p.addNode(.{
+                .main_token = mut,
+                .data = .{ .mut_many_pointer_type = ty },
+            });
+        } else {
+            return p.addNode(.{
+                .main_token = l_bracket_token,
+                .data = .{ .many_pointer_type = ty },
+            });
+        }
     }
 
     fn arrayType(p: *Parser, ty: Node.Index) !Node.Index {
@@ -749,6 +777,7 @@ const Parser = struct {
 
     fn param(p: *Parser) !Node.Index {
         var err = false;
+        const mut_token = p.eat(.k_mut);
         const ident_token = p.expect(.ident) catch token: {
             // We're missing an identifier flag it
             try p.errors.append(.{ .tag = .missing_identifier, .token = p.index });
@@ -769,10 +798,17 @@ const Parser = struct {
         };
 
         if (err) return error.HandledUserError;
-        return p.addNode(.{
-            .main_token = ident_token,
-            .data = .{ .param = type_node },
-        });
+        if (mut_token) |_| {
+            return p.addNode(.{
+                .main_token = ident_token,
+                .data = .{ .param_mut = type_node },
+            });
+        } else {
+            return p.addNode(.{
+                .main_token = ident_token,
+                .data = .{ .param = type_node },
+            });
+        }
     }
 
     fn structField(p: *Parser) !Node.Index {
@@ -848,7 +884,7 @@ const Parser = struct {
 
     fn statement(p: *Parser) Error!Node.Index {
         const node = switch (p.token_tags[p.index]) {
-            .k_let => p.declaration(),
+            .k_let, .k_mut => p.declaration(),
             .k_if => p.branch(),
             .k_for => p.loop(),
             .k_type => p.parseTypeDecl(),
@@ -955,12 +991,20 @@ const Parser = struct {
             try p.scratch.append(attr);
         }
 
-        const let_token = try p.expect(.k_let);
-        var is_mut = false;
-        if (p.token_tags[p.index] == .k_mut) {
-            _ = p.eatCurrent();
-            is_mut = true;
-        }
+        const is_mut = p.current() == .k_mut;
+        const let_token = switch (p.current()) {
+            .k_let, .k_mut => p.eatCurrent(),
+            else => return error.UnexpectedToken,
+        };
+        // const let_token = switch (p.current()) {
+        //     .k_let,
+        // }
+        // const let_token = try p.expect(.k_let);
+        // var is_mut = false;
+        // if (p.token_tags[p.index] == .k_mut) {
+        //     _ = p.eatCurrent();
+        //     is_mut = true;
+        // }
 
         switch (p.token_tags[p.index]) {
             .ident => _ = p.eatCurrent(),
@@ -1201,7 +1245,7 @@ const Parser = struct {
             },
             // TODO: we should have a more rigorous way to determine this,
             // and also let things that aren't declarations in the binding
-            .k_let => {
+            .k_let, .k_mut => {
                 // declaration = assume this is the binding, and we are in a range loop
                 const binding = try p.declaration();
                 _ = try p.expect(.semi);

@@ -48,7 +48,6 @@ const DebugInfo = struct {
             .int => |int| {
                 switch (int.sign) {
                     .unsigned => {
-                        std.debug.print("{}\n", .{int.width});
                         var buf = [_]u8{0} ** 8;
                         const name = try std.fmt.bufPrint(&buf, "u{}", .{int.width});
                         return c.LLVMDIBuilderCreateBasicType(
@@ -118,7 +117,17 @@ const DebugInfo = struct {
                     0,
                 );
             },
-            // .pointer, .many_pointer => return c.LLVMPointerTypeInContext(context.context, 0),
+            // inline .pointer,
+            // .many_pointer,
+            // => |ptr| c.LLVMDIBuilderCreatePointerType(
+            //     di.builder,
+            //     try di.resolveType(context.pool.indexToType(ptr.pointee)),
+            //     64, // TODO: architecture specific
+            //     4, // TODO: quite false, this has to be calculated
+            //     0,
+            //     "void".ptr,
+            //     "void".len,
+            // ),
             // .array => |array| {
             //     const element_type = try context.resolveType(context.pool.indexToKey(array.element).ty);
             //     return c.LLVMArrayType(element_type, array.count);
@@ -142,7 +151,19 @@ const DebugInfo = struct {
             //     var fields = .{ ptr, len };
             //     return c.LLVMStructTypeInContext(context.context, @ptrCast(&fields), 2, @intFromBool(false));
             // },
-            else => unreachable,
+            // TODO:
+            .slice, .pointer, .many_pointer, .array => c.LLVMDIBuilderCreateBasicType(
+                di.builder,
+                "void".ptr,
+                "void".len,
+                0,
+                c.DW_ATE_void,
+                0,
+            ),
+            else => |t| {
+                std.debug.print("{}", .{t});
+                unreachable;
+            },
         };
     }
 };
