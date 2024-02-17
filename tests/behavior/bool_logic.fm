@@ -1,0 +1,33 @@
+@export let bool_not = fn (a: bool) bool {
+    return !a;
+};
+
+@export let bool_or = fn (a: bool, b: bool) bool {
+    return a or b;
+};
+
+@export let bool_and = fn (a: bool, b: bool) bool {
+    return a and b;
+};
+
+@export let bool_xor = fn (a: bool, b: bool) bool {
+    return a xor b;
+};
+
+@export let bool_implies = fn (a: bool, b: bool) bool {
+    return a implies b;
+};
+
+@import let skip: fn () bool;
+
+@export let bool_or_short = fn () void {
+    let ignore: bool = true or skip();
+};
+
+@export let bool_and_short = fn () void {
+    let ignore: bool = false and skip();
+};
+
+@export let bool_implies_short = fn () void {
+    let ignore: bool = false implies skip();
+};
