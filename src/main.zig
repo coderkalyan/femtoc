@@ -46,7 +46,9 @@ fn print_usage() !void {
 
 fn stem(path: []const u8) []const u8 {
     var start = path.len - 1;
-    while (path[start] != '/') : (start -= 1) {}
+    while (start >= 0 and path[start] != '/') : (start -= 1) {
+        if (start == 0) break;
+    }
     var end = path.len - 1;
     while (path[end] != '.') : (end -= 1) {}
     return path[start + 1 .. end];
