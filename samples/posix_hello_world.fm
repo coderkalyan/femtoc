@@ -1,8 +1,7 @@
-// @import let write = fn (fd: u32, buf: u8*, count: usize) isize;
-@import let write = fn (fd: u32, buf: u8[]) isize;
-@import let exit = fn (status: u32) void;
+@import let write: fn (fd: u32, buf: u8[*], n: u64) u64;
 
-let main = fn () void {
-    write("Hello, world!");
-    exit(0);
+@export let main = fn () void {
+    let stdin: u32 = 0;
+    let greetings = "Hello, world!\n";
+    write(stdin, greetings.ptr, greetings.len);
 };

@@ -92,6 +92,7 @@ const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.nodes.deinit(self.gpa);
         self.extra.deinit(self.gpa);
+        self.scratch.deinit();
     }
 
     fn addNode(p: *Parser, node: Node) !Node.Index {
@@ -351,6 +352,12 @@ const Parser = struct {
     // expression parsing
     fn expression(p: *Parser) Error!Node.Index {
         const expr = try p.unary(true);
+        return p.associateBinary(expr, min_precedence);
+    }
+
+    // TODO: merge this into expression()
+    fn expressionNoBrace(p: *Parser) Error!Node.Index {
+        const expr = try p.unary(false);
         return p.associateBinary(expr, min_precedence);
     }
 
@@ -1182,7 +1189,7 @@ const Parser = struct {
 
         // we have three kinds of if statements: simple, else, and chain
         // which we progressively try to match against
-        const condition = try p.expression();
+        const condition = try p.expressionNoBrace();
         const exec_true = try p.block();
 
         if (p.current() != .k_else) {

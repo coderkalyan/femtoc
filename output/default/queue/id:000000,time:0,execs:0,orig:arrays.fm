@@ -1,0 +1,16 @@
+let main = fn() void {
+    // arrays store a contigious list of the same type
+    // the array type is defined by listing the el   dest[0] = 1;
+    source[0] = 1;
+    let truth = dest == source;
+    let truth = &dest != &source;
+
+    // use ... to fill in the remaining elements with the last value specified
+    let mut buf: u8[128] = [0...];
+    let slice: u8[] = buf[0..func()];
+    let truth = slice.len == 2;
+
+    // slices 
+    // let memory: void[*];
+    let hello: u8[] = "Hello";
+    let world: u8[:0] =

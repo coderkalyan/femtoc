@@ -1,0 +1,148 @@
+let always_true = fn () bool {
+  return true;
+};
+
+let always_false = fn () bool {
+  return false;
+};
+
+@import let touch: fn () void;
+
+@export let arith_sum = fn (n: u32) u32 {
+  mut sum: u32 = 0;
+  for mut i: u32 = 1; i <= n; i += 1 {
+    sum += i;
+  }
+
+  return sum;
+};
+
+@export let loop_zero_iter = fn () void {
+  for mut i: u32 = 0; i < 0; i += 1 {
+    touch();
+  }
+};
+
+@export let loop_zero_iter_func = fn () void {
+  for mut i: u32 = 0; always_false(); i += 1 {
+    touch();
+  }
+};
+
+@export let loop_zero_while = fn () void {
+  for false {
+    touch();
+  }
+};
+
+@export let loop_zero_while_func = fn () void {
+  for always_false() {
+    touch();
+  }
+};
+
+@export let loop_once_iter = fn () u32 {
+  mut count: u32 = 0;
+  for mut i: u32 = 0; i < 1; i += 1 {
+    count += 1;
+    touch();
+  }
+
+  return count;
+};
+
+@export let loop_once_while = fn () u32 {
+  mut run = true;
+  mut count: u32 = 0;
+  for (run) {
+    count += 1;
+    touch();
+    run = false;
+  }
+
+  return count;
+};
+
+@export let count_lt = fn (start: u16, end: u16) u16 {
+  mut count: u16 = 0;
+  for mut i: u16 = start; i < end; i += 1 {
+    count += 1;
+  }
+
+  return count;
+};
+
+@export let count_le = fn (start: u16, end: u16) u16 {
+  mut count: u16 = 0;
+  for mut i: u16 = start; i <= end; i += 1 {
+    count += 1;
+  }
+
+  return count;
+};
+
+@export let count_ge_dec = fn (start: u16, end: u16) u16 {
+  mut count: u16 = 0;
+  for mut i: u16 = start - 1; i >= end; i -= 1 {
+    count += 1;
+  }
+
+  return count;
+};
+
+@export let break_simple = fn (n: u32) u32 {
+  mut count: u32 = 0;
+  for mut i: u32 = 1; i <= 10000; i += 1 {
+    count = i;
+    if i == n {
+      break;
+    }
+  }
+
+  return count;
+};
+
+@export let break_nested_if = fn (n: u32) u32 {
+  mut count: u32 = 0;
+  for mut i: u32 = 1; i <= 10000; i += 1 {
+    count = i;
+    if count == n {
+      if count % 2 == 0 {
+        // continue
+      } else {
+        break;
+      }
+    }
+  }
+
+  return count;
+};
+
+@export let break_nested_for = fn (n: u32) u32 {
+  for mut count: u32 = 1; count <= 16384; count += 1 {
+    mut i: u32 = 2048;
+    mut flag = false;
+    for i >= 0 {
+      if i == n {
+        flag = true;
+        break;
+      }
+
+      i -= 1;
+    }
+
+    if flag {
+      return 0;
+    }
+    // should only be triggered if n > 2048
+    if i == n {
+      return 1;
+    }
+  }
+
+  return 2;
+};
+
+// @export let continue_simple = fn (n: u32) u32 {
+//   mut ret: u32
+// }

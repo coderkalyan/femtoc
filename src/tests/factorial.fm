@@ -1,0 +1,13 @@
+@export let factorial_rec = fn (n: u32) u32 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial_rec(n - 1);
+};
+@export let factorial_iter = fn (n: u32) u32 {
+    mut ans: u32 = 1;
+    for mut i: u32 = 1; i <= n; i += 1 {
+        ans *= i;
+    }
+    return ans;
+};

@@ -1,6 +1,7 @@
 const std = @import("std");
 const lex = @import("lex.zig");
 const error_handler = @import("error_handler.zig");
+const Allocator = std.mem.Allocator;
 
 const Lexer = lex.Lexer;
 const Token = lex.Token;
@@ -351,6 +352,14 @@ pub const Node = struct {
         end: Index,
     };
 };
+
+pub fn deinit(self: *Ast, gpa: Allocator) void {
+    gpa.free(self.source);
+    self.tokens.deinit(gpa);
+    self.nodes.deinit(gpa);
+    gpa.free(self.extra_data);
+    gpa.free(self.errors);
+}
 
 pub fn extraData(self: *const Ast, index: usize, comptime T: type) T {
     const fields = std.meta.fields(T);

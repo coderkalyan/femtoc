@@ -446,7 +446,22 @@ pub fn typeOf(air: *const Air, index: Index) InternPool.Index {
             const slice = air.extraData(Air.Inst.ExtraSlice, block.insts);
             const insts = air.extraSlice(slice);
             if (insts.len == 0) return .void_type;
-            return air.typeOf(@enumFromInt(insts[insts.len - 1]));
+            var i: isize = @intCast(insts.len - 1);
+            while (i >= 0) : (i -= 1) {
+                const inst: Index = @enumFromInt(insts[@intCast(i)]);
+                switch (air.instData(inst)) {
+                    .dbg_block_begin,
+                    .dbg_block_end,
+                    .dbg_var_val,
+                    .dbg_var_ptr,
+                    => {},
+                    .@"return", .@"continue", .@"break" => return .void_type,
+                    // TODO: loops
+                    else => return air.typeOf(@enumFromInt(insts[@intCast(i)])),
+                }
+            }
+
+            return .void_type;
         },
         .param => |param| return param.ty,
         .load_decl => |load_decl| return load_decl.ty,

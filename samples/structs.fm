@@ -1,0 +1,8 @@
+@export let main = fn () void {
+type Point = struct {
+    x: u32,
+    y: u32,
+    z: u32,
+};
+    let a = Point { .x = 1, .y = 2, .z = 3 };
+};

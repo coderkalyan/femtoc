@@ -1,7 +1,8 @@
 SRCS = $(wildcard *.fm)
 IRS = $(patsubst %.fm,%.ll,$(SRCS))
 ASMS = $(patsubst %.fm,%.s,$(SRCS))
-OBJS = $(patsubst %.fm,%,$(SRCS))
+OBJS = $(patsubst %.fm,%.o,$(SRCS))
+BASE = $(patsubst %.fm,%,$(SRCS))
 
 CC = clang
 CFLAGS = -g -c
@@ -16,7 +17,7 @@ ifndef VERBOSE
 .SILENT:
 endif
 
-build: femtoc $(OBJS)
+build: femtoc $(BASE)
 
 femtoc:
 	zig build

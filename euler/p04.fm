@@ -1,14 +1,8 @@
 @import let print_answer: fn (ans: u64) void;
 @import let exit: fn (status: u32) void;
-// @import let print_answer: fn (ans: u64) void = _;
-// @import let print_answer = fn (ans: u64) void;
-// @import let print_answer = fn (ans: u64) void _;
-// let print_answer = fn (ans: u64) void @import;
-// let print_answer = @import fn (ans: u64) void;
 
-let reverse = fn (n: u64) u64 {
-    let mut src: u64 = n;
-    let mut ans: u64 = 0;
+let reverse = fn (mut src: u64) u64 {
+    mut ans: u64 = 0;
     for src > 0 {
         let digit = src % 10;
         src /= 10;
@@ -19,14 +13,12 @@ let reverse = fn (n: u64) u64 {
 };
 
 let solve = fn () u64 {
-    let mut ans: u32 = 0;
-    for let mut a: u32 = 999; a >= 1; a -= 1 {
-        for let mut b: u32 = 999; b >= 1; b -= 1 {
+    mut ans: u32 = 0;
+    for mut a: u32 = 999; a >= 1; a -= 1 {
+        for mut b: u32 = 999; b >= 1; b -= 1 {
             let product = a * b;
-            if product > ans {
-                if product == reverse(product) {
-                    ans = product;
-                }
+            if product > ans and product == reverse(product) {
+                ans = product;
             }
         }
     }
@@ -36,8 +28,7 @@ let solve = fn () u64 {
 
 @export let main = fn () u32 {
     let ans = solve();
-    let foo = print_answer(ans);
-    // let bar = exit(0);
+    print_answer(ans);
 
     return 0;
 };
